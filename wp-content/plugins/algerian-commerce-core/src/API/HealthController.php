@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace AlgerianCommerce\API;
 
+use AlgerianCommerce\Core\Migrations\MigrationRunner;
 use WP_REST_Request;
 use WP_REST_Response;
 
+use const AlgerianCommerce\DB_VERSION;
 use const AlgerianCommerce\VERSION;
 
 /**
@@ -36,6 +38,7 @@ final class HealthController extends AbstractController
             'database' => $this->checkDatabase(),
             'woocommerce' => $this->checkWooCommerce(),
             'plugin' => $this->checkPlugin(),
+            'schema' => $this->checkSchema(),
         ];
 
         $healthy = !in_array('error', $checks, true);
@@ -75,5 +78,15 @@ final class HealthController extends AbstractController
     private function checkPlugin(): string
     {
         return defined('AC_CORE_PATH') && VERSION !== '' ? 'ok' : 'error';
+    }
+
+    /**
+     * Reports a schema behind the shipped code — a deploy that updated files
+     * without running migrations. Only the ok/error verdict is exposed, not
+     * the version numbers.
+     */
+    private function checkSchema(): string
+    {
+        return (int) get_option(MigrationRunner::VERSION_OPTION, 0) >= DB_VERSION ? 'ok' : 'error';
     }
 }

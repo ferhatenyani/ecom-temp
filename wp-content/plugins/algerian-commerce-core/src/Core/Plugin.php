@@ -6,8 +6,11 @@ namespace AlgerianCommerce\Core;
 
 use AlgerianCommerce\API\HealthController;
 use AlgerianCommerce\API\RestApi;
+use AlgerianCommerce\CLI\MigrateCommand;
+use AlgerianCommerce\Core\Migrations\MigrationRunner;
+use Throwable;
+use WP_CLI;
 
-use const AlgerianCommerce\DB_VERSION;
 use const AlgerianCommerce\VERSION;
 
 /**
@@ -19,13 +22,13 @@ use const AlgerianCommerce\VERSION;
 final class Plugin
 {
     public const VERSION_OPTION = 'ac_core_version';
-    public const DB_VERSION_OPTION = 'ac_core_db_version';
 
     private static ?self $instance = null;
 
     private ?Config $config = null;
     private ?Logger $logger = null;
     private ?RestApi $restApi = null;
+    private ?MigrationRunner $migrations = null;
     private bool $booted = false;
 
     private function __construct()
@@ -46,8 +49,18 @@ final class Plugin
         $this->booted = true;
 
         $this->restApi()->register();
+        $this->registerCliCommands();
 
         $this->logger()->debug('Plugin booted', ['version' => VERSION]);
+    }
+
+    private function registerCliCommands(): void
+    {
+        if (!defined('WP_CLI') || !WP_CLI) {
+            return;
+        }
+
+        WP_CLI::add_command('algerian-commerce migrate', new MigrateCommand($this->migrations()));
     }
 
     public function config(): Config
@@ -70,15 +83,40 @@ final class Plugin
         ]);
     }
 
+    public function migrations(): MigrationRunner
+    {
+        global $wpdb;
+
+        return $this->migrations ??= new MigrationRunner(
+            AC_CORE_PATH . 'migrations',
+            $this->logger(),
+            $wpdb
+        );
+    }
+
     /**
-     * Activation is intentionally minimal. Roles, capabilities and migrations
-     * arrive in their own milestones; adding them here early would run
-     * untested schema changes on every activation.
+     * Activation applies pending migrations, then records the plugin version.
+     *
+     * A failed migration must not be reported as a successful activation, so
+     * the failure is logged and rethrown rather than swallowed — an install
+     * with a half-built schema is worse than one that refuses to activate.
      */
     public static function activate(): void
     {
+        $plugin = self::instance();
+
+        try {
+            $plugin->migrations()->run();
+        } catch (Throwable $throwable) {
+            $plugin->logger()->error('Activation failed while migrating', [
+                'exception' => $throwable::class,
+                'message' => $throwable->getMessage(),
+            ]);
+
+            throw $throwable;
+        }
+
         update_option(self::VERSION_OPTION, VERSION);
-        update_option(self::DB_VERSION_OPTION, DB_VERSION);
 
         flush_rewrite_rules(false);
     }
