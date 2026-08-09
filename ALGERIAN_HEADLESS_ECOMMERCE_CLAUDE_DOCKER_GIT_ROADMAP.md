@@ -11,6 +11,18 @@ into a reproducible, versioned, AI-assisted development workflow.
 
 ------------------------------------------------------------------------
 
+## Reading order
+
+Sections are grouped by topic, **not** by build order. Where a section's
+position in this document implies a different sequence than
+[§70 Exact Implementation Order](#70-exact-implementation-order), §70 wins.
+
+In particular: §28 Product Implementation appears before §30 RBAC and Audit
+and §49 Database Migrations, but the security foundation is built **first**
+(§44, §69 Milestone 5, §70 items 19–21). See the ordering note in §28.
+
+------------------------------------------------------------------------
+
 # 1. The Target Architecture
 
 The project should stop being treated as a manually configured WordPress
@@ -290,10 +302,8 @@ algerian-commerce-backend/
 │
 ├── wp-content/
 │   ├── plugins/
-│   │   └── algerian-commerce-core/
-│   └── mu-plugins/
-│
-├── tests/
+│   │   └── algerian-commerce-core/   <- src/, tests/ and phpunit.xml.dist
+│   └── mu-plugins/                      live inside the plugin (§50)
 │
 ├── backups/
 ├── compose.yaml
@@ -400,7 +410,7 @@ services:
     depends_on:
       - db
     ports:
-      - "8080:80"
+      - "8090:80"
     environment:
       WORDPRESS_DB_HOST: db:3306
       WORDPRESS_DB_USER: wordpress
@@ -448,7 +458,7 @@ Create `.env` locally:
 DB_PASSWORD=local_dev_password
 DB_ROOT_PASSWORD=local_root_password
 
-WP_PORT=8080
+WP_PORT=8090
 
 YALIDINE_API_KEY=
 YALIDINE_API_SECRET=
@@ -467,6 +477,15 @@ SMTP_PASSWORD=
 Never commit `.env`.
 
 Commit `.env.example` with empty placeholders.
+
+Two notes on the values above:
+
+-   `local_dev_password` is a **placeholder printed in this public
+    document**. Do not keep it as your actual password — replace it, and
+    never reuse a development password in staging or production (§77).
+-   `WP_PORT` is not yet consumed by `compose.yaml`, which publishes
+    `8090:80` directly. Either wire it up as `"${WP_PORT}:80"` or treat
+    the variable as documentation until you do.
 
 ------------------------------------------------------------------------
 
@@ -493,7 +512,7 @@ docker compose logs -f wordpress
 Open:
 
 ``` text
-http://localhost:8080
+http://localhost:8090
 ```
 
 Complete the initial WordPress installation.
@@ -502,6 +521,65 @@ Then install WooCommerce.
 
 For the reusable template, prefer installing/configuring WooCommerce
 through automation rather than relying on manual dashboard clicks.
+
+## Pretty permalinks and /wp-json/
+
+The custom REST API is reached at:
+
+``` text
+http://localhost:8090/wp-json/algerian-commerce/v1/...
+```
+
+That path only works with pretty permalinks. Two things must be true, and
+neither is true out of the box:
+
+``` bash
+docker compose run --rm wpcli wp option get permalink_structure
+```
+
+1.  A permalink structure must be set. If the command above prints
+    nothing, run:
+
+    ``` bash
+    docker compose run --rm wpcli wp rewrite structure '/%postname%/'
+    ```
+
+2.  Apache must honour the rewrite. The official `wordpress` image ships
+    a vhost with `AllowOverride None`, so the `.htaccess` WordPress
+    generates is **ignored** and every `/wp-json/` request returns 404 —
+    even after step 1 succeeds.
+
+    Fix it in the repository rather than inside the container, so it
+    survives a fresh volume. Create `docker/apache-wordpress.conf`:
+
+    ``` apache
+    <Directory /var/www/html>
+        AllowOverride All
+        Require all granted
+
+        RewriteEngine On
+        RewriteBase /
+        RewriteRule ^index\.php$ - [L]
+        RewriteCond %{REQUEST_FILENAME} !-f
+        RewriteCond %{REQUEST_FILENAME} !-d
+        RewriteRule . /index.php [L]
+    </Directory>
+    ```
+
+    and mount it in `compose.yaml`:
+
+    ``` yaml
+    - ./docker/apache-wordpress.conf:/etc/apache2/conf-enabled/zz-wordpress.conf:ro
+    ```
+
+Verify:
+
+``` bash
+curl -o /dev/null -w '%{http_code}\n' http://localhost:8090/wp-json/
+```
+
+A 200 means the REST layer is reachable. Without this, `?rest_route=/`
+still works and can mislead you into thinking REST is fine.
 
 ------------------------------------------------------------------------
 
@@ -1091,6 +1169,20 @@ Never let Claude silently implement five unrelated phases at once.
 ------------------------------------------------------------------------
 
 # 28. Product Implementation
+
+> **Ordering note.** This section's position is misleading. Do not start
+> Product CRUD until the security foundation is complete —
+> §70 items 19–21 (database migrations, authentication/RBAC, audit logs),
+> which is Milestone 5 in §69 and Phase 2 in `docs/PLAN.md`.
+>
+> §44 is explicit that authorization, validation and audit logging are
+> built early, not retrofitted. Products introduce the first write
+> endpoints; shipping them before authorization exists means either
+> exposing them unprotected or retrofitting access control into working
+> code later, which is how authorization gaps survive.
+>
+> Read §30 (RBAC and Audit) and §49 (Database Migrations) before this
+> section, even though they are printed after it.
 
 First major feature:
 
@@ -2065,7 +2157,7 @@ Bruno
 Example:
 
 ``` bash
-curl http://localhost:8080/wp-json/algerian-commerce/v1/health
+curl http://localhost:8090/wp-json/algerian-commerce/v1/health
 ```
 
 Then:
@@ -2687,6 +2779,11 @@ monitoring
 ------------------------------------------------------------------------
 
 # 70. Exact Implementation Order
+
+**This list is the authoritative build sequence.** Sections elsewhere in
+this document are grouped by topic, so their printed order does not imply
+a build order. Where the two disagree, follow this list — see the
+ordering note in §28 for the case that bites first.
 
 Use this as the master sequence:
 

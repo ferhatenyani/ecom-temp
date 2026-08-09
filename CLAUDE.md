@@ -45,7 +45,7 @@ constant. Migrations must never require deleting existing data.
 
 ## Environment
 
-Docker Compose (`compose.yml`) runs three services: `db` (mysql:8.0), `wordpress`, and `wpcli` (run-on-demand).
+Docker Compose (`compose.yaml`) runs three services: `db` (mysql:8.0), `wordpress`, and `wpcli` (run-on-demand).
 `wp-content/plugins/algerian-commerce-core` is bind-mounted into both `wordpress` and `wpcli`; the rest of WordPress lives
 in the `wordpress_data` volume and is deliberately not version-controlled.
 
@@ -73,7 +73,7 @@ curl http://localhost:8090/wp-json/algerian-commerce/v1/health   # → {"success
 
 `.env` (gitignored) holds `DB_PASSWORD`, `DB_ROOT_PASSWORD`, `WP_PORT`, and provider credentials
 (`YALIDINE_*`, `ZEDAIR_*`, `CHARGILY_*`, `SMTP_*`). Two gaps to fix when touching config: `.env.example` is currently
-empty and should mirror `.env`'s keys with blank values, and `compose.yml` hardcodes port `8090` instead of using
+empty and should mirror `.env`'s keys with blank values, and `compose.yaml` hardcodes port `8090` instead of using
 `${WP_PORT}`.
 
 The roadmap plans `scripts/{setup,reset,seed,health,test,backup}.sh` (§46); none exist yet. `reset.sh` is destructive by
