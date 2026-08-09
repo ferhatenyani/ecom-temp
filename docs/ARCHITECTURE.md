@@ -3,7 +3,7 @@
 How the Algerian headless commerce backend is structured. This document answers **how is it built** —
 `docs/PLAN.md` answers *what* we build, `CLAUDE.md` answers *how Claude works on it*.
 
-Source roadmap: [`ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md`](../ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) §20, §34, §37, §49–§52.
+Source roadmap: [`ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md`](../ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) §25, §37–§39, §43, §53, §58.
 
 ---
 

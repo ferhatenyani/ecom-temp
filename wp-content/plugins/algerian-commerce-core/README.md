@@ -9,12 +9,12 @@ answers HTTP requests with JSON. See [../../../docs/ARCHITECTURE.md](../../../do
 
 ## Current state
 
-Milestone 4 (foundation) complete, and §70 item 19 (database migrations) on top of it: plugin
+Milestone 4 (foundation) complete, and §4 item 19 (database migrations) on top of it: plugin
 bootstrap, PSR-4 autoloading, configuration and feature flags, logging with secret redaction, the
 `algerian-commerce/v1` namespace, the shared response envelope, error handling, the health endpoint,
 and the migration runner with the audit log table.
 
-Not implemented yet: RBAC and capabilities (§70 item 20), audit recording (item 21), products,
+Not implemented yet: RBAC and capabilities (§4 item 20), audit recording (item 21), products,
 orders, customers, inventory, shipping, payments, CMS.
 
 ```
@@ -66,7 +66,7 @@ Rules that the runner enforces or relies on:
 - **The stored version advances after each migration**, not once at the end — if 003 fails, 001 and
   002 stay applied and the next run resumes at 003. MySQL will not roll DDL back in a transaction,
   so resumability is the mitigation.
-- **No `down()`.** Roadmap §49 forbids a production migration that depends on destroying existing
+- **No `down()`.** Roadmap §43 forbids a production migration that depends on destroying existing
   data, and a rollback path invites exactly that. Reverse a mistake with a new forward migration.
 - **Use `dbDelta()`**, which is idempotent for table creation, and follow its formatting rules (two
   spaces after `PRIMARY KEY`, stable `KEY` names) or it will try to add duplicate indexes on re-run.

@@ -8,7 +8,7 @@ This repo is **scaffolding only** — no commits yet, no PHP code written. The d
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/), [docs/](docs/), [scripts/](scripts/), and
 [backups/](backups/) are empty placeholders. The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
-relevant section before implementing a feature; section 70 gives the exact implementation order and section 69 the milestones.
+relevant section before implementing a feature; section 4 gives the exact implementation order and section 3 the milestones.
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (layering, module map, provider abstraction, data/schema design) and
 [docs/SECURITY.md](docs/SECURITY.md) (read before touching auth, payments, webhooks, uploads, or any integration) now
@@ -32,7 +32,7 @@ The hard boundary: **never modify WordPress or WooCommerce core**, and never for
 supported APIs for products/orders/customers. Add custom tables only for genuinely custom, high-volume domains — audit
 events, shipment records, payment transactions, notification events, analytics aggregates.
 
-Planned plugin layout (roadmap §50): `src/` grouped by domain (`Core/`, `API/`, `Auth/`, `Permissions/`, `Products/`,
+Planned plugin layout (roadmap §37): `src/` grouped by domain (`Core/`, `API/`, `Auth/`, `Permissions/`, `Products/`,
 `Orders/`, `Inventory/`, `Shipping/`, `Payments/`, `COD/`, `Audit/`, …), `integrations/{Yalidine,Zedair,Chargily}/`,
 `migrations/`, `tests/`. PSR-4 root namespace `AlgerianCommerce\` → `src/`.
 
@@ -76,7 +76,7 @@ curl http://localhost:8090/wp-json/algerian-commerce/v1/health   # → {"success
 empty and should mirror `.env`'s keys with blank values, and `compose.yaml` hardcodes port `8090` instead of using
 `${WP_PORT}`.
 
-The roadmap plans `scripts/{setup,reset,seed,health,test,backup}.sh` (§46); none exist yet. `reset.sh` is destructive by
+The roadmap plans `scripts/{setup,reset,seed,health,test,backup}.sh` (§66); none exist yet. `reset.sh` is destructive by
 design and must say so loudly.
 
 ## API conventions

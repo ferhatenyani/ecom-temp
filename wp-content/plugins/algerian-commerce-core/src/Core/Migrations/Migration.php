@@ -13,7 +13,7 @@ use wpdb;
  * the filename (001_create_audit_logs.php), so a migration cannot disagree
  * with its own ordering.
  *
- * There is no down() by design: roadmap §49 forbids a production migration
+ * There is no down() by design: roadmap §43 forbids a production migration
  * that depends on destroying existing data, and a rollback path invites
  * exactly that. Reverse a mistake with a new forward migration.
  */

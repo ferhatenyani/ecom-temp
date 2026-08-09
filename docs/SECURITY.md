@@ -1,7 +1,7 @@
 # Security Requirements
 
 Read this before implementing authentication, authorization, payments, webhooks, file uploads, or any
-third-party integration. Source roadmap §21, §44, §64.
+third-party integration. Source roadmap §26, §42, §55.
 
 ## Baseline requirements
 
