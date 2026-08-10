@@ -15,6 +15,9 @@ use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
 use AlgerianCommerce\Core\Migrations\MigrationRunner;
 use AlgerianCommerce\Permissions\Roles;
+use AlgerianCommerce\Products\ProductController;
+use AlgerianCommerce\Products\ProductRepository;
+use AlgerianCommerce\Products\ProductService;
 use Throwable;
 use WP_CLI;
 
@@ -40,6 +43,7 @@ final class Plugin
     private ?Roles $roles = null;
     private ?AuditRepository $auditRepository = null;
     private ?AuditLogger $auditLogger = null;
+    private ?ProductService $productService = null;
     private bool $booted = false;
 
     private function __construct()
@@ -94,7 +98,16 @@ final class Plugin
         return $this->restApi ??= new RestApi($this->logger(), [
             new HealthController($this->logger()),
             new AuditLogController($this->logger(), $this->auditRepository()),
+            new ProductController($this->logger(), $this->productService()),
         ]);
+    }
+
+    public function productService(): ProductService
+    {
+        return $this->productService ??= new ProductService(
+            new ProductRepository(),
+            $this->auditLogger()
+        );
     }
 
     public function cors(): Cors

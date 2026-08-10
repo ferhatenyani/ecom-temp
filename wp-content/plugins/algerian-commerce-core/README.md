@@ -14,7 +14,7 @@ PSR-4 autoloading, configuration and feature flags, logging with secret redactio
 `algerian-commerce/v1` namespace, the shared response envelope, error handling, the health endpoint,
 the migration runner, roles and capabilities, and audit recording.
 
-Milestone 5 is complete. Not implemented yet: rate limiting, products, orders, customers, inventory,
+Milestone 5 is complete and roadmap §47 (product CRUD) is in. Not implemented yet: rate limiting, orders, customers, inventory,
 shipping, payments, CMS.
 
 ```
@@ -23,6 +23,8 @@ src/Core/                    Autoloader, Config, Logger, Plugin (wiring + lifecy
 src/Core/Migrations/         Migration interface, MigrationPlan (ordering), MigrationRunner
 src/Permissions/             Capabilities (the matrix), Roles (install), Permissions (enforcement)
 src/Audit/                   AuditEvent, AuditRepository, AuditLogger
+src/Products/                ProductController, ProductService, ProductInput,
+                             ProductRepository, ProductPresenter
 src/API/                     Response envelope, ApiException, ErrorNormalizer, Cors, OriginPolicy,
                              AbstractController, RestApi, HealthController, AuditLogController
 src/CLI/                     WP-CLI commands
@@ -36,6 +38,11 @@ tests/Unit/                  unit tests — no WordPress required
 | --- | --- | --- | --- |
 | GET | `/wp-json/algerian-commerce/v1/health` | public | stack liveness |
 | GET | `/wp-json/algerian-commerce/v1/audit-logs` | `ac_view_audit_logs` | read the audit trail (paginated, filterable by `action`, `resource_type`, `actor_id`) |
+| GET | `/products` | `ac_manage_products` | list (paginated; `search`, `sku`, `status`, `category`) |
+| POST | `/products` | `ac_manage_products` | create → 201 |
+| GET | `/products/{id}` | `ac_manage_products` | read |
+| PATCH | `/products/{id}` | `ac_manage_products` | partial update |
+| DELETE | `/products/{id}` | `ac_manage_products` | trash, or `?force=true` to delete permanently |
 
 ```bash
 curl http://localhost:8090/wp-json/algerian-commerce/v1/health
@@ -175,6 +182,37 @@ A refused origin gets **no** `Access-Control-Allow-Origin` at all — omitting t
 the browser block the response, there is no "deny" header. `Vary: Origin` is sent either way so a
 shared cache cannot serve an approved response to a different origin. Refusals are logged with the
 offending origin, because a blocked call leaves no other server-side trace.
+
+## Products
+
+Simple products only, for now. Layering follows [../../../docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) §2:
+
+```
+ProductController   routes, args schema, JSON body → service
+ProductService      authorization, duplicate-SKU and cross-field rules, audit
+ProductInput        validation and normalization (pure, no WordPress)
+ProductRepository   the only place that knows WC_Product exists
+ProductPresenter    the wire format
+```
+
+Rules worth knowing before extending it:
+
+- **Unknown fields are rejected**, not ignored — `stock_quantiy` returns 400 rather than silently
+  doing nothing. Errors come back as a per-field map, all problems at once, in `error.details.fields`.
+- **Prices stay strings** end to end. They are decimal DZD amounts; a float would introduce rounding
+  into money.
+- **A duplicate SKU is 409, not 400.** The payload is well formed; the catalogue already contains it.
+- **A PATCH that sends only `sale_price`** is checked against the *stored* regular price, otherwise a
+  product could be put on "sale" above its own price.
+- **`WC_Data_Exception` is translated** into the error envelope, so WooCommerce's own validation does
+  not surface as a 500.
+- **DELETE trashes by default**; `?force=true` is permanent. Both are audited, with distinct actions.
+
+Writes are recorded to the audit trail as `product.created`, `product.updated` (with a before/after
+diff and the field list), `product.trashed` and `product.deleted`.
+
+Not implemented yet — the "then" list in roadmap §47: variations, attributes, images and gallery,
+bulk operations, category and tag management, duplicate, and sorting beyond newest-first.
 
 ## Response contract
 
