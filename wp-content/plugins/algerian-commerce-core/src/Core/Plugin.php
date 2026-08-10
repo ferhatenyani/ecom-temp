@@ -4,10 +4,15 @@ declare(strict_types=1);
 
 namespace AlgerianCommerce\Core;
 
+use AlgerianCommerce\API\AuditLogController;
 use AlgerianCommerce\API\HealthController;
 use AlgerianCommerce\API\RestApi;
+use AlgerianCommerce\Audit\AuditLogger;
+use AlgerianCommerce\Audit\AuditRepository;
 use AlgerianCommerce\CLI\MigrateCommand;
+use AlgerianCommerce\CLI\RolesCommand;
 use AlgerianCommerce\Core\Migrations\MigrationRunner;
+use AlgerianCommerce\Permissions\Roles;
 use Throwable;
 use WP_CLI;
 
@@ -29,6 +34,9 @@ final class Plugin
     private ?Logger $logger = null;
     private ?RestApi $restApi = null;
     private ?MigrationRunner $migrations = null;
+    private ?Roles $roles = null;
+    private ?AuditRepository $auditRepository = null;
+    private ?AuditLogger $auditLogger = null;
     private bool $booted = false;
 
     private function __construct()
@@ -61,6 +69,7 @@ final class Plugin
         }
 
         WP_CLI::add_command('algerian-commerce migrate', new MigrateCommand($this->migrations()));
+        WP_CLI::add_command('algerian-commerce roles', new RolesCommand($this->roles()));
     }
 
     public function config(): Config
@@ -80,7 +89,25 @@ final class Plugin
     {
         return $this->restApi ??= new RestApi($this->logger(), [
             new HealthController($this->logger()),
+            new AuditLogController($this->logger(), $this->auditRepository()),
         ]);
+    }
+
+    public function roles(): Roles
+    {
+        return $this->roles ??= new Roles($this->logger());
+    }
+
+    public function auditRepository(): AuditRepository
+    {
+        global $wpdb;
+
+        return $this->auditRepository ??= new AuditRepository($wpdb);
+    }
+
+    public function auditLogger(): AuditLogger
+    {
+        return $this->auditLogger ??= new AuditLogger($this->auditRepository(), $this->logger());
     }
 
     public function migrations(): MigrationRunner
@@ -107,8 +134,11 @@ final class Plugin
 
         try {
             $plugin->migrations()->run();
+            // After migrations: roles are meaningless without the tables the
+            // capabilities eventually guard.
+            $plugin->roles()->install();
         } catch (Throwable $throwable) {
-            $plugin->logger()->error('Activation failed while migrating', [
+            $plugin->logger()->error('Activation failed', [
                 'exception' => $throwable::class,
                 'message' => $throwable->getMessage(),
             ]);
