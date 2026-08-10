@@ -3,7 +3,7 @@
 How the Algerian headless commerce backend is structured. This document answers **how is it built** —
 `docs/PLAN.md` answers *what* we build, `CLAUDE.md` answers *how Claude works on it*.
 
-Source roadmap: [`ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md`](../ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) §20, §34, §37, §49–§52.
+Source roadmap: [`ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md`](../ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) §25, §37–§39, §43, §53, §58.
 
 ---
 
@@ -189,8 +189,15 @@ Custom tables (prefix `{$wpdb->prefix}ac_`) only for genuinely custom, high-volu
 | `ac_geo_wilayas` / `ac_geo_communes` | Algerian geography + per-provider destination mappings |
 
 Schema changes ship as numbered migrations (`migrations/001_create_audit_logs.php`, …) gated on
-`AC_DB_VERSION`; bumping the constant runs the pending ones. A migration must never require deleting
-existing data to succeed.
+`AC_DB_VERSION`, which must equal the highest migration on disk. They run on plugin activation and
+via `wp algerian-commerce migrate`.
+
+The stored version advances after each individual migration so a failed batch resumes rather than
+replays — MySQL will not roll DDL back inside a transaction. There is deliberately no `down()`: a
+migration must never require deleting existing data to succeed, and a rollback path invites exactly
+that. Reverse a mistake with a new forward migration.
+
+`001` is applied — `ac_audit_logs` exists. The remaining tables below are planned.
 
 ## 8. Authentication
 
