@@ -14,7 +14,7 @@ PSR-4 autoloading, configuration and feature flags, logging with secret redactio
 `algerian-commerce/v1` namespace, the shared response envelope, error handling, the health endpoint,
 the migration runner, roles and capabilities, and audit recording.
 
-Milestone 5 is complete. Not implemented yet: rate limiting, products, orders, customers, inventory,
+Milestone 5 is complete and roadmap §47 (product CRUD) is in. Not implemented yet: rate limiting, orders, customers, inventory,
 shipping, payments, CMS.
 
 ```
@@ -23,6 +23,8 @@ src/Core/                    Autoloader, Config, Logger, Plugin (wiring + lifecy
 src/Core/Migrations/         Migration interface, MigrationPlan (ordering), MigrationRunner
 src/Permissions/             Capabilities (the matrix), Roles (install), Permissions (enforcement)
 src/Audit/                   AuditEvent, AuditRepository, AuditLogger
+src/Products/                ProductController, ProductService, ProductInput,
+                             ProductRepository, ProductPresenter
 src/API/                     Response envelope, ApiException, ErrorNormalizer, Cors, OriginPolicy,
                              AbstractController, RestApi, HealthController, AuditLogController
 src/CLI/                     WP-CLI commands
@@ -36,6 +38,11 @@ tests/Unit/                  unit tests — no WordPress required
 | --- | --- | --- | --- |
 | GET | `/wp-json/algerian-commerce/v1/health` | public | stack liveness |
 | GET | `/wp-json/algerian-commerce/v1/audit-logs` | `ac_view_audit_logs` | read the audit trail (paginated, filterable by `action`, `resource_type`, `actor_id`) |
+| GET | `/products` | `ac_manage_products` | list (paginated; `search`, `sku`, `status`, `category`) |
+| POST | `/products` | `ac_manage_products` | create → 201 |
+| GET | `/products/{id}` | `ac_manage_products` | read |
+| PATCH | `/products/{id}` | `ac_manage_products` | partial update |
+| DELETE | `/products/{id}` | `ac_manage_products` | trash, or `?force=true` to delete permanently |
 
 ```bash
 curl http://localhost:8090/wp-json/algerian-commerce/v1/health
@@ -175,6 +182,117 @@ A refused origin gets **no** `Access-Control-Allow-Origin` at all — omitting t
 the browser block the response, there is no "deny" header. `Vary: Origin` is sent either way so a
 shared cache cannot serve an approved response to a different origin. Refusals are logged with the
 offending origin, because a blocked call leaves no other server-side trace.
+
+## Products
+
+Simple products only, for now. Layering follows [../../../docs/ARCHITECTURE.md](../../../docs/ARCHITECTURE.md) §2:
+
+```
+ProductController   routes, args schema, JSON body → service
+ProductService      authorization, duplicate-SKU and cross-field rules, audit
+ProductInput        validation and normalization (pure, no WordPress)
+ProductRepository   the only place that knows WC_Product exists
+ProductPresenter    the wire format
+```
+
+Rules worth knowing before extending it:
+
+- **Unknown fields are rejected**, not ignored — `stock_quantiy` returns 400 rather than silently
+  doing nothing. Errors come back as a per-field map, all problems at once, in `error.details.fields`.
+- **Prices stay strings** end to end. They are decimal DZD amounts; a float would introduce rounding
+  into money.
+- **A duplicate SKU is 409, not 400.** The payload is well formed; the catalogue already contains it.
+- **A PATCH that sends only `sale_price`** is checked against the *stored* regular price, otherwise a
+  product could be put on "sale" above its own price.
+- **`WC_Data_Exception` is translated** into the error envelope, so WooCommerce's own validation does
+  not surface as a 500.
+- **DELETE trashes by default**; `?force=true` is permanent. Both are audited, with distinct actions.
+
+Writes are recorded to the audit trail as `product.created`, `product.updated` (with a before/after
+diff and the field list), `product.trashed` and `product.deleted`.
+
+### Variations and attributes
+
+Attributes come in WooCommerce's two flavours and the repository handles the difference: **global**
+(`{"id": 3, ...}`) stores term ids against a registered taxonomy, **custom** (`{"name": "Size", ...}`)
+stores plain strings on the product. `id: 0` means custom — that is what the read endpoint emits, and
+accepting it is what makes GET → edit → PATCH work.
+
+Terms are resolved, never created. A typo in an option is a 400, not a new permanent taxonomy term.
+
+```
+GET    /products/{id}/variations
+POST   /products/{id}/variations
+GET    /products/{id}/variations/{variationId}
+PATCH  /products/{id}/variations/{variationId}
+DELETE /products/{id}/variations/{variationId}
+```
+
+Variations are nested under the parent, and the service checks the variation actually belongs to the
+product in the path — `/products/5/variations/99` where 99 belongs to product 7 is a 404, not a leak.
+
+Rules enforced in `VariationService` because none of them can be checked from the payload alone:
+
+- The parent must be `type: variable` — otherwise 409 telling you to change the type first.
+- Every attribute key must be one the parent marked `variation: true`, and every value must be one of
+  that attribute's options. An empty value means "any".
+- **A duplicate attribute combination is 409.** WooCommerce happily stores two variations claiming the
+  same combination, and then only one of them is ever selectable.
+- Every write syncs the parent, which caches price range and stock status from its children.
+
+Changing `type` from simple to variable is supported: product type lives in the `product_type`
+taxonomy and the PHP class is chosen from it at load, so the repository updates the term, clears the
+caches and re-loads rather than calling a setter.
+
+### Images
+
+Assigned by attachment id; each id is verified to be a real image attachment before it is stored,
+because WooCommerce accepts any post id and an unchecked value yields a product whose image resolves
+to nothing. `0` clears. Products carry `image_id` + `gallery_image_ids` (writable) alongside `image`
+and `gallery` (read-only, with URLs), so a client gets the URLs without a second request and can
+still PATCH the object straight back. Variations take a single `image_id`.
+
+Image **upload** is not here. It belongs with PLAN.md §24 Media — MIME and extension allowlists, size
+caps, metadata stripping, non-executable storage — and deserves its own security review.
+
+### Bulk operations
+
+```
+POST /products/bulk
+{"action": "update", "items": [{"id": 1, "status": "draft"}, …]}
+{"action": "delete", "ids": [1, 2], "force": true}
+```
+
+Every item runs through the ordinary single-item service, so bulk inherits validation, authorization
+and audit instead of reimplementing looser copies. A failing item is recorded and the batch
+continues — a bulk price update should not abandon 99 good products because the 40th has a duplicate
+SKU.
+
+The response is **200 with a per-item result list**, not 207:
+
+```json
+{ "success": true,
+  "data": [ {"id": 26, "success": true},
+            {"id": 27, "success": false, "error": {"code": "invalid_request", …}} ],
+  "meta": { "total": 3, "succeeded": 1, "failed": 2 } }
+```
+
+Partial success is the expected outcome here rather than an exception, and the caller has to read the
+per-item results either way. Batches are capped at 100 items, and a duplicate id in one batch is
+rejected up front — two entries for one product make the result depend on ordering.
+
+### Duplicate, sorting, categories
+
+`POST /products/{id}/duplicate` copies attributes, categories, images and every variation. The copy is
+always a **draft with a cleared SKU**, so an accidental duplicate cannot appear in the storefront or
+collide on SKU. It does not use WooCommerce's own duplicator, which lives in an admin-only class that
+echoes and redirects.
+
+`GET /products?orderby=&order=` accepts `date`, `id`, `title`, `price`, `sku`, `menu_order`,
+`popularity`, `rating`, constrained by an enum so an unknown value is a 400 rather than a silent
+fallback. Lists exclude variations — those are addressed through their parent.
+
+`GET /product-categories` is read-only, paginated, filterable by `search` and `parent`.
 
 ## Response contract
 

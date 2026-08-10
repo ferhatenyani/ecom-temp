@@ -15,6 +15,13 @@ use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
 use AlgerianCommerce\Core\Migrations\MigrationRunner;
 use AlgerianCommerce\Permissions\Roles;
+use AlgerianCommerce\Products\ProductCategoryController;
+use AlgerianCommerce\Products\ProductController;
+use AlgerianCommerce\Products\ProductRepository;
+use AlgerianCommerce\Products\ProductService;
+use AlgerianCommerce\Products\VariationController;
+use AlgerianCommerce\Products\VariationRepository;
+use AlgerianCommerce\Products\VariationService;
 use Throwable;
 use WP_CLI;
 
@@ -40,6 +47,9 @@ final class Plugin
     private ?Roles $roles = null;
     private ?AuditRepository $auditRepository = null;
     private ?AuditLogger $auditLogger = null;
+    private ?ProductRepository $productRepository = null;
+    private ?ProductService $productService = null;
+    private ?VariationService $variationService = null;
     private bool $booted = false;
 
     private function __construct()
@@ -94,7 +104,32 @@ final class Plugin
         return $this->restApi ??= new RestApi($this->logger(), [
             new HealthController($this->logger()),
             new AuditLogController($this->logger(), $this->auditRepository()),
+            new ProductController($this->logger(), $this->productService()),
+            new VariationController($this->logger(), $this->variationService()),
+            new ProductCategoryController($this->logger()),
         ]);
+    }
+
+    public function productRepository(): ProductRepository
+    {
+        return $this->productRepository ??= new ProductRepository();
+    }
+
+    public function productService(): ProductService
+    {
+        return $this->productService ??= new ProductService(
+            $this->productRepository(),
+            $this->auditLogger()
+        );
+    }
+
+    public function variationService(): VariationService
+    {
+        return $this->variationService ??= new VariationService(
+            $this->productRepository(),
+            new VariationRepository(),
+            $this->auditLogger()
+        );
     }
 
     public function cors(): Cors

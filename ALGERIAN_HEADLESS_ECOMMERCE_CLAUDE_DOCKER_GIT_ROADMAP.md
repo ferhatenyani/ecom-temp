@@ -2119,19 +2119,6 @@ PATCH  /products/{id}
 DELETE /products/{id}
 ```
 
-Then:
-
-``` text
-search
-filtering
-pagination
-categories
-attributes
-variations
-images
-bulk operations
-```
-
 Test:
 
 ``` text
@@ -2145,7 +2132,43 @@ missing product
 duplicate SKU
 ```
 
-Only then continue to inventory.
+## Then, in slices
+
+This section is too large for one branch. Build it in the order below —
+each slice is independently reviewable, and each one's rules are inherited
+by the slices after it (bulk operations in particular should come late, so
+they wrap single-item behaviour that is already correct).
+
+``` text
+47a. CRUD + pagination + search + filtering   DONE  feat/products
+47b. attributes + variations                  DONE  feat/products
+47c. images (featured + gallery, by id)       DONE  feat/products
+47d. bulk operations                          DONE  feat/products
+47e. duplicate, sorting, category endpoint    DONE  feat/products
+```
+
+**47c — images.** Assigning existing media-library attachment ids belongs
+here, and ids are verified to be image attachments before they are stored.
+*Uploading* does not belong here: file handling brings the MIME/extension
+allowlists, size caps, metadata stripping and non-executable storage that
+`docs/PLAN.md` §24 (Media) specifies, and that work carries its own security
+review rather than riding along inside product CRUD. It is scheduled in
+**§61, "Media and uploads"** — until then, attachments must be created
+through the WordPress dashboard.
+
+**47d — bulk operations.** Each item goes through the single-item service, so
+validation, authorization and audit are inherited rather than reimplemented.
+Two decisions worth keeping: a per-item result list rather than
+all-or-nothing (partial success is the expected outcome, so the response is
+200 and the caller reads the results), and a hard cap on batch size.
+
+**47e — sorting and categories.** Sorting is a list-endpoint argument
+constrained to an enum. Category and tag *assignment* already existed through
+`category_ids`; what was missing was a read endpoint for populating pickers.
+Full taxonomy CRUD is `docs/PLAN.md` §5, not this section — deleting a
+category silently detaches every product on it and deserves its own phase.
+
+Section 47 is complete apart from image upload (§24). Continue to inventory.
 
 ------------------------------------------------------------------------
 
@@ -2619,6 +2642,45 @@ Example homepage model:
   ]
 }
 ```
+
+## Media and uploads
+
+`docs/PLAN.md` §24 (Media) belongs here, and nowhere earlier. §47c assigns
+product images by attachment id and validates them, but nothing in this
+roadmap ever creates an attachment — without this step the media library can
+only be filled through the WordPress dashboard, which contradicts §20.
+
+Implement:
+
+``` text
+POST   /media          multipart upload
+GET    /media          list, search, filter by type
+GET    /media/{id}
+PATCH  /media/{id}     alt text, title, caption
+DELETE /media/{id}
+```
+
+Upload is the highest-risk endpoint in the whole API, because it is the only
+one that writes a file a web server might later execute. Before it ships:
+
+``` text
+MIME type validated from file contents, not the client-supplied header
+extension allowlist, checked independently of MIME
+size cap
+metadata stripped
+filenames sanitized and never trusted
+stored outside any web-executable path where the host allows it
+authorization on every route
+rate limiting
+```
+
+Prefer WordPress's own `wp_handle_upload()` and `wp_insert_attachment()`
+over hand-rolled file handling: they already apply the core allowlist and
+the uploads-directory rules.
+
+Test the abuse cases from §65 — a PHP file renamed to `.jpg`, a polyglot
+image, a double extension, a path-traversal filename, an oversized file —
+and treat §55's checklist as applying to this endpoint too.
 
 ------------------------------------------------------------------------
 
