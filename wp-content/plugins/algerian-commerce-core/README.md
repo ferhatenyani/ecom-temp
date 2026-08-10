@@ -14,7 +14,7 @@ PSR-4 autoloading, configuration and feature flags, logging with secret redactio
 `algerian-commerce/v1` namespace, the shared response envelope, error handling, the health endpoint,
 the migration runner, roles and capabilities, and audit recording.
 
-Not implemented yet: rate limiting and CORS (roadmap §46), products, orders, customers, inventory,
+Milestone 5 is complete. Not implemented yet: rate limiting, products, orders, customers, inventory,
 shipping, payments, CMS.
 
 ```
@@ -23,7 +23,7 @@ src/Core/                    Autoloader, Config, Logger, Plugin (wiring + lifecy
 src/Core/Migrations/         Migration interface, MigrationPlan (ordering), MigrationRunner
 src/Permissions/             Capabilities (the matrix), Roles (install), Permissions (enforcement)
 src/Audit/                   AuditEvent, AuditRepository, AuditLogger
-src/API/                     Response envelope, ApiException, ErrorNormalizer,
+src/API/                     Response envelope, ApiException, ErrorNormalizer, Cors, OriginPolicy,
                              AbstractController, RestApi, HealthController, AuditLogController
 src/CLI/                     WP-CLI commands
 migrations/                  001_create_audit_logs.php, …
@@ -149,6 +149,32 @@ $this->auditLogger->record('product.price_changed', 'product', $id, ['old' => 12
   would otherwise take the whole API down; the health endpoint reports database problems separately.
 - **The IP is `REMOTE_ADDR` only.** `X-Forwarded-For` is client-controlled, and a forged address in an
   append-only trail is worse than the proxy's real one. Revisit when a trusted proxy exists.
+
+## CORS
+
+The allowlist is exact on scheme, host and port — no wildcards, no subdomain or prefix matching.
+`https://store.example.dz` does not admit `https://store.example.dz.attacker.com`.
+
+```bash
+AC_CORS_ORIGINS=https://store.example.dz,https://admin.example.dz
+```
+
+Unset falls back to the development origins `http://localhost:3000,http://localhost:3001`
+(roadmap §46). A malformed entry — or `*` — is dropped rather than honoured, so a misconfiguration
+fails closed and blocks everything instead of opening the API. Set the variable explicitly in staging
+and production; it is passed into the container by `compose.yaml`.
+
+**Why this replaces core's handler.** WordPress's `rest_send_cors_headers()` reflects *whatever*
+Origin the request carried along with `Access-Control-Allow-Credentials: true`, and never consults
+`allowed_http_origins` — that filter only governs `is_allowed_http_origin()`, which the REST CORS path
+does not call. Core can afford it because its endpoints need a nonce or Authorization header a foreign
+page cannot obtain. Our private API cannot, so `Cors` removes core's handler and applies the allowlist
+to `algerian-commerce/v1` only; `wp/v2`, `wc/v3` and everything else keep core's behaviour.
+
+A refused origin gets **no** `Access-Control-Allow-Origin` at all — omitting the header is what makes
+the browser block the response, there is no "deny" header. `Vary: Origin` is sent either way so a
+shared cache cannot serve an approved response to a different origin. Refusals are logged with the
+offending origin, because a blocked call leaves no other server-side trace.
 
 ## Response contract
 
