@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace AlgerianCommerce\Products;
 
+use AlgerianCommerce\API\ApiException;
 use WC_Product;
+use WC_Product_Attribute;
 use WC_Product_Simple;
+use WC_Product_Variable;
 
 /**
  * The WooCommerce adapter for products.
@@ -79,7 +82,9 @@ final class ProductRepository
 
     public function create(ProductInput $input): WC_Product
     {
-        $product = new WC_Product_Simple();
+        $product = $input->get('type') === 'variable'
+            ? new WC_Product_Variable()
+            : new WC_Product_Simple();
 
         $this->apply($product, $input);
         $product->save();
@@ -92,7 +97,37 @@ final class ProductRepository
         $this->apply($product, $input);
         $product->save();
 
+        $type = $input->get('type');
+
+        if (is_string($type) && $type !== '' && $type !== $product->get_type()) {
+            $product = $this->changeType($product, $type);
+        }
+
         return $product;
+    }
+
+    /**
+     * Product type lives in the `product_type` taxonomy, and the PHP class is
+     * chosen from it at load time. Changing type therefore means updating the
+     * term and re-loading, not calling a setter.
+     */
+    private function changeType(WC_Product $product, string $type): WC_Product
+    {
+        $id = $product->get_id();
+
+        wp_set_object_terms($id, $type, 'product_type');
+
+        // Caches hold the old class; force a fresh read.
+        wc_delete_product_transients($id);
+        clean_post_cache($id);
+
+        $reloaded = wc_get_product($id);
+
+        if (!$reloaded instanceof WC_Product) {
+            throw ApiException::internal('The product type could not be changed.');
+        }
+
+        return $reloaded;
     }
 
     /**
@@ -133,6 +168,81 @@ final class ProductRepository
                 $product->{$setter}($input->get($field));
             }
         }
+
+        if ($input->has('attributes')) {
+            $product->set_attributes($this->buildAttributes($input->attributes()));
+        }
+    }
+
+    /**
+     * Translate validated attribute input into WooCommerce's objects.
+     *
+     * Global attributes store **term ids**, custom ones store plain strings —
+     * getting that wrong produces attributes that look right in the database
+     * and match nothing when variations are resolved.
+     *
+     * @param list<AttributeInput> $attributes
+     * @return list<WC_Product_Attribute>
+     */
+    private function buildAttributes(array $attributes): array
+    {
+        $built = [];
+
+        foreach ($attributes as $attribute) {
+            $wc = new WC_Product_Attribute();
+            $wc->set_visible($attribute->visible);
+            $wc->set_variation($attribute->variation);
+            $wc->set_position($attribute->position);
+
+            if ($attribute->isGlobal()) {
+                $taxonomy = wc_attribute_taxonomy_name_by_id((int) $attribute->id);
+
+                if ($taxonomy === '' || !taxonomy_exists($taxonomy)) {
+                    throw ApiException::invalidRequest('The product data is invalid.', [
+                        'fields' => ['attributes' => "Unknown global attribute id {$attribute->id}."],
+                    ]);
+                }
+
+                $wc->set_id((int) $attribute->id);
+                $wc->set_name($taxonomy);
+                $wc->set_options($this->resolveTermIds($taxonomy, $attribute->options));
+            } else {
+                $wc->set_id(0);
+                $wc->set_name($attribute->name);
+                $wc->set_options($attribute->options);
+            }
+
+            $built[] = $wc;
+        }
+
+        return $built;
+    }
+
+    /**
+     * Terms are resolved, never created. Creating a taxonomy term as a side
+     * effect of saving a product makes typos permanent and unreviewable.
+     *
+     * @param list<string> $options
+     * @return list<int>
+     */
+    private function resolveTermIds(string $taxonomy, array $options): array
+    {
+        $ids = [];
+
+        foreach ($options as $option) {
+            $term = get_term_by('slug', sanitize_title($option), $taxonomy)
+                ?: get_term_by('name', $option, $taxonomy);
+
+            if (!is_object($term)) {
+                throw ApiException::invalidRequest('The product data is invalid.', [
+                    'fields' => ['attributes' => "Unknown term \"{$option}\" for attribute {$taxonomy}."],
+                ]);
+            }
+
+            $ids[] = (int) $term->term_id;
+        }
+
+        return $ids;
     }
 
     private function categorySlug(int $termId): string

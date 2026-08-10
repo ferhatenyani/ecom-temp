@@ -213,4 +213,91 @@ final class ProductInputTest extends TestCase
     {
         self::assertTrue(ProductInput::forUpdate([])->isEmpty());
     }
+
+    /** @return array<string, array{0: string}> */
+    public static function readOnlyFieldProvider(): array
+    {
+        return [
+            'id' => ['id'],
+            'computed price' => ['price'],
+            'on_sale' => ['on_sale'],
+            'permalink' => ['permalink'],
+            'date_created' => ['date_created'],
+            'date_modified' => ['date_modified'],
+            'variations' => ['variations'],
+        ];
+    }
+
+    /**
+     * A client that does GET → edit → PATCH sends back the fields we emit.
+     * Rejecting our own output would make the obvious usage pattern fail.
+     *
+     * @dataProvider readOnlyFieldProvider
+     */
+    public function testFieldsWeEmitButDoNotAcceptAreIgnoredNotRejected(string $field): void
+    {
+        $input = ProductInput::forUpdate(['name' => 'X', $field => 'anything']);
+
+        self::assertFalse($input->has($field), 'read-only fields must not reach the setters');
+        self::assertSame('X', $input->get('name'));
+    }
+
+    public function testAFullReadPayloadCanBePatchedBackUnchanged(): void
+    {
+        // Exactly what ProductPresenter emits.
+        $roundTrip = [
+            'id' => 7, 'name' => 'Tapis', 'slug' => 'tapis', 'type' => 'simple', 'status' => 'publish',
+            'featured' => false, 'catalog_visibility' => 'visible', 'sku' => 'DZ-1',
+            'description' => 'd', 'short_description' => 's', 'price' => '100',
+            'regular_price' => '100', 'sale_price' => '', 'on_sale' => false,
+            'manage_stock' => false, 'stock_quantity' => null, 'stock_status' => 'instock',
+            'weight' => '', 'category_ids' => [3], 'tag_ids' => [], 'attributes' => [],
+            'variations' => [], 'permalink' => 'http://x/p', 'date_created' => '2026-01-01T00:00:00+00:00',
+            'date_modified' => null,
+        ];
+
+        $input = ProductInput::forUpdate($roundTrip);
+
+        self::assertSame('Tapis', $input->get('name'));
+        self::assertSame('simple', $input->get('type'));
+        self::assertFalse($input->has('id'));
+        self::assertFalse($input->has('price'));
+    }
+
+    public function testGenuinelyUnknownFieldsAreStillRejected(): void
+    {
+        // The read-only exemption must not become a blanket amnesty.
+        self::assertArrayHasKey('stock_quantiy', $this->fieldErrors(['name' => 'X', 'stock_quantiy' => 5]));
+        self::assertArrayHasKey('post_author', $this->fieldErrors(['name' => 'X', 'post_author' => 1]));
+    }
+
+    public function testTypeIsLimitedToKnownValues(): void
+    {
+        self::assertSame('variable', ProductInput::forCreate(['name' => 'X', 'type' => 'variable'])->get('type'));
+        self::assertArrayHasKey('type', $this->fieldErrors(['name' => 'X', 'type' => 'grouped']));
+    }
+
+    public function testAttributesAreParsedIntoValueObjects(): void
+    {
+        $input = ProductInput::forCreate([
+            'name' => 'X',
+            'attributes' => [['name' => 'Size', 'options' => ['S', 'M'], 'variation' => true]],
+        ]);
+
+        self::assertCount(1, $input->attributes());
+        self::assertSame('Size', $input->attributes()[0]->name);
+        self::assertTrue($input->attributes()[0]->variation);
+    }
+
+    public function testSimpleFieldErrorsAreReportedEvenWhenAttributesAreAlsoBroken(): void
+    {
+        $errors = $this->fieldErrors([
+            'name' => 'X',
+            'regular_price' => 'free',
+            'attributes' => 'not-an-array',
+        ]);
+
+        self::assertArrayHasKey('regular_price', $errors);
+        self::assertArrayNotHasKey('attributes', $errors, 'attributes are parsed after the simpler fields');
+    }
 }

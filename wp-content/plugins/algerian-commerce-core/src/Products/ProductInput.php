@@ -21,6 +21,20 @@ final class ProductInput
     public const STATUSES = ['draft', 'pending', 'private', 'publish'];
     public const VISIBILITIES = ['visible', 'catalog', 'search', 'hidden'];
     public const STOCK_STATUSES = ['instock', 'outofstock', 'onbackorder'];
+    public const TYPES = ['simple', 'variable'];
+
+    /**
+     * Fields this API emits on read but never accepts on write.
+     *
+     * They are dropped silently rather than rejected, so the natural client
+     * pattern — GET a product, change one field, PATCH the whole object back
+     * — works. Genuinely unknown keys are still an error; the point of that
+     * rule is to catch typos, not to punish a round trip.
+     */
+    private const READ_ONLY = [
+        'id', 'price', 'on_sale', 'permalink',
+        'date_created', 'date_modified', 'variations',
+    ];
 
     private const STRING_FIELDS = ['name', 'slug', 'description', 'short_description', 'sku'];
     private const PRICE_FIELDS = ['regular_price', 'sale_price'];
@@ -74,7 +88,15 @@ final class ProductInput
             'stock_status',
             'stock_quantity',
             'weight',
+            'type',
+            'attributes',
         ];
+    }
+
+    /** @return list<AttributeInput> */
+    public function attributes(): array
+    {
+        return $this->fields['attributes'] ?? [];
     }
 
     /**
@@ -87,6 +109,10 @@ final class ProductInput
     {
         $errors = [];
         $clean = [];
+
+        // Drop the fields we ourselves emit as read-only before deciding what
+        // is "unknown" — see the READ_ONLY docblock.
+        $payload = array_diff_key($payload, array_flip(self::READ_ONLY));
 
         $unknown = array_diff(array_keys($payload), self::allowedFields());
         foreach ($unknown as $field) {
@@ -144,6 +170,7 @@ final class ProductInput
             }
         }
 
+        self::validateEnum($payload, $clean, $errors, 'type', self::TYPES);
         self::validateEnum($payload, $clean, $errors, 'status', self::STATUSES);
         self::validateEnum($payload, $clean, $errors, 'catalog_visibility', self::VISIBILITIES);
         self::validateEnum($payload, $clean, $errors, 'stock_status', self::STOCK_STATUSES);
@@ -193,6 +220,12 @@ final class ProductInput
 
         if ($errors !== []) {
             throw ApiException::invalidRequest('The product data is invalid.', ['fields' => $errors]);
+        }
+
+        // Last, so a malformed attribute list does not mask the simpler
+        // field errors above — the caller sees everything at once.
+        if (array_key_exists('attributes', $payload)) {
+            $clean['attributes'] = AttributeInput::listFromPayload($payload['attributes']);
         }
 
         return $clean;

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Products;
 
 use WC_Product;
+use WC_Product_Variation;
 
 /**
  * Shapes a WC_Product for the API.
@@ -40,6 +41,8 @@ final class ProductPresenter
             'weight' => $product->get_weight(),
             'category_ids' => array_map('intval', $product->get_category_ids()),
             'tag_ids' => array_map('intval', $product->get_tag_ids()),
+            'attributes' => self::attributes($product),
+            'variations' => array_map('intval', $product->get_children()),
             'permalink' => $product->get_permalink(),
             'date_created' => self::date($product->get_date_created()),
             'date_modified' => self::date($product->get_date_modified()),
@@ -50,6 +53,63 @@ final class ProductPresenter
     public static function toArrayList(array $products): array
     {
         return array_values(array_map([self::class, 'toArray'], $products));
+    }
+
+    /**
+     * Attributes are flattened to the same shape the write endpoints accept,
+     * so a client can GET, edit and PATCH without translating.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function attributes(WC_Product $product): array
+    {
+        $attributes = [];
+
+        foreach ($product->get_attributes() as $attribute) {
+            $options = $attribute->is_taxonomy()
+                ? array_map(static fn ($term): string => (string) $term->slug, $attribute->get_terms() ?? [])
+                : array_map('strval', $attribute->get_options());
+
+            $attributes[] = [
+                'id' => $attribute->get_id(),
+                'name' => $attribute->get_name(),
+                'options' => array_values($options),
+                'visible' => $attribute->get_visible(),
+                'variation' => $attribute->get_variation(),
+                'position' => $attribute->get_position(),
+            ];
+        }
+
+        return $attributes;
+    }
+
+    /** @return array<string, mixed> */
+    public static function variation(WC_Product_Variation $variation): array
+    {
+        return [
+            'id' => $variation->get_id(),
+            'parent_id' => $variation->get_parent_id(),
+            'sku' => $variation->get_sku(),
+            'status' => $variation->get_status(),
+            'description' => $variation->get_description(),
+            'price' => $variation->get_price(),
+            'regular_price' => $variation->get_regular_price(),
+            'sale_price' => $variation->get_sale_price(),
+            'on_sale' => $variation->is_on_sale(),
+            'manage_stock' => $variation->get_manage_stock(),
+            'stock_quantity' => $variation->get_stock_quantity(),
+            'stock_status' => $variation->get_stock_status(),
+            'weight' => $variation->get_weight(),
+            'attributes' => VariationRepository::normalizeCombination($variation->get_attributes()),
+            'date_created' => self::date($variation->get_date_created()),
+            'date_modified' => self::date($variation->get_date_modified()),
+        ];
+    }
+
+    /** @param list<WC_Product_Variation> $variations */
+    public static function variationList(array $variations): array
+    {
+        return array_values(array_map([self::class, 'variation'], $variations));
     }
 
     private static function date(mixed $date): ?string

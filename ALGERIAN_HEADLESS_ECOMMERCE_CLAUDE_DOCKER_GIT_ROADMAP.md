@@ -2119,19 +2119,6 @@ PATCH  /products/{id}
 DELETE /products/{id}
 ```
 
-Then:
-
-``` text
-search
-filtering
-pagination
-categories
-attributes
-variations
-images
-bulk operations
-```
-
 Test:
 
 ``` text
@@ -2145,7 +2132,38 @@ missing product
 duplicate SKU
 ```
 
-Only then continue to inventory.
+## Then, in slices
+
+This section is too large for one branch. Build it in the order below —
+each slice is independently reviewable, and each one's rules are inherited
+by the slices after it (bulk operations in particular should come late, so
+they wrap single-item behaviour that is already correct).
+
+``` text
+47a. CRUD + pagination + search + filtering   DONE  feat/products
+47b. attributes + variations                  DONE  feat/products
+47c. images (featured + gallery)              todo
+47d. bulk operations                          todo
+47e. duplicate, sorting, category endpoints   todo
+```
+
+**47c — images.** Assigning existing media-library attachment ids belongs
+here. *Uploading* does not: file handling brings the MIME/extension
+allowlists, size caps, metadata stripping and non-executable storage that
+`docs/PLAN.md` §24 (Media) specifies, and that work should carry its own
+security review rather than ride along inside product CRUD.
+
+**47d — bulk operations.** Delegate to the single-item service per item so
+validation, authorization and audit are inherited rather than reimplemented.
+Decide up front: a per-item result list rather than all-or-nothing, and a
+hard cap on batch size.
+
+**47e — sorting and categories.** Sorting is a list-endpoint argument.
+Category and tag *assignment* already exists through `category_ids`; a
+read endpoint for populating pickers is what is missing. Full taxonomy CRUD
+is `docs/PLAN.md` §5, not this section.
+
+Only after all of these, continue to inventory.
 
 ------------------------------------------------------------------------
 

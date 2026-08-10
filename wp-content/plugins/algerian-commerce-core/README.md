@@ -211,8 +211,45 @@ Rules worth knowing before extending it:
 Writes are recorded to the audit trail as `product.created`, `product.updated` (with a before/after
 diff and the field list), `product.trashed` and `product.deleted`.
 
-Not implemented yet — the "then" list in roadmap §47: variations, attributes, images and gallery,
-bulk operations, category and tag management, duplicate, and sorting beyond newest-first.
+### Variations and attributes
+
+Attributes come in WooCommerce's two flavours and the repository handles the difference: **global**
+(`{"id": 3, ...}`) stores term ids against a registered taxonomy, **custom** (`{"name": "Size", ...}`)
+stores plain strings on the product. `id: 0` means custom — that is what the read endpoint emits, and
+accepting it is what makes GET → edit → PATCH work.
+
+Terms are resolved, never created. A typo in an option is a 400, not a new permanent taxonomy term.
+
+```
+GET    /products/{id}/variations
+POST   /products/{id}/variations
+GET    /products/{id}/variations/{variationId}
+PATCH  /products/{id}/variations/{variationId}
+DELETE /products/{id}/variations/{variationId}
+```
+
+Variations are nested under the parent, and the service checks the variation actually belongs to the
+product in the path — `/products/5/variations/99` where 99 belongs to product 7 is a 404, not a leak.
+
+Rules enforced in `VariationService` because none of them can be checked from the payload alone:
+
+- The parent must be `type: variable` — otherwise 409 telling you to change the type first.
+- Every attribute key must be one the parent marked `variation: true`, and every value must be one of
+  that attribute's options. An empty value means "any".
+- **A duplicate attribute combination is 409.** WooCommerce happily stores two variations claiming the
+  same combination, and then only one of them is ever selectable.
+- Every write syncs the parent, which caches price range and stock status from its children.
+
+Changing `type` from simple to variable is supported: product type lives in the `product_type`
+taxonomy and the PHP class is chosen from it at load, so the repository updates the term, clears the
+caches and re-loads rather than calling a setter.
+
+### Not built yet
+
+Roadmap §47 slices `c`–`e`: images (featured and gallery), bulk operations, duplicate, sorting beyond
+newest-first, and a category read endpoint. Variation images are part of the images slice. Image
+*upload* is deliberately out of scope here — it belongs with PLAN.md §24 Media and its own security
+requirements.
 
 ## Response contract
 
