@@ -79,8 +79,12 @@ final class VariationInput
             'stock_status',
             'weight',
             'attributes',
+            'image_id',
         ];
     }
+
+    /** Read-only fields the variation endpoint emits; ignored on write. */
+    private const READ_ONLY = ['id', 'parent_id', 'price', 'on_sale', 'image', 'date_created', 'date_modified'];
 
     /** @param array<string, mixed> $payload */
     private static function normalize(array $payload): self
@@ -88,8 +92,20 @@ final class VariationInput
         $errors = [];
         $clean = [];
 
+        $payload = array_diff_key($payload, array_flip(self::READ_ONLY));
+
         foreach (array_diff(array_keys($payload), self::allowedFields()) as $field) {
             $errors[(string) $field] = 'Unknown field.';
+        }
+
+        if (array_key_exists('image_id', $payload)) {
+            if ($payload['image_id'] === null || $payload['image_id'] === '' || $payload['image_id'] === 0) {
+                $clean['image_id'] = 0;
+            } elseif (!is_numeric($payload['image_id']) || (int) $payload['image_id'] < 0) {
+                $errors['image_id'] = 'Must be an attachment id, or 0 to clear.';
+            } else {
+                $clean['image_id'] = (int) $payload['image_id'];
+            }
         }
 
         foreach (self::STRING_FIELDS as $field) {

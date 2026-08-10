@@ -244,12 +244,55 @@ Changing `type` from simple to variable is supported: product type lives in the 
 taxonomy and the PHP class is chosen from it at load, so the repository updates the term, clears the
 caches and re-loads rather than calling a setter.
 
-### Not built yet
+### Images
 
-Roadmap §47 slices `c`–`e`: images (featured and gallery), bulk operations, duplicate, sorting beyond
-newest-first, and a category read endpoint. Variation images are part of the images slice. Image
-*upload* is deliberately out of scope here — it belongs with PLAN.md §24 Media and its own security
-requirements.
+Assigned by attachment id; each id is verified to be a real image attachment before it is stored,
+because WooCommerce accepts any post id and an unchecked value yields a product whose image resolves
+to nothing. `0` clears. Products carry `image_id` + `gallery_image_ids` (writable) alongside `image`
+and `gallery` (read-only, with URLs), so a client gets the URLs without a second request and can
+still PATCH the object straight back. Variations take a single `image_id`.
+
+Image **upload** is not here. It belongs with PLAN.md §24 Media — MIME and extension allowlists, size
+caps, metadata stripping, non-executable storage — and deserves its own security review.
+
+### Bulk operations
+
+```
+POST /products/bulk
+{"action": "update", "items": [{"id": 1, "status": "draft"}, …]}
+{"action": "delete", "ids": [1, 2], "force": true}
+```
+
+Every item runs through the ordinary single-item service, so bulk inherits validation, authorization
+and audit instead of reimplementing looser copies. A failing item is recorded and the batch
+continues — a bulk price update should not abandon 99 good products because the 40th has a duplicate
+SKU.
+
+The response is **200 with a per-item result list**, not 207:
+
+```json
+{ "success": true,
+  "data": [ {"id": 26, "success": true},
+            {"id": 27, "success": false, "error": {"code": "invalid_request", …}} ],
+  "meta": { "total": 3, "succeeded": 1, "failed": 2 } }
+```
+
+Partial success is the expected outcome here rather than an exception, and the caller has to read the
+per-item results either way. Batches are capped at 100 items, and a duplicate id in one batch is
+rejected up front — two entries for one product make the result depend on ordering.
+
+### Duplicate, sorting, categories
+
+`POST /products/{id}/duplicate` copies attributes, categories, images and every variation. The copy is
+always a **draft with a cleared SKU**, so an accidental duplicate cannot appear in the storefront or
+collide on SKU. It does not use WooCommerce's own duplicator, which lives in an admin-only class that
+echoes and redirects.
+
+`GET /products?orderby=&order=` accepts `date`, `id`, `title`, `price`, `sku`, `menu_order`,
+`popularity`, `rating`, constrained by an enum so an unknown value is a 400 rather than a silent
+fallback. Lists exclude variations — those are addressed through their parent.
+
+`GET /product-categories` is read-only, paginated, filterable by `search` and `parent`.
 
 ## Response contract
 

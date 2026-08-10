@@ -124,6 +124,79 @@ final class ProductService
         ]);
     }
 
+    public function duplicate(int $id): WC_Product
+    {
+        Permissions::assert(Capabilities::MANAGE_PRODUCTS);
+
+        $source = $this->requireProduct($id);
+        $copy = $this->repository->duplicate($source);
+
+        $this->audit->record('product.duplicated', 'product', $copy->get_id(), [
+            'source_id' => $id,
+            'source_name' => $source->get_name(),
+            'variations_copied' => count($copy->get_children()),
+        ]);
+
+        return $copy;
+    }
+
+    /**
+     * Apply an action to a batch, one item at a time.
+     *
+     * Each item goes through the ordinary single-item path, so validation,
+     * authorization and audit are inherited rather than duplicated. A failure
+     * is recorded against its item and the batch continues: a bulk price
+     * update should not abandon 99 good products because the 40th has a
+     * duplicate SKU.
+     *
+     * The response is 200 with a per-item result list rather than 207. Partial
+     * success is the *expected* outcome here, not an exceptional one, and the
+     * caller must read the per-item results in either case.
+     *
+     * @return array{results: list<array<string, mixed>>, succeeded: int, failed: int}
+     */
+    public function bulk(BulkRequest $request): array
+    {
+        Permissions::assert(Capabilities::MANAGE_PRODUCTS);
+
+        $results = [];
+        $succeeded = 0;
+
+        foreach ($request->items as $item) {
+            $id = (int) $item['id'];
+
+            try {
+                if ($request->action === 'delete') {
+                    $this->delete($id, $request->force);
+                } else {
+                    $fields = $item;
+                    unset($fields['id']);
+                    $this->update($id, $fields);
+                }
+
+                $results[] = ['id' => $id, 'success' => true];
+                $succeeded++;
+            } catch (ApiException $exception) {
+                $results[] = [
+                    'id' => $id,
+                    'success' => false,
+                    'error' => $exception->toPayload()['error'],
+                ];
+            }
+        }
+
+        $failed = count($results) - $succeeded;
+
+        $this->audit->record('product.bulk_' . $request->action, 'product', '', [
+            'total' => $request->count(),
+            'succeeded' => $succeeded,
+            'failed' => $failed,
+            'ids' => array_column($results, 'id'),
+        ]);
+
+        return ['results' => $results, 'succeeded' => $succeeded, 'failed' => $failed];
+    }
+
     private function requireProduct(int $id): WC_Product
     {
         $product = $this->repository->find($id);

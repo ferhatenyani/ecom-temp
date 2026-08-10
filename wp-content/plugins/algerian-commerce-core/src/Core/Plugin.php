@@ -15,6 +15,7 @@ use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
 use AlgerianCommerce\Core\Migrations\MigrationRunner;
 use AlgerianCommerce\Permissions\Roles;
+use AlgerianCommerce\Products\ProductCategoryController;
 use AlgerianCommerce\Products\ProductController;
 use AlgerianCommerce\Products\ProductRepository;
 use AlgerianCommerce\Products\ProductService;
@@ -105,6 +106,7 @@ final class Plugin
             new AuditLogController($this->logger(), $this->auditRepository()),
             new ProductController($this->logger(), $this->productService()),
             new VariationController($this->logger(), $this->variationService()),
+            new ProductCategoryController($this->logger()),
         ]);
     }
 

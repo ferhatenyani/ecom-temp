@@ -49,6 +49,21 @@ final class ProductController extends AbstractController
             ],
         ]);
 
+        // Registered before the {id} routes so "bulk" is never matched as an
+        // id by a future non-numeric pattern.
+        register_rest_route($this->restNamespace(), '/products/bulk', [
+            'methods' => 'POST',
+            'callback' => $this->handle([$this, 'bulk']),
+            'permission_callback' => $guard,
+        ]);
+
+        register_rest_route($this->restNamespace(), '/products/(?P<id>\d+)/duplicate', [
+            'methods' => 'POST',
+            'callback' => $this->handle([$this, 'duplicate']),
+            'permission_callback' => $guard,
+            'args' => $this->idArg(),
+        ]);
+
         register_rest_route($this->restNamespace(), '/products/(?P<id>\d+)', [
             [
                 'methods' => 'GET',
@@ -124,6 +139,16 @@ final class ProductController extends AbstractController
                 'minimum' => 1,
                 'sanitize_callback' => 'absint',
             ],
+            'orderby' => [
+                'type' => 'string',
+                'default' => 'date',
+                'enum' => ProductInput::ORDERBY,
+            ],
+            'order' => [
+                'type' => 'string',
+                'default' => 'desc',
+                'enum' => ['asc', 'desc'],
+            ],
         ];
     }
 
@@ -139,6 +164,8 @@ final class ProductController extends AbstractController
             'sku' => (string) $request->get_param('sku'),
             'status' => (string) $request->get_param('status'),
             'category' => (int) $request->get_param('category'),
+            'orderby' => (string) $request->get_param('orderby'),
+            'order' => (string) $request->get_param('order'),
         ]);
 
         return Response::success(
@@ -176,6 +203,31 @@ final class ProductController extends AbstractController
         $this->service->delete($id, (bool) $request->get_param('force'));
 
         return Response::success(['id' => $id, 'deleted' => true]);
+    }
+
+    public function duplicate(WP_REST_Request $request): WP_REST_Response
+    {
+        $copy = $this->service->duplicate((int) $request->get_param('id'));
+
+        return Response::success(ProductPresenter::toArray($copy), 201);
+    }
+
+    /**
+     * Always 200, even when some items failed — see ProductService::bulk().
+     */
+    public function bulk(WP_REST_Request $request): WP_REST_Response
+    {
+        $result = $this->service->bulk(BulkRequest::fromPayload($this->payload($request)));
+
+        return Response::success(
+            $result['results'],
+            200,
+            [
+                'total' => count($result['results']),
+                'succeeded' => $result['succeeded'],
+                'failed' => $result['failed'],
+            ]
+        );
     }
 
     /**

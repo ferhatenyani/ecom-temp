@@ -43,6 +43,16 @@ final class ProductPresenter
             'tag_ids' => array_map('intval', $product->get_tag_ids()),
             'attributes' => self::attributes($product),
             'variations' => array_map('intval', $product->get_children()),
+            // Writable ids plus a read-only enriched form, so a client has
+            // the URLs without a second request and can still PATCH the
+            // object straight back.
+            'image_id' => (int) $product->get_image_id(),
+            'gallery_image_ids' => array_map('intval', $product->get_gallery_image_ids()),
+            'image' => self::image((int) $product->get_image_id()),
+            'gallery' => array_values(array_filter(array_map(
+                [self::class, 'image'],
+                array_map('intval', $product->get_gallery_image_ids())
+            ))),
             'permalink' => $product->get_permalink(),
             'date_created' => self::date($product->get_date_created()),
             'date_modified' => self::date($product->get_date_modified()),
@@ -83,6 +93,30 @@ final class ProductPresenter
         return $attributes;
     }
 
+    /**
+     * @return array<string, mixed>|null null when there is no image, or when
+     *         the attachment has since been deleted
+     */
+    private static function image(int $id): ?array
+    {
+        if ($id <= 0) {
+            return null;
+        }
+
+        $src = wp_get_attachment_image_url($id, 'full');
+
+        if ($src === false) {
+            return null;
+        }
+
+        return [
+            'id' => $id,
+            'src' => $src,
+            'thumbnail' => wp_get_attachment_image_url($id, 'woocommerce_thumbnail') ?: $src,
+            'alt' => (string) get_post_meta($id, '_wp_attachment_image_alt', true),
+        ];
+    }
+
     /** @return array<string, mixed> */
     public static function variation(WC_Product_Variation $variation): array
     {
@@ -101,6 +135,8 @@ final class ProductPresenter
             'stock_status' => $variation->get_stock_status(),
             'weight' => $variation->get_weight(),
             'attributes' => VariationRepository::normalizeCombination($variation->get_attributes()),
+            'image_id' => (int) $variation->get_image_id(),
+            'image' => self::image((int) $variation->get_image_id()),
             'date_created' => self::date($variation->get_date_created()),
             'date_modified' => self::date($variation->get_date_modified()),
         ];

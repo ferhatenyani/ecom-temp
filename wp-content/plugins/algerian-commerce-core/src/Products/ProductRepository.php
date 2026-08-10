@@ -9,6 +9,7 @@ use WC_Product;
 use WC_Product_Attribute;
 use WC_Product_Simple;
 use WC_Product_Variable;
+use WC_Product_Variation;
 
 /**
  * The WooCommerce adapter for products.
@@ -39,10 +40,15 @@ final class ProductRepository
             'limit' => $criteria['per_page'],
             'page' => $criteria['page'],
             'paginate' => true,
-            'orderby' => 'date',
-            'order' => 'DESC',
+            'orderby' => in_array($criteria['orderby'] ?? '', ProductInput::ORDERBY, true)
+                ? $criteria['orderby']
+                : 'date',
+            'order' => strtoupper((string) ($criteria['order'] ?? '')) === 'ASC' ? 'ASC' : 'DESC',
             // Without this WooCommerce returns only published products.
             'status' => ['draft', 'pending', 'private', 'publish'],
+            // Variations are addressed through their parent, never listed
+            // alongside top-level products.
+            'type' => ['simple', 'variable'],
         ];
 
         if (!empty($criteria['status'])) {
@@ -172,6 +178,104 @@ final class ProductRepository
         if ($input->has('attributes')) {
             $product->set_attributes($this->buildAttributes($input->attributes()));
         }
+
+        if ($input->has('image_id')) {
+            $this->assertImageAttachment((int) $input->get('image_id'), 'image_id');
+            $product->set_image_id((int) $input->get('image_id'));
+        }
+
+        if ($input->has('gallery_image_ids')) {
+            /** @var list<int> $ids */
+            $ids = $input->get('gallery_image_ids');
+
+            foreach ($ids as $id) {
+                $this->assertImageAttachment($id, 'gallery_image_ids');
+            }
+
+            $product->set_gallery_image_ids($ids);
+        }
+    }
+
+    /**
+     * Attachment ids are checked before they are stored.
+     *
+     * WooCommerce accepts any post id here, so an unchecked value produces a
+     * product whose image silently resolves to nothing — or to an unrelated
+     * post. 0 is the documented "no image" value.
+     */
+    public function assertImageAttachment(int $id, string $field): void
+    {
+        if ($id === 0) {
+            return;
+        }
+
+        $post = get_post($id);
+
+        if (!is_object($post) || $post->post_type !== 'attachment' || !wp_attachment_is_image($id)) {
+            throw ApiException::invalidRequest('The product data is invalid.', [
+                'fields' => [$field => "{$id} is not an image attachment."],
+            ]);
+        }
+    }
+
+    /**
+     * Copy a product, including its attributes and variations.
+     *
+     * Deliberately not WooCommerce's own duplicator: that lives in
+     * `WC_Admin_Duplicate_Product`, an admin-only class that echoes and
+     * redirects, neither of which belongs in a REST request.
+     */
+    public function duplicate(WC_Product $product): WC_Product
+    {
+        $data = $product->get_data();
+
+        // Identity, derived values and anything that must not be inherited.
+        foreach ([
+            'id', 'slug', 'sku', 'date_created', 'date_modified', 'permalink',
+            'price', 'total_sales', 'rating_counts', 'average_rating', 'review_count',
+            'children', 'variations', 'date_on_sale_from', 'date_on_sale_to',
+        ] as $key) {
+            unset($data[$key]);
+        }
+
+        $class = $product->get_type() === 'variable' ? WC_Product_Variable::class : WC_Product_Simple::class;
+
+        /** @var WC_Product $copy */
+        $copy = new $class();
+        $copy->set_props($data);
+        $copy->set_attributes($product->get_attributes());
+        $copy->set_name($product->get_name() . ' (copy)');
+        // A copy starts as a draft: an accidental duplicate must never appear
+        // in the storefront before someone has looked at it.
+        $copy->set_status('draft');
+        $copy->set_sku('');
+        $copy->save();
+
+        foreach ($product->get_children() as $childId) {
+            $child = wc_get_product($childId);
+
+            if (!$child instanceof WC_Product_Variation) {
+                continue;
+            }
+
+            $childData = $child->get_data();
+            foreach (['id', 'slug', 'sku', 'date_created', 'date_modified', 'permalink', 'price'] as $key) {
+                unset($childData[$key]);
+            }
+
+            $copyChild = new WC_Product_Variation();
+            $copyChild->set_props($childData);
+            $copyChild->set_parent_id($copy->get_id());
+            $copyChild->set_attributes($child->get_attributes());
+            $copyChild->set_sku('');
+            $copyChild->save();
+        }
+
+        if ($copy->get_type() === 'variable') {
+            WC_Product_Variable::sync($copy->get_id());
+        }
+
+        return $this->find($copy->get_id()) ?? $copy;
     }
 
     /**

@@ -23,6 +23,9 @@ final class ProductInput
     public const STOCK_STATUSES = ['instock', 'outofstock', 'onbackorder'];
     public const TYPES = ['simple', 'variable'];
 
+    /** Sortable columns for the list endpoint. */
+    public const ORDERBY = ['date', 'id', 'title', 'price', 'sku', 'menu_order', 'popularity', 'rating'];
+
     /**
      * Fields this API emits on read but never accepts on write.
      *
@@ -34,12 +37,15 @@ final class ProductInput
     private const READ_ONLY = [
         'id', 'price', 'on_sale', 'permalink',
         'date_created', 'date_modified', 'variations',
+        // Enriched read shapes. The writable forms are image_id and
+        // gallery_image_ids, which the presenter also emits.
+        'image', 'gallery',
     ];
 
     private const STRING_FIELDS = ['name', 'slug', 'description', 'short_description', 'sku'];
     private const PRICE_FIELDS = ['regular_price', 'sale_price'];
     private const BOOL_FIELDS = ['featured', 'manage_stock'];
-    private const INT_LIST_FIELDS = ['category_ids', 'tag_ids'];
+    private const INT_LIST_FIELDS = ['category_ids', 'tag_ids', 'gallery_image_ids'];
 
     /** @param array<string, mixed> $fields */
     private function __construct(public readonly array $fields)
@@ -90,6 +96,7 @@ final class ProductInput
             'weight',
             'type',
             'attributes',
+            'image_id',
         ];
     }
 
@@ -182,6 +189,17 @@ final class ProductInput
                 $errors['stock_quantity'] = 'Must be a whole number of zero or more.';
             } else {
                 $clean['stock_quantity'] = (int) $payload['stock_quantity'];
+            }
+        }
+
+        if (array_key_exists('image_id', $payload)) {
+            // 0 or null clears the featured image, which is a real edit.
+            if ($payload['image_id'] === null || $payload['image_id'] === '' || $payload['image_id'] === 0) {
+                $clean['image_id'] = 0;
+            } elseif (!is_numeric($payload['image_id']) || (int) $payload['image_id'] < 0) {
+                $errors['image_id'] = 'Must be an attachment id, or 0 to clear.';
+            } else {
+                $clean['image_id'] = (int) $payload['image_id'];
             }
         }
 

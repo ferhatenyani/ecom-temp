@@ -143,6 +143,11 @@ final class VariationRepository
             }
         }
 
+        if ($input->has('image_id')) {
+            (new ProductRepository())->assertImageAttachment((int) $input->get('image_id'), 'image_id');
+            $variation->set_image_id((int) $input->get('image_id'));
+        }
+
         if ($input->attributes !== null) {
             $variation->set_attributes($input->attributes);
         }
