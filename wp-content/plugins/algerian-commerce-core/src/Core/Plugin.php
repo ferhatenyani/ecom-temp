@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Core;
 
 use AlgerianCommerce\API\AuditLogController;
+use AlgerianCommerce\API\Cors;
 use AlgerianCommerce\API\HealthController;
+use AlgerianCommerce\API\OriginPolicy;
 use AlgerianCommerce\API\RestApi;
 use AlgerianCommerce\Audit\AuditLogger;
 use AlgerianCommerce\Audit\AuditRepository;
@@ -34,6 +36,7 @@ final class Plugin
     private ?Logger $logger = null;
     private ?RestApi $restApi = null;
     private ?MigrationRunner $migrations = null;
+    private ?Cors $cors = null;
     private ?Roles $roles = null;
     private ?AuditRepository $auditRepository = null;
     private ?AuditLogger $auditLogger = null;
@@ -57,6 +60,7 @@ final class Plugin
         $this->booted = true;
 
         $this->restApi()->register();
+        $this->cors()->register();
         $this->registerCliCommands();
 
         $this->logger()->debug('Plugin booted', ['version' => VERSION]);
@@ -91,6 +95,14 @@ final class Plugin
             new HealthController($this->logger()),
             new AuditLogController($this->logger(), $this->auditRepository()),
         ]);
+    }
+
+    public function cors(): Cors
+    {
+        return $this->cors ??= new Cors(
+            OriginPolicy::fromList($this->config()->get('AC_CORS_ORIGINS')),
+            $this->logger()
+        );
     }
 
     public function roles(): Roles

@@ -44,6 +44,7 @@ final class Config
             'SMTP_USERNAME',
             'SMTP_PASSWORD',
             'AC_LOG_LEVEL',
+            'AC_CORS_ORIGINS',
         ];
 
         $env = [];
