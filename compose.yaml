@@ -1,7 +1,14 @@
 services:
 
+  # Versions are pinned to the exact builds this stack was verified against —
+  # WordPress 7.0.2, WP-CLI 2.12.0, MySQL 8.0.46, with WooCommerce 11.0.0 and
+  # PHP 8.3. `latest` meant a routine `docker compose pull` could swap a major
+  # version underneath the plugin with no changelog review, which is precisely
+  # what CLAUDE.md's "pin versions once the environment is known-good" forbids.
+  # Upgrade one image at a time, on a branch, and re-run the suites.
+
   db:
-    image: mysql:8.0
+    image: mysql:8.0.46
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: wordpress
@@ -12,17 +19,23 @@ services:
       - db_data:/var/lib/mysql
 
   wordpress:
-    image: wordpress:latest
+    image: wordpress:7.0.2-apache
     restart: unless-stopped
     depends_on:
       - db
     ports:
-      - "8090:80"
+      - "${WP_PORT:-8090}:80"
     environment:
       WORDPRESS_DB_HOST: db:3306
       WORDPRESS_DB_USER: wordpress
       WORDPRESS_DB_PASSWORD: ${DB_PASSWORD}
       WORDPRESS_DB_NAME: wordpress
+      # WordPress refuses Application Passwords unless the request is HTTPS or
+      # the environment declares itself local (wp_is_application_passwords_supported).
+      # Development is plain HTTP, so without this the Next.js server cannot
+      # authenticate at all. Staging and production run TLS and must override
+      # this to "staging" / "production".
+      WP_ENVIRONMENT_TYPE: ${WP_ENVIRONMENT_TYPE:-local}
       # Plugin configuration read via getenv() in AlgerianCommerce\Core\Config.
       # Add feature flags (ENABLE_COD, ...) here the same way when needed.
       AC_CORS_ORIGINS: ${AC_CORS_ORIGINS:-}
@@ -33,7 +46,7 @@ services:
       - ./docker/apache-wordpress.conf:/etc/apache2/conf-enabled/zz-wordpress.conf:ro
 
   wpcli:
-    image: wordpress:cli
+    image: wordpress:cli-2.12.0
     depends_on:
       - db
       - wordpress
@@ -42,6 +55,12 @@ services:
       WORDPRESS_DB_USER: wordpress
       WORDPRESS_DB_PASSWORD: ${DB_PASSWORD}
       WORDPRESS_DB_NAME: wordpress
+      # WordPress refuses Application Passwords unless the request is HTTPS or
+      # the environment declares itself local (wp_is_application_passwords_supported).
+      # Development is plain HTTP, so without this the Next.js server cannot
+      # authenticate at all. Staging and production run TLS and must override
+      # this to "staging" / "production".
+      WP_ENVIRONMENT_TYPE: ${WP_ENVIRONMENT_TYPE:-local}
       # Plugin configuration read via getenv() in AlgerianCommerce\Core\Config.
       # Add feature flags (ENABLE_COD, ...) here the same way when needed.
       AC_CORS_ORIGINS: ${AC_CORS_ORIGINS:-}

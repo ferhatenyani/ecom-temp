@@ -32,14 +32,7 @@ final class VariationController extends AbstractController
     public function registerRoutes(): void
     {
         $guard = Permissions::callback(Capabilities::MANAGE_PRODUCTS);
-        $parent = [
-            'id' => [
-                'type' => 'integer',
-                'required' => true,
-                'minimum' => 1,
-                'sanitize_callback' => 'absint',
-            ],
-        ];
+        $parent = $this->idArg();
 
         register_rest_route($this->restNamespace(), '/products/(?P<id>\d+)/variations', [
             [
@@ -56,14 +49,7 @@ final class VariationController extends AbstractController
             ],
         ]);
 
-        $withVariation = $parent + [
-            'variation_id' => [
-                'type' => 'integer',
-                'required' => true,
-                'minimum' => 1,
-                'sanitize_callback' => 'absint',
-            ],
-        ];
+        $withVariation = $parent + $this->idArg('variation_id');
 
         register_rest_route(
             $this->restNamespace(),

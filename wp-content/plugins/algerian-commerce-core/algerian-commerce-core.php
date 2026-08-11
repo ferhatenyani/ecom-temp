@@ -29,7 +29,7 @@ const VERSION = '0.1.0';
  * Schema version for custom tables. Bump when a migration is added under
  * migrations/ — see docs/ARCHITECTURE.md §7.
  */
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 /** REST namespace every route in this plugin registers under. */
 const REST_NAMESPACE = 'algerian-commerce/v1';
@@ -52,6 +52,30 @@ if (is_readable(AC_CORE_PATH . 'vendor/autoload.php')) {
 
 register_activation_hook(__FILE__, [Plugin::class, 'activate']);
 register_deactivation_hook(__FILE__, [Plugin::class, 'deactivate']);
+
+/*
+ * Declare compatibility with High-Performance Order Storage.
+ *
+ * WooCommerce blocks the HPOS switch when any active plugin has not declared
+ * itself compatible, and treats silence as "unknown", not "fine". This must be
+ * registered at file load — `before_woocommerce_init` fires before the
+ * `plugins_loaded` boot below — and the second argument has to be this file,
+ * because WooCommerce keys compatibility by plugin main file.
+ *
+ * The claim is honest: order data is reached through wc_get_order() and the
+ * WC_Order CRUD, never through get_post()/get_post_meta() or $wpdb, so the
+ * storage backend is invisible to this plugin. Keep it that way — writing to
+ * wp_posts directly is what the declaration promises not to do.
+ */
+add_action('before_woocommerce_init', static function (): void {
+    if (class_exists(\Automattic\WooCommerce\Utilities\FeaturesUtil::class)) {
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility(
+            'custom_order_tables',
+            AC_CORE_FILE,
+            true
+        );
+    }
+});
 
 /*
  * plugins_loaded rather than an immediate call: WooCommerce must be loaded

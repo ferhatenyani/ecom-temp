@@ -34,23 +34,16 @@ final class ProductCategoryController extends AbstractController
             'methods' => 'GET',
             'callback' => $this->handle([$this, 'index']),
             'permission_callback' => Permissions::callback(Capabilities::MANAGE_PRODUCTS),
-            'args' => [
+            'args' => $this->paginationArgs(Response::MAX_PER_PAGE) + [
                 'search' => ['type' => 'string', 'sanitize_callback' => 'sanitize_text_field'],
-                'parent' => ['type' => 'integer', 'minimum' => 0, 'sanitize_callback' => 'absint'],
+                // 0 is a real value here — the top level of the hierarchy.
+                'parent' => [
+                    'type' => 'integer',
+                    'minimum' => 0,
+                    'validate_callback' => 'rest_validate_request_arg',
+                    'sanitize_callback' => 'absint',
+                ],
                 'hide_empty' => ['type' => 'boolean', 'default' => false],
-                'per_page' => [
-                    'type' => 'integer',
-                    'default' => Response::MAX_PER_PAGE,
-                    'minimum' => 1,
-                    'maximum' => Response::MAX_PER_PAGE,
-                    'sanitize_callback' => 'absint',
-                ],
-                'page' => [
-                    'type' => 'integer',
-                    'default' => 1,
-                    'minimum' => 1,
-                    'sanitize_callback' => 'absint',
-                ],
             ],
         ]);
     }

@@ -19,7 +19,7 @@ if (!defined('AC_CORE_PATH')) {
 
 if (!defined('AlgerianCommerce\VERSION')) {
     define('AlgerianCommerce\VERSION', '0.1.0');
-    define('AlgerianCommerce\DB_VERSION', 1);
+    define('AlgerianCommerce\DB_VERSION', 2);
     define('AlgerianCommerce\REST_NAMESPACE', 'algerian-commerce/v1');
 }
 

@@ -14,8 +14,9 @@ PSR-4 autoloading, configuration and feature flags, logging with secret redactio
 `algerian-commerce/v1` namespace, the shared response envelope, error handling, the health endpoint,
 the migration runner, roles and capabilities, and audit recording.
 
-Milestone 5 is complete and roadmap §47 (product CRUD) is in. Not implemented yet: rate limiting, orders, customers, inventory,
-shipping, payments, CMS.
+Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory) and §44 (authentication) are in,
+along with rate limiting. Not implemented yet: 2FA, customer sessions, orders, customers, shipping,
+payments, CMS.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -23,12 +24,18 @@ src/Core/                    Autoloader, Config, Logger, Plugin (wiring + lifecy
 src/Core/Migrations/         Migration interface, MigrationPlan (ordering), MigrationRunner
 src/Permissions/             Capabilities (the matrix), Roles (install), Permissions (enforcement)
 src/Audit/                   AuditEvent, AuditRepository, AuditLogger
+src/Auth/                    AuthController (/auth/me), AuthService, Identity
+src/Security/                RateLimit, RateLimitStore, RateLimiter, RateLimitGuard
 src/Products/                ProductController, ProductService, ProductInput,
                              ProductRepository, ProductPresenter
+src/Inventory/               InventoryController, InventoryService, StockAdjustment,
+                             InventorySettingsInput, BulkStockRequest, InventoryRepository,
+                             MovementReason, InventoryMovement, MovementRepository, StockLedger,
+                             InventoryPresenter
 src/API/                     Response envelope, ApiException, ErrorNormalizer, Cors, OriginPolicy,
                              AbstractController, RestApi, HealthController, AuditLogController
 src/CLI/                     WP-CLI commands
-migrations/                  001_create_audit_logs.php, …
+migrations/                  001_create_audit_logs.php, 002_create_inventory_movements.php, …
 tests/Unit/                  unit tests — no WordPress required
 ```
 
@@ -43,6 +50,15 @@ tests/Unit/                  unit tests — no WordPress required
 | GET | `/products/{id}` | `ac_manage_products` | read |
 | PATCH | `/products/{id}` | `ac_manage_products` | partial update |
 | DELETE | `/products/{id}` | `ac_manage_products` | trash, or `?force=true` to delete permanently |
+| GET | `/inventory` | `ac_manage_inventory` | stock levels (paginated; `search`, `sku`, `status`, `category`, `stock_status`, `manage_stock`, `include_variations`) |
+| GET | `/inventory/{id}` | `ac_manage_inventory` | one product's or variation's stock |
+| PATCH | `/inventory/{id}` | `ac_manage_inventory` | stock **settings** — `manage_stock`, `stock_status`, `backorders`, `low_stock_amount` |
+| POST | `/inventory/{id}/adjust` | `ac_manage_inventory` | move a **quantity** → movement + audit |
+| POST | `/inventory/bulk` | `ac_manage_inventory` | batch adjustments → 200 with per-item results |
+| GET | `/inventory/lookup?sku=` | `ac_manage_inventory` | exact SKU lookup → the item, or 404 |
+| GET | `/inventory/low-stock` | `ac_manage_inventory` | low-stock report, lowest first |
+| GET | `/inventory/movements` | `ac_manage_inventory` | the ledger (paginated; `product_id`, `reason`, `order_id`, `actor_id`, `date_from`, `date_to`) |
+| GET | `/inventory/movements/summary` | `ac_manage_inventory` | net change and movement count per reason |
 
 ```bash
 curl http://localhost:8090/wp-json/algerian-commerce/v1/health
@@ -88,10 +104,148 @@ Rules that the runner enforces or relies on:
 | Table | Since | Purpose |
 | --- | --- | --- |
 | `{prefix}ac_audit_logs` | 001 | append-only record of privileged actions |
+| `{prefix}ac_inventory_movements` | 002 | append-only stock ledger — every change to a quantity |
 
 `ac_audit_logs` is indexed on `actor_id`, `action`, `(resource_type, resource_id)` and `created_at`.
 Rows are never updated; `created_at` is indexed so retention pruning is a ranged `DELETE`. The
 retention window is a client policy decision and is not enforced by the schema.
+
+`ac_inventory_movements` is indexed on `product_id`, `created_at`, `reason` and `order_id`.
+Quantities are **signed** bigints: negative stock is how a backordered line is represented, and
+integers keep `SUM()` exact. WooCommerce's `wc_stock_amount()` casts to int unless a store filters
+it, so a shop selling by weight needs a forward migration to widen those columns.
+
+## Authentication
+
+Roadmap §44. **There is no login endpoint here, and that is the design.** WordPress verifies an
+Application Password sent as HTTP Basic auth on `determine_current_user`, before any route in this
+plugin runs. Issuing our own tokens would mean owning a credential store, rotation and revocation
+that core already provides and that other people already audit.
+
+```
+Browser  →  Next.js server  →  WordPress API
+            (holds the Application Password)
+```
+
+The credential belongs to a dedicated service account, never to a human's login, and never reaches
+browser JavaScript. Application Passwords are individually revocable, so one integration can be cut
+off without touching anything else.
+
+```bash
+# create the service account and its credential
+docker compose run --rm wpcli wp user create ac_service svc@example.dz --role=ac_admin
+docker compose run --rm wpcli wp user application-password create ac_service nextjs-server
+
+curl -u "ac_service:xxxx xxxx xxxx xxxx" \
+  http://localhost:8090/wp-json/algerian-commerce/v1/auth/me
+```
+
+**`wp_is_application_passwords_supported()` is `is_ssl() || 'local' === wp_get_environment_type()`.**
+Development is plain HTTP, so `compose.yaml` sets `WP_ENVIRONMENT_TYPE=local` — without it every
+request is rejected and the cause is invisible. Staging and production run TLS and must set the
+variable to their real environment instead.
+
+Basic auth survives this stack because mod_php populates `PHP_AUTH_USER` / `PHP_AUTH_PW`, which is
+what core reads. The raw `Authorization` header does *not* reach PHP through the rewrite — worth
+knowing before anyone adds a Bearer-token scheme, which would need `CGIPassAuth On` or a
+`SetEnvIf` in [docker/apache-wordpress.conf](../../../docker/apache-wordpress.conf).
+
+| Method | Route | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/auth/me` | any signed-in caller | identity, roles and this plugin's capabilities |
+
+`/auth/me` is what the Next.js server calls at startup to confirm its credential is valid and
+carries the capabilities it expects, rather than discovering a misconfigured account on the first
+customer order. Two rules about its response:
+
+- **The capability list is for rendering, never for access control.** Every route still enforces its
+  own `permission_callback` and every service still calls `Permissions::assert()`.
+- **Only this plugin's `ac_` capabilities are returned.** A WordPress administrator carries dozens of
+  core capabilities (`install_plugins`, `edit_themes`) that say nothing about commerce and would hand
+  a client a map of the platform underneath. Denied capabilities (`allcaps` entries set to `false`)
+  are dropped too — a present key is not a grant.
+
+Still outstanding for §44: **2FA for privileged users** (PLAN §3, SECURITY.md) and a customer-facing
+session strategy. Customers must not use Application Passwords — that is a server-to-server
+mechanism, and SECURITY.md calls for HTTP-only cookie sessions on the storefront.
+
+## Rate limiting
+
+docs/SECURITY.md, docs/PLAN.md §35. Scoped to `algerian-commerce/v1` only — throttling `wp/v2` or
+`wc/v3` would change behaviour other code depends on, exactly as the CORS handler leaves them alone.
+
+| Limit | Default | Window | Keyed on |
+| --- | --- | --- | --- |
+| reads | 600 | 1 min | identity **and** IP |
+| writes | 120 | 1 min | identity **and** IP |
+| failed authentications | 10 | 15 min | IP |
+
+Both counters run on every guarded request and the stricter wins: the identity counter bounds one
+compromised credential, the IP counter bounds a flood that has no identity yet. Over-limit returns
+**429 with `Retry-After`**, and rejections are logged — a blocked request leaves no other
+server-side trace.
+
+**The authentication limit is the one that matters most.** Enabling Application Passwords put a
+credential-guessing surface on the network, and WordPress does not throttle it at all.
+
+Two hooks close it, and the second is not optional:
+
+- `wp_is_application_passwords_available` returns false for a blocked address, so core never
+  attempts the password comparison. Skipping that hash is what stops the endpoint being a CPU oracle.
+- `rest_authentication_errors` turns the resulting 401 into a 429.
+
+`rest_pre_dispatch` alone is **not** enough, and it is worth knowing why: when Basic auth
+credentials are present and wrong, core fails the request during authentication and serves 401
+without ever dispatching. A guard that only runs at dispatch watches an attacker walk straight past
+it, answering 401 to every attempt forever. That is exactly what the first version of this did, and
+only a live test caught it — the unit tests were perfectly green.
+
+### The availability trade
+
+The lockout is keyed on IP, so an attacker guessing against a known service account locks out
+everyone sharing that address — **including the Next.js server**. Every brute-force defence makes
+this trade; this is the escape hatch it has to ship with:
+
+```bash
+AC_RATE_LIMIT_TRUSTED_IPS=203.0.113.7      # the application server
+```
+
+A trusted address skips the lockout but is still rate limited normally. Exact IPs only —
+CIDR ranges and hostnames are dropped rather than honoured, so a typo cannot silently exempt
+something unintended. `AC_RATE_LIMIT_DISABLED=true` is the blunt kill switch.
+
+**How wide is the blast radius, really?** Narrower than it first looks. The counter is keyed on IP,
+so an attacker on a different address cannot lock out your application server — that is the point of
+keying on IP. The exposure is a shared egress address: an attacker behind the same NAT as the
+Next.js server, which `AC_RATE_LIMIT_TRUSTED_IPS` is there to cover.
+
+### Getting back in
+
+Counter keys are hashed, so there is no transient name to guess. Recovery is a command:
+
+```bash
+docker compose run --rm wpcli wp algerian-commerce unlock 203.0.113.7
+# Success: Cleared 10 recorded failure(s) for 203.0.113.7 (backend: transient).
+```
+
+The address is the one WordPress sees in `REMOTE_ADDR`, which behind Docker is the gateway rather
+than your laptop — `docker compose logs wordpress` shows it in the access lines.
+
+### Where the boundary falls
+
+The failure from the request in flight is recorded during authentication, before
+`rest_authentication_errors` runs. The request that spends the last of the budget therefore reports
+**429 rather than 401** — a caller is told the moment it is exhausted rather than one request later.
+
+### Storage
+
+Counters prefer a persistent object cache, where `wp_cache_incr()` is atomic. Without one they fall
+back to transients, which is a read-then-write and can **undercount** under concurrency — it lets a
+few extra requests through, and can never lock out a legitimate caller. That is a deliberate,
+bounded compromise, not an oversight. **Run a persistent object cache in production**; without one
+these counters also land in the options table. The window is fixed, not sliding: a caller can spend
+one allowance at the end of a window and another at the start of the next. It bounds sustained
+abuse, which is the job; it is not a traffic shaper.
 
 ## Roles and capabilities
 
@@ -294,6 +448,101 @@ fallback. Lists exclude variations — those are addressed through their parent.
 
 `GET /product-categories` is read-only, paginated, filterable by `search` and `parent`.
 
+## Inventory
+
+Roadmap §49, docs/PLAN.md §7. One rule shapes the whole module:
+
+> A **quantity** changes only through `POST /inventory/{id}/adjust`, and every adjustment writes a
+> ledger row. **Settings** change through `PATCH /inventory/{id}` and write no ledger row, because
+> no units moved.
+
+That is why `PATCH /inventory/{id}` rejects `stock_quantity` with a message naming the adjust
+endpoint rather than a bare "Unknown field."
+
+```
+InventoryController     routes, args schema, JSON body → service
+InventoryService        authorization, state guards, ledger + audit
+StockAdjustment         mode/quantity/reason validation and arithmetic (pure)
+InventorySettingsInput  settings validation (pure)
+BulkStockRequest        batch shape (pure)
+InventoryRepository     the only place that knows WooCommerce's stock API exists
+MovementRepository      the only place that touches ac_inventory_movements
+StockLedger             writes movements; shared with the product/variation services
+InventoryPresenter      the wire format
+```
+
+### Adjusting
+
+```jsonc
+POST /inventory/12/adjust
+{ "mode": "set" | "increase" | "decrease", "quantity": 12, "reason": "restock", "note": "PO 4471" }
+```
+
+- **`increase` / `decrease` are race-safe; `set` is not.** WooCommerce applies the first two as a
+  relative SQL update (`meta_value = meta_value - n`), so two concurrent decrements compose. `set`
+  is last-writer-wins. Receiving or writing off goods should use the relative modes; a stock count
+  uses `set`.
+- **The recorded delta comes from what WooCommerce wrote**, not from the request, and
+  `quantity_before` is derived as `after - delta`. Pairing a stale read with a fresh write would
+  produce rows that do not balance.
+- **Adjusting a product that does not manage stock is 409**, not a silent success —
+  `wc_update_product_stock()` no-ops in that case.
+- **Driving stock below zero is 409** unless the product allows backorders, which is the only
+  legitimate way for stock to go negative.
+- **A variation that inherits its parent's stock** is adjusted through either id, but the movement
+  records `stock_managed_by_id` — the row WooCommerce actually decrements.
+
+### Reasons
+
+A closed vocabulary, because the ledger exists to be grouped and summed. Manual reasons —
+`correction`, `restock`, `damage`, `loss`, `customer_return`, `other` — are the only ones the API
+accepts. System reasons are written by the plugin alone:
+
+| Reason | Written by |
+| --- | --- |
+| `product_edit` | a `stock_quantity` sent to the product or variation write endpoints |
+| `order_reduced`, `order_restored` | reserved for §50; **nothing writes them yet** |
+
+The split is a security boundary: if `order_reduced` were settable by hand, a person could forge
+rows that read as though an order caused them. A system reason on `/adjust` is rejected with the
+same message as an unknown one, so the error does not confirm which reasons exist.
+
+### The ledger has no gaps
+
+`StockLedger` is injected into `ProductService` and `VariationService` too, because their write
+endpoints also accept a `stock_quantity`. Creating a product with stock opens the ledger at that
+quantity. Without this, a movement's `quantity_before` would not match the previous row's
+`quantity_after` and nobody could explain the difference.
+
+**Known gap:** WooCommerce reduces stock itself when an order is placed, and nothing records that
+yet — it arrives with roadmap §50, which is what the `order_id` column and the two order reasons
+are for. Until then the ledger accounts for every change made *through this API*, and a shop taking
+live orders will show unexplained jumps.
+
+A failed ledger write logs an error but does not fail the request: the stock has already moved by
+then, there is no transaction spanning WooCommerce's write and ours, and reporting an error for a
+change that did happen is worse than a gap. Same reasoning as `AuditLogger`.
+
+### Reports
+
+`GET /inventory/low-stock` is a separate route because it is a genuinely different query: the
+threshold is per product (`_low_stock_amount`, falling back to the parent's, then to the store-wide
+`woocommerce_notify_low_stock_amount`), so the comparison is between two columns and
+`WC_Product_Query` only ever builds `meta_key = value`. It is one prepared read over
+`wc_product_meta_lookup`, modelled on WooCommerce's own `ProductsLowInStock`. Backordered items are
+excluded, as they are there — they are past "low" rather than approaching it.
+
+The **out-of-stock report is `GET /inventory?stock_status=outofstock`**, since that is the ordinary
+query with one value set and deserves no route of its own.
+
+`GET /inventory` excludes variations by default, matching the products list; `include_variations=true`
+brings them in. Sorting is limited to `date`, `id`, `title`, `sku` — ordering by quantity through
+`wc_get_products()` needs a fragile `meta_key` passthrough, and the low-stock report already
+answers "what needs attention" in quantity order.
+
+SKU lookup takes a **query parameter**, not a path segment: WooCommerce SKUs are free text and
+routinely contain `/`, which no amount of encoding makes safe in a REST route pattern.
+
 ## Response contract
 
 ```json
@@ -311,7 +560,24 @@ rewritten into the same envelope by `ErrorNormalizer`, scoped to this namespace 
 1. Extend `AbstractController` and implement `registerRoutes()`.
 2. Wrap the callback in `$this->handle(...)` so it shares the error contract.
 3. Give every route a real `permission_callback` — `__return_true` requires a justifying comment.
-4. Register it in `Plugin::restApi()`.
+4. Use `$this->paginationArgs()` and `$this->idArg()` rather than hand-rolling them.
+5. Register it in `Plugin::restApi()`.
+
+### The args trap
+
+**An arg with a `sanitize_callback` and no `validate_callback` is not validated at all.**
+`WP_REST_Request::has_valid_params()` runs a `validate_callback` only when one is registered.
+Constraints normally still apply because `sanitize_params()` defaults a *missing* `sanitize_callback`
+to `rest_parse_request_arg()`, which validates on the way through — supplying your own replaces that
+default and takes validation with it. `'minimum' => 1, 'sanitize_callback' => 'absint'` therefore
+enforces nothing.
+
+This bit every list endpoint here: `per_page` carried `'maximum' => 100` and `absint`, so
+`?per_page=100000` was passed straight to the query. Wherever a `sanitize_callback` sits beside a
+`minimum`, `maximum`, `enum` or `pattern`, spell out `'validate_callback' => 'rest_validate_request_arg'`.
+
+`sanitize_key()` has a related edge: it strips periods, so it must not be used on dotted values such
+as this plugin's audit action names.
 
 ## Development
 
@@ -331,8 +597,20 @@ docker compose exec wordpress sh -c \
   'find /var/www/html/wp-content/plugins/algerian-commerce-core -name "*.php" -exec php -l {} \;'
 ```
 
-Unit tests must run without booting WordPress. Integration tests that need a live WordPress arrive
-with the WP test suite in a later milestone.
+Unit tests must run without booting WordPress. The full WP integration suite arrives with §65.
+
+```bash
+# HTTP-level API tests — authentication, capabilities, brute-force lockout
+scripts/test-api.sh
+```
+
+**Run this one before touching auth or rate limiting.** `rest_do_request()` — what the in-process
+checks use — never parses an `Authorization` header, so it cannot observe authentication or rate
+limiting at all. The first rate-limit guard shipped letting every credential-guessing attempt
+through, with all 321 unit tests green, because nothing exercised a real HTTP request with real
+credentials. Comment out the two `add_filter` calls in `RateLimitGuard::register()` and the unit
+suite stays green while `scripts/test-api.sh` turns red on exactly the right assertions — that is
+the regression it exists to catch.
 
 ## Configuration
 

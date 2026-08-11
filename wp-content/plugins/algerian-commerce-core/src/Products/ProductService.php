@@ -6,6 +6,7 @@ namespace AlgerianCommerce\Products;
 
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Audit\AuditLogger;
+use AlgerianCommerce\Inventory\StockLedger;
 use AlgerianCommerce\Permissions\Capabilities;
 use AlgerianCommerce\Permissions\Permissions;
 use WC_Data_Exception;
@@ -23,7 +24,15 @@ final class ProductService
 {
     public function __construct(
         private readonly ProductRepository $repository,
-        private readonly AuditLogger $audit
+        private readonly AuditLogger $audit,
+        /**
+         * This endpoint accepts a stock_quantity, so it is one of the places a
+         * quantity can change. Every such place writes to the ledger, or the
+         * inventory history has gaps where a movement's quantity_before does
+         * not match the previous row's quantity_after and nobody can say why
+         * (roadmap §49).
+         */
+        private readonly StockLedger $ledger
     ) {
     }
 
@@ -55,6 +64,10 @@ final class ProductService
         $this->guardSku((string) ($input->get('sku') ?? ''));
 
         $product = $this->save(fn (): WC_Product => $this->repository->create($input));
+
+        // A product created with stock opens the ledger at that quantity, so
+        // the history starts where the shelf did rather than at its first edit.
+        $this->ledger->recordProductEdit($product, 0, $product->get_stock_quantity());
 
         $this->audit->record('product.created', 'product', $product->get_id(), [
             'name' => $product->get_name(),
@@ -89,7 +102,13 @@ final class ProductService
             'status' => $product->get_status(),
         ];
 
+        // Read before the write: the repository mutates this object in place,
+        // so afterwards it already carries the new quantity.
+        $quantityBefore = $product->get_stock_quantity();
+
         $updated = $this->save(fn (): WC_Product => $this->repository->update($product, $input));
+
+        $this->ledger->recordProductEdit($updated, $quantityBefore, $updated->get_stock_quantity());
 
         $this->audit->record('product.updated', 'product', $id, [
             'fields' => array_keys($input->fields),

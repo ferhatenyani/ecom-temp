@@ -32,6 +32,62 @@ abstract class AbstractController
     }
 
     /**
+     * Uniform pagination args for a list endpoint.
+     *
+     * **The explicit `validate_callback` is load-bearing.** WordPress runs an
+     * arg's validate_callback only when one is registered — see
+     * `WP_REST_Request::has_valid_params()`, which skips any arg without it.
+     * Schema constraints normally still apply because `sanitize_params()`
+     * defaults a *missing* sanitize_callback to `rest_parse_request_arg()`,
+     * which validates before sanitizing. Supplying our own sanitize_callback
+     * replaces that default and silently takes validation with it: `maximum`
+     * becomes advisory and `per_page=100000` reaches the database.
+     *
+     * Anywhere a `sanitize_callback` sits next to a `minimum`, `maximum`,
+     * `enum` or `pattern`, the validate_callback has to be spelled out too.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    protected function paginationArgs(int $defaultPerPage = Response::DEFAULT_PER_PAGE): array
+    {
+        return [
+            'page' => [
+                'type' => 'integer',
+                'default' => 1,
+                'minimum' => 1,
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'absint',
+            ],
+            'per_page' => [
+                'type' => 'integer',
+                'default' => $defaultPerPage,
+                'minimum' => 1,
+                'maximum' => Response::MAX_PER_PAGE,
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'absint',
+            ],
+        ];
+    }
+
+    /**
+     * A required positive integer — a resource id, or a filter on one.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    protected function idArg(string $name = 'id', bool $required = true): array
+    {
+        return [
+            $name => [
+                'type' => 'integer',
+                'required' => $required,
+                'minimum' => 1,
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'absint',
+            ],
+        ];
+    }
+
+    /**
      * Wrap a handler so every route shares one error contract.
      *
      * An ApiException becomes its declared code and status. Anything else is

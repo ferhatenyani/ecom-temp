@@ -45,6 +45,11 @@ final class Config
             'SMTP_PASSWORD',
             'AC_LOG_LEVEL',
             'AC_CORS_ORIGINS',
+            'AC_RATE_LIMIT_READS',
+            'AC_RATE_LIMIT_WRITES',
+            'AC_RATE_LIMIT_AUTH_FAILURES',
+            'AC_RATE_LIMIT_DISABLED',
+            'AC_RATE_LIMIT_TRUSTED_IPS',
         ];
 
         $env = [];
