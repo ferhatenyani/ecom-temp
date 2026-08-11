@@ -14,9 +14,9 @@ PSR-4 autoloading, configuration and feature flags, logging with secret redactio
 `algerian-commerce/v1` namespace, the shared response envelope, error handling, the health endpoint,
 the migration runner, roles and capabilities, and audit recording.
 
-Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (authentication) and the
-order half of §50 are in, along with rate limiting. Not implemented yet: 2FA, customer sessions,
-order notes and timeline, customers, shipping, payments, CMS.
+Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (authentication) and §50
+(orders and customers) are in, along with rate limiting. Not implemented yet: 2FA, customer sessions,
+Algerian geography, COD, shipping, payments, analytics, CMS.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -32,9 +32,12 @@ src/Inventory/               InventoryController, InventoryService, StockAdjustm
                              InventorySettingsInput, BulkStockRequest, InventoryRepository,
                              MovementReason, InventoryMovement, MovementRepository, StockLedger,
                              InventoryPresenter
+src/Commerce/                AddressInput — shared by orders and customers
 src/Orders/                  OrderController, OrderService, OrderStatus, OrderInput,
-                             AddressInput, LineItemInput, OrderRepository, OrderPresenter,
-                             OrderStockSubscriber
+                             LineItemInput, OrderNoteInput, OrderTimeline,
+                             OrderRepository, OrderPresenter, OrderStockSubscriber
+src/Customers/               CustomerController, CustomerService, CustomerInput,
+                             CustomerStatistics, CustomerRepository, CustomerPresenter
 src/API/                     Response envelope, ApiException, ErrorNormalizer, Cors, OriginPolicy,
                              AbstractController, RestApi, HealthController, AuditLogController
 src/CLI/                     WP-CLI commands
@@ -67,6 +70,13 @@ tests/Unit/                  unit tests — no WordPress required
 | GET | `/orders/{id}` | `ac_manage_orders` | read |
 | PATCH | `/orders/{id}` | `ac_manage_orders` | partial update, including status |
 | POST | `/orders/{id}/cancel` | `ac_manage_orders` | cancel, with an optional `reason` |
+| GET | `/orders/{id}/notes` | `ac_manage_orders` | notes, newest first (`limit`) |
+| POST | `/orders/{id}/notes` | `ac_manage_orders` | add a note → 201 |
+| GET | `/orders/{id}/timeline` | `ac_manage_orders` | notes, audit events and stock movements, merged (`limit`) |
+| GET | `/customers` | `ac_manage_customers` | list (paginated; `search`, `orderby`, `order`) |
+| GET | `/customers/{id}` | `ac_manage_customers` | profile **and** lifetime statistics |
+| PATCH | `/customers/{id}` | `ac_manage_customers` | name, email and addresses — never roles or credentials |
+| GET | `/customers/{id}/orders` | `ac_manage_customers` | order history (paginated; `status`, `orderby`, `order`) |
 
 ```bash
 curl http://localhost:8090/wp-json/algerian-commerce/v1/health
@@ -612,19 +622,122 @@ floating-point rounding on the way out.
 
 ### Editing an order that already holds stock
 
-`PATCH` with `line_items` replaces the product lines wholesale, and is refused unless **both** hold:
+`PATCH` with `line_items` replaces the product lines wholesale, and is allowed while
+`WC_Order::is_editable()` — WooCommerce's own rule, so `pending` and `on-hold` only. A `completed`
+order's lines are what was invoiced and delivered; editing them rewrites history rather than
+correcting it.
 
-- `WC_Order::is_editable()` — WooCommerce's own rule, so `pending` and `on-hold` only.
-- The order has not reduced stock.
+`on-hold` is editable *and* reduces stock, and that case is reconciled rather than refused. The
+repository returns the units, replaces the lines and takes them again, through
+`wc_maybe_increase_stock_levels()` and `wc_maybe_reduce_stock_levels()` — the `maybe_` wrappers
+because they also maintain the order's `stock_reduced` flag, which the raw functions do not.
 
-They are not the same test twice. `on-hold` passes the first and can still be holding units, because
-on-hold is one of the statuses that reduces stock. Rewriting its lines drops the `_reduced_stock`
-marker WooCommerce writes on each item, and those units are then never returned by anything — the
-ledger shows a reduction with no matching restoration. Reintroducing this bug on purpose stranded 5
-units and left the ledger netting −5 instead of 0.
+Both fire the hooks below, so amending 4 units down to 1 leaves three ledger rows — −4, +4, −1 —
+netting to the single unit actually held. That verbosity is the point: the shelf really did move
+three times, and a ledger showing only −1 could not be reconciled against the quantity anyone reads
+back.
+
+Skipping the reconciliation is not an option, and the failure is silent. Replacing the items destroys
+the `_reduced_stock` marker WooCommerce writes on each one, and nothing afterwards can return those
+units. Removing the guard on purpose stranded 5 units and left the ledger netting −5 instead of 0.
+
+WooCommerce's own helper for adjusting a single line in place,
+`wc_maybe_adjust_line_item_product_stock()`, is not usable here — it lives in an admin-only file that
+is not loaded during a REST request.
 
 Everything else — addresses, the customer note, the payment method — stays editable at any status,
 because a phone typo on a shipped COD order has to be fixable.
+
+### Notes and the timeline
+
+`POST /orders/{id}/notes` takes `note` and an optional `customer_note`, which **defaults to false**,
+and the default is the security-relevant part: WooCommerce emails a customer note to the buyer the
+moment it is saved, so silence has to mean internal. The flag is not coerced either — the string
+`"false"` is truthy in PHP, and accepting it would send an internal remark to the customer.
+
+Notes are allowed at any status. The orders most in need of annotation — delivered, cancelled,
+refunded — are exactly the ones no longer editable.
+
+`GET /orders/{id}/timeline` merges three stores into one feed, newest first:
+
+```
+notes    WooCommerce comments      what a person wrote
+audit    ac_audit_logs             who did what, append-only
+stock    ac_inventory_movements    what happened to the shelf
+```
+
+Merged on read, not written to a fourth table — a timeline table would be a copy that can disagree
+with its sources, and the sources are the records people trust. Each source is asked for its newest
+`limit` and the merge keeps the newest `limit` of the union, which is exact: no source can contribute
+to the top N without it being in its own top N.
+
+Two details that are not obvious. Sorting happens on integer timestamps, because the three stores
+format times differently and `'Y-m-d H:i:s'` does not compare against ISO-8601 — and WooCommerce
+hands back note dates in the *site* timezone, so they are converted to UTC before they meet two
+tables that store UTC. And `order.note_added` audit rows are dropped from the feed: the trail records
+that a note was written because notes are comments an administrator can delete, but the note itself
+is already in the feed, so keeping both would print every note twice.
+
+## Customers
+
+Roadmap §50, docs/PLAN.md §9.
+
+**Guests are not customers here.** A cash-on-delivery shop takes most orders without an account;
+those carry `customer_id` 0 and their buyer's details on the order itself. There is no user row to
+list, profile or update, so they are found through `/orders` and its billing search.
+
+There is no `POST` and no `DELETE`. Accounts are created by registration or checkout and removed
+through WordPress's own user tools, both of which carry consequences — password mail, content
+reassignment, GDPR erasure — belonging to `ac_manage_users`.
+
+### The capability boundary is the whole design
+
+`ac_manage_customers` is held by **Support Agent**, the thinnest role in the system. A customer is a
+WordPress user, and a user object carries the password hash, the role and the capability map, so this
+module is written to make sure support can correct an address and nothing else:
+
+- `CustomerInput` refuses `password`, `user_pass`, `roles` and `capabilities` **by name**, with a
+  message saying where the boundary is. None of them appear in a response, so nobody arrives at one
+  by round-tripping — they are only ever typed on purpose.
+- `role` *is* emitted, so it is dropped rather than refused. Dropping is what makes it safe: a
+  dropped field is never applied. The danger would be accepting one.
+- `CustomerRepository::find()` returns only users holding the `customer` role. `WC_Customer` wraps
+  any WordPress user, so without that check `GET /customers/{id}` would hand a support account the
+  administrator's email — and guarding the *list* against role enumeration while leaving the single
+  read open would be no guard at all.
+- The presenter emits identity, name and addresses. No capability map, no session tokens, no
+  `user_activation_key`.
+
+The cost of the role check is that a staff account which also shops has no customer profile. Its
+orders are still visible under `/orders`.
+
+### Statistics
+
+`GET /customers/{id}` carries them; the list does not, because computing them per row would mean a
+query per customer on a page of twenty, and a list is read to find someone rather than to study them.
+
+They are computed on read and never stored. A cached lifetime total is a number that can be wrong,
+and every event that invalidates it — a status change, a refund, an order deleted in wp-admin —
+happens somewhere this plugin does not control. One query returns the customer's orders and a single
+pass produces the counts, the revenue and the first and last order, so they cannot disagree with each
+other the way five separate queries can. `limit => -1` is bounded by *one customer's* order count;
+store-wide reporting is §60's `ac_analytics_aggregates`, which exists so a dashboard never scans the
+order book.
+
+**`total_revenue` counts completed orders only.** For a cash-on-delivery shop the money arrives when
+the parcel does — an order in `processing` is stock committed and a courier booked, not revenue.
+`average_order_value` divides by that same count, not by every order; dividing collected money by a
+count that includes cancellations understates what a sale is worth.
+
+**Money is summed in integer minor units, not as floats.** Adding `0.10` to itself a hundred times in
+binary floating point does not give `10.00`, and a lifetime value that disagrees with the sum of its
+own orders is worse than no figure. Totals are scaled to whole units, added as integers, and
+formatted back at the end — with `round()` before the cast, because `(int)` truncates and `12.30 *
+100` is `1229.999…`.
+
+PLAN.md §9 lists "returned orders"; WooCommerce has no `returned` status, so it maps to `refunded`,
+the state where the money went back. COD history is §52's, and customer-level notes and an account
+status flag are recorded in the roadmap rather than invented here.
 
 ### Stock movements reach the ledger through hooks
 

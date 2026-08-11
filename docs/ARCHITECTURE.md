@@ -66,6 +66,7 @@ src/
   API/           REST bootstrap, response envelope, error mapping, pagination, CORS
   Auth/          authentication strategies, session/token handling
   Permissions/   roles, capabilities, permission_callback helpers
+  Commerce/      value objects shared across commerce domains (addresses)
   Products/      Customers/  Orders/  Inventory/   commerce domains
   COD/           cash-on-delivery state machine and risk signals
   Shipping/      ShippingService + ShippingProviderInterface
@@ -82,6 +83,13 @@ tests/
 
 **Dependency direction:** `API → Services → Domain → Adapters → WooCommerce`. Domain modules never
 depend on `API/`; `integrations/` never depend on each other; `Core/` depends on nothing above it.
+
+A commerce domain may depend on another, but only in one direction and only where the business
+genuinely nests: `Customers/` reads `Orders/` because a customer's history and lifetime value *are*
+orders, while an order holds a `customer_id` — an integer — and never a customer object. When two
+domains need the same value object rather than one needing the other, it belongs in `Commerce/`;
+`AddressInput` lives there because orders and customers store the identical field set and duplicating
+the validation would let the two drift.
 
 ## 4. Provider abstraction
 

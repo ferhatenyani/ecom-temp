@@ -2316,45 +2316,65 @@ Use WooCommerce's native commerce model where appropriate.
 
 ## Status
 
-**Orders are half done.** Implemented: `GET /orders`, `GET /orders/{id}`,
-`POST /orders`, `PATCH /orders/{id}`, `POST /orders/{id}/cancel`, with search,
-filters (status, customer, date range), pagination, sorting, a status
-transition matrix, and order-driven stock movements wired into the §49 ledger
-through WooCommerce's own hooks.
-
-There is deliberately **no `DELETE /orders/{id}`**. An order is cancelled, never
-removed — accounting, the courier and the customer's history all keep
-referring to it.
-
-Still to build in this section:
+**Done.**
 
 ``` text
-POST /orders/{id}/notes      notes
-     order timeline          (notes + audit + ledger, merged and time-ordered)
-GET  /customers
-GET  /customers/{id}
-PATCH /customers/{id}
-GET  /customers/{id}/orders
-     customer statistics     (§9: totals, AOV, first/last order, COD history)
+GET   /orders                  search, status/customer/date filters, sorting
+POST  /orders                  catalogue-priced lines; no caller-set totals
+GET   /orders/{id}
+PATCH /orders/{id}             fields and status, through a transition matrix
+POST  /orders/{id}/cancel      with a reason, recorded in the audit trail
+GET   /orders/{id}/notes
+POST  /orders/{id}/notes       customer_note defaults to false and is not coerced
+GET   /orders/{id}/timeline    notes + audit + ledger, merged newest-first
+GET   /customers               role-scoped; guests are not customer records
+GET   /customers/{id}          profile and lifetime statistics
+PATCH /customers/{id}          name, email, addresses — never roles or credentials
+GET   /customers/{id}/orders
 ```
 
-Two things were left as later refinements rather than half-built:
+Order-driven stock movements reach the §49 ledger through WooCommerce's own
+hooks, so they are recorded no matter what moved them — this API, wp-admin,
+WP-CLI, cron or a payment gateway.
 
-``` text
-line-item edits on an order that already reduced stock
-    — currently a 409; needs per-line stock reconciliation, and
-      WooCommerce's own helper for it lives in an admin-only file
-      that is not loaded during a REST request
+Amending the lines of an order that already holds stock is **implemented**, not
+refused: the units are returned, the lines replaced, and the units re-taken, so
+the ledger records all three moves and nets to what is actually held. Skipping
+that reconciliation destroys WooCommerce's `_reduced_stock` markers and strands
+the units silently.
 
-refunds
-    — PATCH to status "refunded" works; creating an actual
-      WC_Order_Refund with amounts belongs with §57 payments
-```
+There is deliberately **no `DELETE /orders/{id}`** — an order is cancelled, never
+removed — and no `POST`/`DELETE` on customers, since account creation and
+erasure belong to `ac_manage_users`.
 
 The operational states PLAN §8 lists — COD Pending Confirmation, Shipping
 Prepared, Shipped, Delivered, Returned — were **not** added as statuses. They
 arrive as metadata and events in §52 and §53, which is what "avoid creating
 redundant statuses when metadata/events are sufficient" asks for.
+
+### Deferred, with their reasons
+
+``` text
+refunds
+    — PATCH to status "refunded" works. Creating an actual
+      WC_Order_Refund with amounts, and verifying it against the
+      provider, is §57 payments.
+
+COD history on a customer
+    — §52 defines the confirmation states this would summarise.
+      Nothing to count yet.
+
+customer notes, account status / banning
+    — PLAN §9 lists both; §50's endpoint list does not, and §52 says
+      not to ban on a single weak signal, so the flag belongs with
+      the risk signals rather than ahead of them. Needs storage
+      (a table or user meta) — a decision, not an oversight.
+
+customer-facing order access
+    — a shopper reading their own order needs the session strategy
+      deferred in §44. Permissions::assertOwnsOr() is already there
+      for it. Every route here is administrative today.
+```
 
 ------------------------------------------------------------------------
 
