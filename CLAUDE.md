@@ -90,9 +90,10 @@ curl http://localhost:8090/wp-json/algerian-commerce/v1/health   # → {"success
 fix when touching config: `compose.yaml` hardcodes port `8090` instead of using `${WP_PORT}`, so changing `WP_PORT`
 currently does nothing.
 
-`scripts/test-api.sh` runs the HTTP-level API tests (authentication, capabilities, brute-force
-lockout). Run it before touching auth or rate limiting — `rest_do_request()` never parses an
-`Authorization` header, so in-process checks cannot see either. The rest of
+`scripts/test.sh` runs every stage — `syntax`, `unit`, `rest` (in-process, `tests/Api/`) and `http`
+(`scripts/test-api.sh`). Pass a stage name to run just one. The `http` stage is not redundant:
+`rest_do_request()` never parses an `Authorization` header, so nothing before it can see
+authentication or rate limiting. Run it before touching either. The rest of
 `scripts/{setup,reset,seed,health,backup}.sh` (§66) does not exist yet. `reset.sh` is destructive by
 design and must say so loudly, and `backup.sh` cannot use `wp db query`/`wp db export` — see §66.
 
