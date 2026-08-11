@@ -600,9 +600,16 @@ docker compose exec wordpress sh -c \
 Unit tests must run without booting WordPress. The full WP integration suite arrives with §65.
 
 ```bash
-# HTTP-level API tests — authentication, capabilities, brute-force lockout
-scripts/test-api.sh
+scripts/test.sh              # every stage
+scripts/test.sh unit         # one stage: syntax | unit | rest | http
 ```
+
+| Stage | What it covers | Blind to |
+| --- | --- | --- |
+| `syntax` | `php -l` over every file | everything else |
+| `unit` | pure logic, no WordPress (`tests/Unit`) | anything touching WP |
+| `rest` | routing, args, permissions, IDOR (`tests/Api`) | authentication, rate limiting |
+| `http` | authentication, rate limiting (`scripts/test-api.sh`) | — |
 
 **Run this one before touching auth or rate limiting.** `rest_do_request()` — what the in-process
 checks use — never parses an `Authorization` header, so it cannot observe authentication or rate

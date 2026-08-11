@@ -17,12 +17,19 @@ if (!defined('AC_CORE_PATH')) {
     define('AC_CORE_PATH', dirname(__DIR__) . '/');
 }
 
-if (!defined('AlgerianCommerce\VERSION')) {
-    define('AlgerianCommerce\VERSION', '0.1.0');
-    define('AlgerianCommerce\DB_VERSION', 2);
-    define('AlgerianCommerce\REST_NAMESPACE', 'algerian-commerce/v1');
-}
-
 require_once dirname(__DIR__) . '/src/Core/Autoloader.php';
 
 (new AlgerianCommerce\Core\Autoloader('AlgerianCommerce\\', dirname(__DIR__) . '/src'))->register();
+
+/*
+ * Registered first, because DB_VERSION is derived from Core\Schema rather than
+ * written out again here. It used to be a second, independent literal, which
+ * meant the guard in MigrationPlanTest asserted against this copy instead of
+ * the one the plugin actually ships — bumping this and forgetting the plugin
+ * file passed the suite and shipped an install that skipped a migration.
+ */
+if (!defined('AlgerianCommerce\VERSION')) {
+    define('AlgerianCommerce\VERSION', '0.1.0');
+    define('AlgerianCommerce\DB_VERSION', AlgerianCommerce\Core\Schema::VERSION);
+    define('AlgerianCommerce\REST_NAMESPACE', 'algerian-commerce/v1');
+}

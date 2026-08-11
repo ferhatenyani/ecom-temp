@@ -25,12 +25,6 @@ if (!defined('ABSPATH')) {
 
 const VERSION = '0.1.0';
 
-/**
- * Schema version for custom tables. Bump when a migration is added under
- * migrations/ — see docs/ARCHITECTURE.md §7.
- */
-const DB_VERSION = 2;
-
 /** REST namespace every route in this plugin registers under. */
 const REST_NAMESPACE = 'algerian-commerce/v1';
 
@@ -49,6 +43,15 @@ if (is_readable(AC_CORE_PATH . 'vendor/autoload.php')) {
     require_once AC_CORE_PATH . 'src/Core/Autoloader.php';
     (new Autoloader('AlgerianCommerce\\', AC_CORE_PATH . 'src'))->register();
 }
+
+/**
+ * Schema version for custom tables — see docs/ARCHITECTURE.md §7.
+ *
+ * Derived from Core\Schema rather than written out again, so this and the unit
+ * test bootstrap cannot drift apart. Declared after the autoloader because it
+ * reads a class. **Bump Schema::VERSION when adding a migration.**
+ */
+const DB_VERSION = Core\Schema::VERSION;
 
 register_activation_hook(__FILE__, [Plugin::class, 'activate']);
 register_deactivation_hook(__FILE__, [Plugin::class, 'deactivate']);

@@ -1965,9 +1965,28 @@ CSRF
 SQL injection
 SSRF
 replay attacks
+privileged-user 2FA
 ```
 
 Use WordPress's security APIs and supported authentication mechanisms.
+
+## On 2FA (PLAN §3, SECURITY.md)
+
+Deliberately in the "later" list rather than the early one, for an
+architectural reason and not just scheduling.
+
+2FA protects **interactive human logins**. Privileged API access uses an
+Application Password held by the Next.js server, and those bypass 2FA by
+design — there is nobody to prompt for a code. Adding 2FA changes nothing
+about how the API is reached.
+
+The surface it does protect is `wp-admin`, where humans sign in with real
+passwords to accounts holding `ac_super_admin`. That is a WordPress-level
+concern, and §54 already names **Wordfence** in the approved plugin baseline,
+which provides it. Prefer configuring that to writing a TOTP implementation.
+
+Revisit when a human-facing admin login exists that does not go through
+`wp-admin` — see §70.
 
 ------------------------------------------------------------------------
 
@@ -2023,6 +2042,27 @@ Do not use an administrator credential in the browser.
 
 For browser authentication, secure HTTP-only sessions/cookies are often
 preferable to long-lived privileged tokens stored in browser storage.
+
+## Status
+
+**Admin authentication is implemented.** WordPress Application Passwords,
+verified by core on `determine_current_user`, held by a dedicated service
+account, with `GET /auth/me` for capability introspection. No login endpoint
+and no token store of our own — core already owns credential storage,
+rotation and revocation. Requires HTTPS, or `WP_ENVIRONMENT_TYPE=local` in
+development.
+
+**Customer authentication is not, and is deliberately blocked.** A session
+strategy cannot be designed before cart and checkout exist, and PLAN §53 says
+that architecture is finalized during implementation. It belongs with the
+storefront work, not here.
+
+Two rules to carry into it:
+
+``` text
+customers never receive an Application Password  (server-to-server only)
+customer sessions are HTTP-only cookies          (SECURITY.md)
+```
 
 ------------------------------------------------------------------------
 
