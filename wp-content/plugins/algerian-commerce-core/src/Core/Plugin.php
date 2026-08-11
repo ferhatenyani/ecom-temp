@@ -11,8 +11,11 @@ use AlgerianCommerce\API\OriginPolicy;
 use AlgerianCommerce\API\RestApi;
 use AlgerianCommerce\Audit\AuditLogger;
 use AlgerianCommerce\Audit\AuditRepository;
+use AlgerianCommerce\Auth\AuthController;
+use AlgerianCommerce\Auth\AuthService;
 use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
+use AlgerianCommerce\CLI\UnlockCommand;
 use AlgerianCommerce\Core\Migrations\MigrationRunner;
 use AlgerianCommerce\Inventory\InventoryController;
 use AlgerianCommerce\Inventory\InventoryRepository;
@@ -20,6 +23,9 @@ use AlgerianCommerce\Inventory\InventoryService;
 use AlgerianCommerce\Inventory\MovementRepository;
 use AlgerianCommerce\Inventory\StockLedger;
 use AlgerianCommerce\Permissions\Roles;
+use AlgerianCommerce\Security\RateLimiter;
+use AlgerianCommerce\Security\RateLimitGuard;
+use AlgerianCommerce\Security\RateLimitStore;
 use AlgerianCommerce\Products\ProductCategoryController;
 use AlgerianCommerce\Products\ProductController;
 use AlgerianCommerce\Products\ProductRepository;
@@ -52,6 +58,10 @@ final class Plugin
     private ?Roles $roles = null;
     private ?AuditRepository $auditRepository = null;
     private ?AuditLogger $auditLogger = null;
+    private ?AuthService $authService = null;
+    private ?RateLimitStore $rateLimitStore = null;
+    private ?RateLimiter $rateLimiter = null;
+    private ?RateLimitGuard $rateLimitGuard = null;
     private ?ProductRepository $productRepository = null;
     private ?ProductService $productService = null;
     private ?VariationService $variationService = null;
@@ -80,6 +90,8 @@ final class Plugin
 
         $this->restApi()->register();
         $this->cors()->register();
+        // Before the routes run, and scoped to our namespace only.
+        $this->rateLimitGuard()->register();
         $this->registerCliCommands();
 
         $this->logger()->debug('Plugin booted', ['version' => VERSION]);
@@ -93,6 +105,7 @@ final class Plugin
 
         WP_CLI::add_command('algerian-commerce migrate', new MigrateCommand($this->migrations()));
         WP_CLI::add_command('algerian-commerce roles', new RolesCommand($this->roles()));
+        WP_CLI::add_command('algerian-commerce unlock', new UnlockCommand($this->rateLimiter(), $this->rateLimitStore()));
     }
 
     public function config(): Config
@@ -112,6 +125,7 @@ final class Plugin
     {
         return $this->restApi ??= new RestApi($this->logger(), [
             new HealthController($this->logger()),
+            new AuthController($this->logger(), $this->authService()),
             new AuditLogController($this->logger(), $this->auditRepository()),
             new ProductController($this->logger(), $this->productService()),
             new VariationController($this->logger(), $this->variationService()),
@@ -189,6 +203,30 @@ final class Plugin
     public function roles(): Roles
     {
         return $this->roles ??= new Roles($this->logger());
+    }
+
+    public function authService(): AuthService
+    {
+        return $this->authService ??= new AuthService();
+    }
+
+    public function rateLimitStore(): RateLimitStore
+    {
+        return $this->rateLimitStore ??= new RateLimitStore();
+    }
+
+    public function rateLimiter(): RateLimiter
+    {
+        return $this->rateLimiter ??= new RateLimiter(
+            $this->rateLimitStore(),
+            $this->logger(),
+            $this->config()
+        );
+    }
+
+    public function rateLimitGuard(): RateLimitGuard
+    {
+        return $this->rateLimitGuard ??= new RateLimitGuard($this->rateLimiter());
     }
 
     public function auditRepository(): AuditRepository
