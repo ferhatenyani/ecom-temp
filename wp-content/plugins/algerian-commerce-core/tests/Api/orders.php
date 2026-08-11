@@ -491,26 +491,12 @@ ac_assert('and wrote no extra ledger rows', count(ac_movements($orderId)) === 2 
 
 echo PHP_EOL, "=== editing a committed order ===", PHP_EOL;
 
-ac_check('line items cannot be rewritten once stock is held', ac_req('PATCH', "/orders/{$orderId}", [
-    'line_items' => [['product_id' => $kettleId, 'quantity' => 1]],
-]), 409);
-
-/*
- * The case the *second* guard exists for. `processing` is refused by
- * WooCommerce's own is_editable() rule, so the check above never reaches the
- * stock test. `on-hold` is editable and still holds stock — rewriting its
- * lines would drop the _reduced_stock markers and strand those units.
- */
-ac_req('PATCH', "/orders/{$orderId}", ['status' => 'on-hold']);
-
-ac_check('an editable order still holding stock is refused too', ac_req('PATCH', "/orders/{$orderId}", [
+ac_check('line items cannot be rewritten once past editable', ac_req('PATCH', "/orders/{$orderId}", [
     'line_items' => [['product_id' => $kettleId, 'quantity' => 1]],
 ]), 409, function ($d) {
-    return ($d['error']['details']['stock_reduced'] ?? null) === true
-        ?: 'refused by the editability rule, not the stock rule';
+    return ($d['error']['details']['status'] ?? '') === 'processing'
+        ?: 'the refusal should name the status that blocked it';
 });
-
-ac_req('PATCH', "/orders/{$orderId}", ['status' => 'processing']);
 
 ac_check('but the billing phone can still be corrected', ac_req('PATCH', "/orders/{$orderId}", [
     'billing' => ['phone' => '0660999888'],
@@ -578,6 +564,208 @@ ac_check('a cancelled order cannot be reopened', ac_req('PATCH', "/orders/{$orde
 ac_check('an over-long cancellation reason is refused', ac_req('POST', "/orders/{$orderId}/cancel", [
     'reason' => str_repeat('x', 501),
 ]), 400);
+
+echo PHP_EOL, "=== amending an order that already holds stock ===", PHP_EOL;
+
+/*
+ * `on-hold` is editable by WooCommerce's rule *and* reduces stock, so it is the
+ * one status where a line edit has to unwind and re-take units. Its own order,
+ * so the ledger arithmetic below is about this narrative alone. The kettle is
+ * back at 50 after the cancellation above.
+ */
+$hold = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 4]],
+    'status' => 'on-hold',
+]);
+$holdId = (int) ($hold[1]['data']['id'] ?? 0);
+
+ac_check('create an order on hold', $hold, 201, function ($d) {
+    return ($d['data']['stock_reduced'] ?? null) === true ?: 'on-hold should take stock';
+});
+
+ac_assert(
+    'it took 4 units',
+    (int) wc_get_product($kettleId)->get_stock_quantity() === 46 ?: 'kettle is at ' . wc_get_product($kettleId)->get_stock_quantity()
+);
+
+ac_check('its lines can be amended', ac_req('PATCH', "/orders/{$holdId}", [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 1]],
+]), 200, function ($d) {
+    return count($d['data']['line_items']) === 1 && (int) $d['data']['line_items'][0]['quantity'] === 1
+        ?: 'the amended line did not stick';
+});
+
+ac_assert(
+    'the shelf reflects the new quantity, not the old',
+    (int) wc_get_product($kettleId)->get_stock_quantity() === 49 ?: 'kettle is at ' . wc_get_product($kettleId)->get_stock_quantity()
+);
+
+ac_check('and the order still holds stock', ac_req('GET', "/orders/{$holdId}"), 200, function ($d) {
+    return ($d['data']['stock_reduced'] ?? null) === true ?: 'the flag was lost in the rewrite';
+});
+
+$holdRows = ac_movements($holdId);
+
+ac_assert('the ledger records all three moves', count($holdRows) === 3 ?: 'got ' . count($holdRows));
+
+ac_assert('as reduce, restore, reduce', (function () use ($holdRows) {
+    $reasons = array_column($holdRows, 'reason');
+
+    return $reasons === ['order_reduced', 'order_restored', 'order_reduced']
+        ?: 'got ' . implode(', ', $reasons);
+})());
+
+ac_assert('and the deltas net to the units actually held', (function () use ($holdRows) {
+    $net = 0;
+    foreach ($holdRows as $row) {
+        $net += (int) $row['delta'];
+    }
+
+    // -4 + 4 - 1. The shelf really did move three times; a ledger that showed
+    // only -1 could not be reconciled against the quantity anyone reads back.
+    return $net === -1 ?: "net is {$net}";
+})());
+
+ac_assert('every row still balances', (function () use ($holdRows) {
+    foreach ($holdRows as $row) {
+        if ((int) $row['quantity_before'] + (int) $row['delta'] !== (int) $row['quantity_after']) {
+            return sprintf('%d + %d != %d', $row['quantity_before'], $row['delta'], $row['quantity_after']);
+        }
+    }
+
+    return true;
+})());
+
+ac_check('cancelling it returns exactly what it held', ac_req('POST', "/orders/{$holdId}/cancel"), 200);
+
+ac_assert(
+    'the kettle is whole again',
+    (int) wc_get_product($kettleId)->get_stock_quantity() === 50 ?: 'kettle is at ' . wc_get_product($kettleId)->get_stock_quantity()
+);
+
+echo PHP_EOL, "=== notes ===", PHP_EOL;
+
+ac_check('a note needs content', ac_req('POST', "/orders/{$orderId}/notes", []), 400);
+ac_check('an empty note is refused', ac_req('POST', "/orders/{$orderId}/notes", ['note' => '   ']), 400);
+ac_check('an unknown note field is refused', ac_req('POST', "/orders/{$orderId}/notes", [
+    'note' => 'x',
+    'autor' => 'me',
+]), 400);
+
+// A loose cast would email an internal remark to the customer.
+ac_check('customer_note is not coerced from a string', ac_req('POST', "/orders/{$orderId}/notes", [
+    'note' => 'x',
+    'customer_note' => 'false',
+]), 400);
+
+$internal = ac_check('add an internal note', ac_req('POST', "/orders/{$orderId}/notes", [
+    'note' => 'Rang twice, no answer',
+]), 201, function ($d) {
+    return ($d['data']['customer_note'] ?? null) === false ?: 'an absent flag must mean internal';
+});
+
+ac_check('add a customer note', ac_req('POST', "/orders/{$orderId}/notes", [
+    'note' => 'Your order has been cancelled',
+    'customer_note' => true,
+]), 201, function ($d) {
+    return ($d['data']['customer_note'] ?? null) === true ?: 'the flag did not stick';
+});
+
+ac_check('read the notes back, newest first', ac_req('GET', "/orders/{$orderId}/notes"), 200, function ($d) {
+    $contents = array_column($d['data'], 'content');
+
+    if (!in_array('Rang twice, no answer', $contents, true)) {
+        return 'the internal note is missing';
+    }
+
+    return in_array('Your order has been cancelled', $contents, true) ?: 'the customer note is missing';
+});
+
+ac_check('notes on a missing order', ac_req('GET', '/orders/99999999/notes'), 404);
+ac_check('a note on a missing order', ac_req('POST', '/orders/99999999/notes', ['note' => 'x']), 404);
+ac_check('the note limit is bounded', ac_req('GET', "/orders/{$orderId}/notes", null, ['limit' => 500]), 400);
+
+wp_set_current_user($support);
+ac_check('notes need ac_manage_orders', ac_req('GET', "/orders/{$orderId}/notes"), 403);
+ac_check('writing a note needs it too', ac_req('POST', "/orders/{$orderId}/notes", ['note' => 'x']), 403);
+wp_set_current_user($manager);
+
+echo PHP_EOL, "=== timeline ===", PHP_EOL;
+
+$timeline = ac_check('read the timeline', ac_req('GET', "/orders/{$orderId}/timeline"), 200, function ($d) {
+    return $d['data'] !== [] ?: 'the timeline is empty';
+});
+
+ac_assert('it carries all three kinds of entry', (function () use ($timeline) {
+    $types = array_unique(array_column($timeline['data'], 'type'));
+    sort($types);
+
+    return $types === ['audit', 'note', 'stock'] ?: 'saw ' . implode(', ', $types);
+})());
+
+ac_assert('it is newest first', (function () use ($timeline) {
+    $times = array_column($timeline['data'], 'at');
+    $sorted = $times;
+    rsort($sorted);
+
+    return $times === $sorted ?: 'out of order';
+})());
+
+ac_assert('every entry has the same shape', (function () use ($timeline) {
+    foreach ($timeline['data'] as $entry) {
+        if (array_keys($entry) !== ['type', 'at', 'actor', 'summary', 'data']) {
+            return 'got ' . implode(', ', array_keys($entry));
+        }
+    }
+
+    return true;
+})());
+
+ac_assert('the status change reads as a sentence', (function () use ($timeline) {
+    foreach ($timeline['data'] as $entry) {
+        if ($entry['summary'] === 'Status changed from pending to processing') {
+            return true;
+        }
+    }
+
+    return 'no status-change entry found';
+})());
+
+ac_assert('the cancellation carries its reason', (function () use ($timeline) {
+    foreach ($timeline['data'] as $entry) {
+        if (str_starts_with($entry['summary'], 'Order cancelled')) {
+            return str_contains($entry['summary'], 'Customer unreachable') ?: 'the reason is missing';
+        }
+    }
+
+    return 'no cancellation entry found';
+})());
+
+// The audit trail records that a note was written, but the note itself is
+// already in the feed — showing both would print every note twice.
+ac_assert('notes are not shown twice', (function () use ($timeline) {
+    foreach ($timeline['data'] as $entry) {
+        if (($entry['data']['action'] ?? '') === 'order.note_added') {
+            return 'the note_added audit row leaked into the feed';
+        }
+    }
+
+    return true;
+})());
+
+ac_assert('but it is still in the append-only trail', in_array('order.note_added', ac_audit_actions($orderId), true)
+    ?: 'the note was not audited');
+
+ac_check('the timeline limit keeps the newest', ac_req('GET', "/orders/{$orderId}/timeline", null, ['limit' => 2]), 200, function ($d) use ($timeline) {
+    if (count($d['data']) !== 2) {
+        return 'got ' . count($d['data']) . ' entries';
+    }
+
+    return $d['data'][0]['at'] === $timeline['data'][0]['at'] ?: 'the limit dropped the newest entry';
+});
+
+ac_check('the timeline limit is bounded', ac_req('GET', "/orders/{$orderId}/timeline", null, ['limit' => 0]), 400);
+ac_check('a timeline for a missing order', ac_req('GET', '/orders/99999999/timeline'), 404);
 
 echo PHP_EOL, "=== terminal states ===", PHP_EOL;
 
