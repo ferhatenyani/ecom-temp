@@ -17,7 +17,8 @@ relevant section before implementing a feature; section 4 gives the exact implem
 milestones, and section 29 the per-feature loop. **§50 and §51 are done** — orders, notes, timeline, customers,
 and the Algerian geography mechanism. **Next up is §52, COD.**
 
-Geographic data is complete: 58 wilayas and 1,541 communes with Arabic names, daira and coordinates. Both files are
+Geographic data is complete: **69 wilayas** (the 2019 reform's 58 plus the eleven former circonscriptions
+administratives, since promoted) and 1,541 communes, with Arabic names, daira and coordinates. Both files are
 **generated**, never hand-written — `scripts/build-algeria-dataset.php` converts the source CSV in
 `data/algeria/sources/`, and `wp algerian-commerce import-algeria` loads the result. Regenerate rather than editing
 the JSON by hand. Postal codes are absent from the source and deliberately left empty; `national_code` is the

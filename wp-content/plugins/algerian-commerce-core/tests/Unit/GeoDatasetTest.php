@@ -59,11 +59,23 @@ final class GeoDatasetTest extends TestCase
         self::assertSame('bejaia', $result['rows'][0]['slug']);
     }
 
+    /** Codes 59-69 are the former circonscriptions, now full wilayas. */
+    public function testAcceptsTheFullSixtyNine(): void
+    {
+        $result = GeoDataset::wilayas([
+            ['code' => '59', 'name' => 'Aflou'],
+            ['code' => '69', 'name' => 'El Abiodh Sidi Cheikh'],
+        ]);
+
+        self::assertSame([], $result['errors']);
+        self::assertSame([59, 69], array_column($result['rows'], 'id'));
+    }
+
     public function testRejectsCodesOutsideTheRange(): void
     {
         $result = GeoDataset::wilayas([
             ['code' => '00', 'name' => 'Nowhere'],
-            ['code' => '59', 'name' => 'Nowhere Else'],
+            ['code' => '70', 'name' => 'Nowhere Else'],
         ]);
 
         self::assertCount(2, $result['errors']);

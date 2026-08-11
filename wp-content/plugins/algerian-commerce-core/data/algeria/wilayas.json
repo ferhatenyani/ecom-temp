@@ -1,6 +1,6 @@
 {
     "version": "2019-12-05",
-    "source": "WooCommerce i18n/states.php (DZ) — ISO 3166-2:DZ, post-2019 reform; Arabic names from algeria_cities.csv",
+    "source": "Codes 01-58 from WooCommerce i18n/states.php (DZ), ISO 3166-2:DZ. Codes 59-69 — the former circonscriptions administratives, now full wilayas — and all Arabic names from algeria_cities.csv",
     "note": "Latin names follow ISO 3166-2, matching WooCommerce's DZ state list. Arabic names come from the commune source dataset.",
     "wilayas": [
         {
@@ -292,6 +292,61 @@
             "code": "58",
             "name": "El Meniaa",
             "name_ar": "المنيعة"
+        },
+        {
+            "code": "59",
+            "name": "Aflou",
+            "name_ar": "أفلو"
+        },
+        {
+            "code": "60",
+            "name": "Barika",
+            "name_ar": "بريكة"
+        },
+        {
+            "code": "61",
+            "name": "El Kantara",
+            "name_ar": "القنطرة"
+        },
+        {
+            "code": "62",
+            "name": "Bir El Ater",
+            "name_ar": "بئر العاتر"
+        },
+        {
+            "code": "63",
+            "name": "El Aricha",
+            "name_ar": "العريشة"
+        },
+        {
+            "code": "64",
+            "name": "Ksar Chellala",
+            "name_ar": "قصر الشلالة"
+        },
+        {
+            "code": "65",
+            "name": "Ain Oussera",
+            "name_ar": "عين وسارة"
+        },
+        {
+            "code": "66",
+            "name": "Messaad",
+            "name_ar": "مسعد"
+        },
+        {
+            "code": "67",
+            "name": "Ksar El Boukhari",
+            "name_ar": "قصر البخاري"
+        },
+        {
+            "code": "68",
+            "name": "Boussaâda",
+            "name_ar": "بوسعادة"
+        },
+        {
+            "code": "69",
+            "name": "El Abiodh Sidi Cheikh",
+            "name_ar": "الأبيض سيدي الشيخ"
         }
     ]
 }

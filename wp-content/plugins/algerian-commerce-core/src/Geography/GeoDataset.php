@@ -23,9 +23,12 @@ namespace AlgerianCommerce\Geography;
  */
 final class GeoDataset
 {
-    /** Algeria has had 58 wilayas since the 2019 reform; codes run 1–58. */
+    /**
+     * Algeria has 69 wilayas: the 58 of the 2019 reform plus the eleven former
+     * circonscriptions administratives since promoted in full. Codes run 1–69.
+     */
     public const MIN_WILAYA = 1;
-    public const MAX_WILAYA = 58;
+    public const MAX_WILAYA = 69;
 
     public const MAX_NAME = 120;
     public const MAX_COMMUNE_NAME = 160;

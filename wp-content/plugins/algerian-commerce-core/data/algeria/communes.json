@@ -515,16 +515,6 @@
         },
         {
             "wilaya_code": "03",
-            "name": "Aflou",
-            "name_ar": "أفلو",
-            "daira": "Aflou",
-            "daira_ar": "أفلو",
-            "national_code": "319",
-            "latitude": "34.11279",
-            "longitude": "2.1019"
-        },
-        {
-            "wilaya_code": "03",
             "name": "Ain Madhi",
             "name_ar": "عين ماضي",
             "daira": "Ain Madhi",
@@ -555,16 +545,6 @@
         },
         {
             "wilaya_code": "03",
-            "name": "Brida",
-            "name_ar": "بريدة",
-            "daira": "Brida",
-            "daira_ar": "بريدة",
-            "national_code": "313",
-            "latitude": "33.906111",
-            "longitude": "1.784444"
-        },
-        {
-            "wilaya_code": "03",
             "name": "El Assafia",
             "name_ar": "العسافية",
             "daira": "Sidi Makhlouf",
@@ -585,16 +565,6 @@
         },
         {
             "wilaya_code": "03",
-            "name": "El Ghicha",
-            "name_ar": "الغيشة",
-            "daira": "El Ghicha",
-            "daira_ar": "الغيشة",
-            "national_code": "314",
-            "latitude": "33.930145",
-            "longitude": "2.140703"
-        },
-        {
-            "wilaya_code": "03",
             "name": "El Haouaita",
             "name_ar": "الحويطة",
             "daira": "Ain Madhi",
@@ -612,16 +582,6 @@
             "national_code": "310",
             "latitude": "34.2961",
             "longitude": "1.94667"
-        },
-        {
-            "wilaya_code": "03",
-            "name": "Hadj Mechri",
-            "name_ar": "الحاج مشري",
-            "daira": "Brida",
-            "daira_ar": "بريدة",
-            "national_code": "315",
-            "latitude": "33.9571296",
-            "longitude": "1.5992068"
         },
         {
             "wilaya_code": "03",
@@ -675,46 +635,6 @@
         },
         {
             "wilaya_code": "03",
-            "name": "Oued M'zi",
-            "name_ar": "وادي مزي",
-            "daira": "Oued Morra",
-            "daira_ar": "وادي مرة",
-            "national_code": "322",
-            "latitude": "33.92422",
-            "longitude": "2.4369"
-        },
-        {
-            "wilaya_code": "03",
-            "name": "Oued Morra",
-            "name_ar": "وادي مرة",
-            "daira": "Oued Morra",
-            "daira_ar": "وادي مرة",
-            "national_code": "321",
-            "latitude": "34.1666669",
-            "longitude": "2.3166669"
-        },
-        {
-            "wilaya_code": "03",
-            "name": "Sebgag",
-            "name_ar": "سبقاق",
-            "daira": "Aflou",
-            "daira_ar": "أفلو",
-            "national_code": "316",
-            "latitude": "34.02958",
-            "longitude": "1.92798"
-        },
-        {
-            "wilaya_code": "03",
-            "name": "Sidi Bouzid",
-            "name_ar": "سيدي بوزيد",
-            "daira": "Aflou",
-            "daira_ar": "أفلو",
-            "national_code": "324",
-            "latitude": "34.342777",
-            "longitude": "2.261389"
-        },
-        {
-            "wilaya_code": "03",
             "name": "Sidi Makhlouf",
             "name_ar": "سيدي مخلوف",
             "daira": "Sidi Makhlouf",
@@ -742,16 +662,6 @@
             "national_code": "318",
             "latitude": "33.503632",
             "longitude": "2.101217"
-        },
-        {
-            "wilaya_code": "03",
-            "name": "Taouiala",
-            "name_ar": "تاويالة",
-            "daira": "Brida",
-            "daira_ar": "بريدة",
-            "national_code": "317",
-            "latitude": "33.87186",
-            "longitude": "1.8606"
         },
         {
             "wilaya_code": "04",
@@ -1085,26 +995,6 @@
         },
         {
             "wilaya_code": "05",
-            "name": "Azil Abedelkader",
-            "name_ar": "عزيل عبد القادر",
-            "daira": "Djezzar",
-            "daira_ar": "الجزار",
-            "national_code": "515",
-            "latitude": "35.3667",
-            "longitude": "5.1833"
-        },
-        {
-            "wilaya_code": "05",
-            "name": "Barika",
-            "name_ar": "بريكة",
-            "daira": "Barika",
-            "daira_ar": "بريكة",
-            "national_code": "542",
-            "latitude": "35.3972",
-            "longitude": "5.3658"
-        },
-        {
-            "wilaya_code": "05",
             "name": "Batna",
             "name_ar": "باتنة",
             "daira": "Batna",
@@ -1122,16 +1012,6 @@
             "national_code": "532",
             "latitude": "35.3525",
             "longitude": "5.8667"
-        },
-        {
-            "wilaya_code": "05",
-            "name": "Bitam",
-            "name_ar": "بيطام",
-            "daira": "Barika",
-            "daira_ar": "بريكة",
-            "national_code": "514",
-            "latitude": "35.0333",
-            "longitude": "5.3"
         },
         {
             "wilaya_code": "05",
@@ -1202,16 +1082,6 @@
             "national_code": "513",
             "latitude": "35.6851412",
             "longitude": "6.3013432"
-        },
-        {
-            "wilaya_code": "05",
-            "name": "Djezzar",
-            "name_ar": "الجزار",
-            "daira": "Djezzar",
-            "daira_ar": "الجزار",
-            "national_code": "543",
-            "latitude": "35.50956",
-            "longitude": "5.26679"
         },
         {
             "wilaya_code": "05",
@@ -1365,16 +1235,6 @@
         },
         {
             "wilaya_code": "05",
-            "name": "M Doukal",
-            "name_ar": "إمدوكل",
-            "daira": "Barika",
-            "daira_ar": "بريكة",
-            "national_code": "555",
-            "latitude": "35.121",
-            "longitude": "5.485278"
-        },
-        {
-            "wilaya_code": "05",
             "name": "Maafa",
             "name_ar": "معافة",
             "daira": "Ain Touta",
@@ -1442,16 +1302,6 @@
             "national_code": "548",
             "latitude": "35.4205",
             "longitude": "6.23"
-        },
-        {
-            "wilaya_code": "05",
-            "name": "Ouled Ammar",
-            "name_ar": "أولاد عمار",
-            "daira": "Djezzar",
-            "daira_ar": "الجزار",
-            "national_code": "556",
-            "latitude": "35.15",
-            "longitude": "5.34"
         },
         {
             "wilaya_code": "05",
@@ -1535,16 +1385,6 @@
         },
         {
             "wilaya_code": "05",
-            "name": "Seggana",
-            "name_ar": "سقانة",
-            "daira": "Seggana",
-            "daira_ar": "سقانة",
-            "national_code": "529",
-            "latitude": "35.365555",
-            "longitude": "5.575"
-        },
-        {
-            "wilaya_code": "05",
             "name": "Seriana",
             "name_ar": "سريانة",
             "daira": "Seriana",
@@ -1622,16 +1462,6 @@
             "national_code": "521",
             "latitude": "35.160278",
             "longitude": "6.0347"
-        },
-        {
-            "wilaya_code": "05",
-            "name": "Tilatou",
-            "name_ar": "تيلاطو",
-            "daira": "Seggana",
-            "daira_ar": "سقانة",
-            "national_code": "518",
-            "latitude": "35.329167",
-            "longitude": "5.8667"
         },
         {
             "wilaya_code": "05",
@@ -2185,16 +2015,6 @@
         },
         {
             "wilaya_code": "07",
-            "name": "Ain Zaatout",
-            "name_ar": "عين زعطوط",
-            "daira": "El Kantara",
-            "daira_ar": "القنطرة",
-            "national_code": "718",
-            "latitude": "34.9080556",
-            "longitude": "5.83"
-        },
-        {
-            "wilaya_code": "07",
             "name": "Biskra",
             "name_ar": "بسكرة",
             "daira": "Biskra",
@@ -2225,16 +2045,6 @@
         },
         {
             "wilaya_code": "07",
-            "name": "Branis",
-            "name_ar": "برانيس",
-            "daira": "Djemorah",
-            "daira_ar": "جمورة",
-            "national_code": "7003",
-            "latitude": "34.99338",
-            "longitude": "5.775"
-        },
-        {
-            "wilaya_code": "07",
             "name": "Chetma",
             "name_ar": "شتمة",
             "daira": "Sidi Okba",
@@ -2242,16 +2052,6 @@
             "national_code": "704",
             "latitude": "34.801667",
             "longitude": "5.6597222"
-        },
-        {
-            "wilaya_code": "07",
-            "name": "Djemorah",
-            "name_ar": "جمورة",
-            "daira": "Djemorah",
-            "daira_ar": "جمورة",
-            "national_code": "720",
-            "latitude": "35.1026843",
-            "longitude": "5.864722"
         },
         {
             "wilaya_code": "07",
@@ -2292,26 +2092,6 @@
             "national_code": "713",
             "latitude": "34.8667",
             "longitude": "6.0255738"
-        },
-        {
-            "wilaya_code": "07",
-            "name": "El Kantara",
-            "name_ar": "القنطرة",
-            "daira": "El Kantara",
-            "daira_ar": "القنطرة",
-            "national_code": "717",
-            "latitude": "35.192365",
-            "longitude": "5.6668306"
-        },
-        {
-            "wilaya_code": "07",
-            "name": "El Outaya",
-            "name_ar": "الوطاية",
-            "daira": "El Outaya",
-            "daira_ar": "الوطاية",
-            "national_code": "719",
-            "latitude": "35.03412",
-            "longitude": "5.59517"
         },
         {
             "wilaya_code": "07",
@@ -3365,16 +3145,6 @@
         },
         {
             "wilaya_code": "12",
-            "name": "Bir-El-Ater",
-            "name_ar": "بئر العاتر",
-            "daira": "Bir El Ater",
-            "daira_ar": "بئر العاتر",
-            "national_code": "1202",
-            "latitude": "34.74488",
-            "longitude": "8.06"
-        },
-        {
-            "wilaya_code": "12",
             "name": "Boukhadra",
             "name_ar": "بوخضرة",
             "daira": "El Aouinet",
@@ -3455,16 +3225,6 @@
         },
         {
             "wilaya_code": "12",
-            "name": "El Ogla El Malha",
-            "name_ar": "العقلة المالحة",
-            "daira": "Bir El Ater",
-            "daira_ar": "بئر العاتر",
-            "national_code": "1215",
-            "latitude": "35.121944",
-            "longitude": "7.9402184"
-        },
-        {
-            "wilaya_code": "12",
             "name": "El-Aouinet",
             "name_ar": "العوينات",
             "daira": "El Aouinet",
@@ -3482,16 +3242,6 @@
             "national_code": "1206",
             "latitude": "35.29331683",
             "longitude": "8.278941075"
-        },
-        {
-            "wilaya_code": "12",
-            "name": "Ferkane",
-            "name_ar": "فركان",
-            "daira": "Negrine",
-            "daira_ar": "نقرين",
-            "national_code": "1228",
-            "latitude": "34.56233",
-            "longitude": "7.412222"
         },
         {
             "wilaya_code": "12",
@@ -3522,16 +3272,6 @@
             "national_code": "1212",
             "latitude": "35.66944",
             "longitude": "8.01667"
-        },
-        {
-            "wilaya_code": "12",
-            "name": "Negrine",
-            "name_ar": "نقرين",
-            "daira": "Negrine",
-            "daira_ar": "نقرين",
-            "national_code": "1209",
-            "latitude": "34.48593",
-            "longitude": "7.5193093"
         },
         {
             "wilaya_code": "12",
@@ -3675,16 +3415,6 @@
         },
         {
             "wilaya_code": "13",
-            "name": "Azail",
-            "name_ar": "العزايل",
-            "daira": "Beni Snous",
-            "daira_ar": "بني سنوس",
-            "national_code": "1321",
-            "latitude": "34.68",
-            "longitude": "-1.4656"
-        },
-        {
-            "wilaya_code": "13",
             "name": "Bab El Assa",
             "name_ar": "باب العسة",
             "daira": "Bab El Assa",
@@ -3692,16 +3422,6 @@
             "national_code": "1318",
             "latitude": "34.960317",
             "longitude": "-2.0318"
-        },
-        {
-            "wilaya_code": "13",
-            "name": "Beni Bahdel",
-            "name_ar": "بني بهدل",
-            "daira": "Beni Snous",
-            "daira_ar": "بني سنوس",
-            "national_code": "1342",
-            "latitude": "34.693889",
-            "longitude": "-1.5186"
         },
         {
             "wilaya_code": "13",
@@ -3755,16 +3475,6 @@
         },
         {
             "wilaya_code": "13",
-            "name": "Beni Snous",
-            "name_ar": "بني سنوس",
-            "daira": "Beni Snous",
-            "daira_ar": "بني سنوس",
-            "national_code": "1317",
-            "latitude": "34.6593136",
-            "longitude": "-1.5450766"
-        },
-        {
-            "wilaya_code": "13",
             "name": "Bensekrane",
             "name_ar": "بن سكران",
             "daira": "Bensekrane",
@@ -3782,16 +3492,6 @@
             "national_code": "1347",
             "latitude": "34.773889",
             "longitude": "-1.5731"
-        },
-        {
-            "wilaya_code": "13",
-            "name": "Bouihi",
-            "name_ar": "البويهي",
-            "daira": "Sidi Djillali",
-            "daira_ar": "سيدي الجيلالي",
-            "national_code": "1343",
-            "latitude": "34.413889",
-            "longitude": "1.015"
         },
         {
             "wilaya_code": "13",
@@ -3825,16 +3525,6 @@
         },
         {
             "wilaya_code": "13",
-            "name": "El Aricha",
-            "name_ar": "العريشة",
-            "daira": "Sebdou",
-            "daira_ar": "سبدو",
-            "national_code": "1332",
-            "latitude": "34.22259",
-            "longitude": "-1.257"
-        },
-        {
-            "wilaya_code": "13",
             "name": "El Fehoul",
             "name_ar": "الفحول",
             "daira": "Remchi",
@@ -3842,16 +3532,6 @@
             "national_code": "1305",
             "latitude": "35.12",
             "longitude": "-1.294444"
-        },
-        {
-            "wilaya_code": "13",
-            "name": "El Gor",
-            "name_ar": "القور",
-            "daira": "Sebdou",
-            "daira_ar": "سبدو",
-            "national_code": "1310",
-            "latitude": "34.63797",
-            "longitude": "-1.15296"
         },
         {
             "wilaya_code": "13",
@@ -4015,16 +3695,6 @@
         },
         {
             "wilaya_code": "13",
-            "name": "Sebdou",
-            "name_ar": "سبدو",
-            "daira": "Sebdou",
-            "daira_ar": "سبدو",
-            "national_code": "1335",
-            "latitude": "34.639444",
-            "longitude": "-1.32694"
-        },
-        {
-            "wilaya_code": "13",
             "name": "Sidi Abdelli",
             "name_ar": "سيدي العبدلي",
             "daira": "Bensekrane",
@@ -4032,16 +3702,6 @@
             "national_code": "1334",
             "latitude": "35.069",
             "longitude": "-1.1371"
-        },
-        {
-            "wilaya_code": "13",
-            "name": "Sidi Djillali",
-            "name_ar": "سيدي الجيلالي",
-            "daira": "Sidi Djillali",
-            "daira_ar": "سيدي الجيلالي",
-            "national_code": "1341",
-            "latitude": "34.4609",
-            "longitude": "-1.5664"
         },
         {
             "wilaya_code": "13",
@@ -4175,16 +3835,6 @@
         },
         {
             "wilaya_code": "14",
-            "name": "Bougara",
-            "name_ar": "بوقرة",
-            "daira": "Hamadia",
-            "daira_ar": "حمادية",
-            "national_code": "1440",
-            "latitude": "35.553333",
-            "longitude": "2.545"
-        },
-        {
-            "wilaya_code": "14",
             "name": "Chehaima",
             "name_ar": "شحيمة",
             "daira": "Ain Deheb",
@@ -4252,26 +3902,6 @@
             "national_code": "1422",
             "latitude": "35.393056",
             "longitude": "1.25"
-        },
-        {
-            "wilaya_code": "14",
-            "name": "Hamadia",
-            "name_ar": "حمادية",
-            "daira": "Hamadia",
-            "daira_ar": "حمادية",
-            "national_code": "1435",
-            "latitude": "35.45918",
-            "longitude": "1.87316"
-        },
-        {
-            "wilaya_code": "14",
-            "name": "Ksar Chellala",
-            "name_ar": "قصر الشلالة",
-            "daira": "Ksar Chellala",
-            "daira_ar": "قصر الشلالة",
-            "national_code": "1429",
-            "latitude": "35.21222",
-            "longitude": "2.3189"
         },
         {
             "wilaya_code": "14",
@@ -4385,16 +4015,6 @@
         },
         {
             "wilaya_code": "14",
-            "name": "Rechaiga",
-            "name_ar": "الرشايقة",
-            "daira": "Hamadia",
-            "daira_ar": "حمادية",
-            "national_code": "1430",
-            "latitude": "35.4081",
-            "longitude": "1.9739"
-        },
-        {
-            "wilaya_code": "14",
             "name": "Sebaine",
             "name_ar": "السبعين",
             "daira": "Mahdia",
@@ -4412,16 +4032,6 @@
             "national_code": "1411",
             "latitude": "35.656111",
             "longitude": "1.3728"
-        },
-        {
-            "wilaya_code": "14",
-            "name": "Serghine",
-            "name_ar": "سرغين",
-            "daira": "Ksar Chellala",
-            "daira_ar": "قصر الشلالة",
-            "national_code": "1439",
-            "latitude": "35.254444",
-            "longitude": "2.30861"
         },
         {
             "wilaya_code": "14",
@@ -4532,16 +4142,6 @@
             "national_code": "1426",
             "latitude": "34.02",
             "longitude": "1.276389"
-        },
-        {
-            "wilaya_code": "14",
-            "name": "Zmalet El Emir Abdelkade",
-            "name_ar": "زمالة الأمير عبد القادر",
-            "daira": "Ksar Chellala",
-            "daira_ar": "قصر الشلالة",
-            "national_code": "1409",
-            "latitude": "34.89336",
-            "longitude": "2.31"
         },
         {
             "wilaya_code": "15",
@@ -5805,16 +5405,6 @@
         },
         {
             "wilaya_code": "17",
-            "name": "Ain Fekka",
-            "name_ar": "عين فقه",
-            "daira": "Had Sahary",
-            "daira_ar": "حد الصحاري",
-            "national_code": "1735",
-            "latitude": "35.433333",
-            "longitude": "3.583333333"
-        },
-        {
-            "wilaya_code": "17",
             "name": "Ain Maabed",
             "name_ar": "عين معبد",
             "daira": "Hassi Bahbah",
@@ -5825,36 +5415,6 @@
         },
         {
             "wilaya_code": "17",
-            "name": "Ain Oussera",
-            "name_ar": "عين وسارة",
-            "daira": "Ain Oussera",
-            "daira_ar": "عين وسارة",
-            "national_code": "1731",
-            "latitude": "35.4542653",
-            "longitude": "2.904444"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Amourah",
-            "name_ar": "عمورة",
-            "daira": "Faidh El Botma",
-            "daira_ar": "فيض البطمة",
-            "national_code": "1734",
-            "latitude": "34.354444",
-            "longitude": "3.87083333"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Benhar",
-            "name_ar": "بنهار",
-            "daira": "Birine",
-            "daira_ar": "بيرين",
-            "national_code": "1732",
-            "latitude": "35.4859395",
-            "longitude": "3.1081"
-        },
-        {
-            "wilaya_code": "17",
             "name": "Benyagoub",
             "name_ar": "بن يعقوب",
             "daira": "Charef",
@@ -5862,26 +5422,6 @@
             "national_code": "1727",
             "latitude": "34.46649223",
             "longitude": "2.784077409"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Birine",
-            "name_ar": "بيرين",
-            "daira": "Birine",
-            "daira_ar": "بيرين",
-            "national_code": "1708",
-            "latitude": "35.6383108",
-            "longitude": "3.2869"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Bouira Lahdab",
-            "name_ar": "بويرة الأحداب",
-            "daira": "Had Sahary",
-            "daira_ar": "حد الصحاري",
-            "national_code": "1709",
-            "latitude": "35.243889",
-            "longitude": "3.75"
         },
         {
             "wilaya_code": "17",
@@ -5902,16 +5442,6 @@
             "national_code": "1725",
             "latitude": "34.9",
             "longitude": "3.4833"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Deldoul",
-            "name_ar": "دلدول",
-            "daira": "Messaad",
-            "daira_ar": "مسعد",
-            "national_code": "1729",
-            "latitude": "34.2053",
-            "longitude": "3.253056"
         },
         {
             "wilaya_code": "17",
@@ -5955,56 +5485,6 @@
         },
         {
             "wilaya_code": "17",
-            "name": "El Khemis",
-            "name_ar": "الخميس",
-            "daira": "Sidi Laadjel",
-            "daira_ar": "سيدي لعجال",
-            "national_code": "1711",
-            "latitude": "35.5397",
-            "longitude": "2.515833"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Faidh El Botma",
-            "name_ar": "فيض البطمة",
-            "daira": "Faidh El Botma",
-            "daira_ar": "فيض البطمة",
-            "national_code": "1707",
-            "latitude": "34.527777",
-            "longitude": "3.781944"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Guernini",
-            "name_ar": "قرنيني",
-            "daira": "Ain Oussera",
-            "daira_ar": "عين وسارة",
-            "national_code": "1721",
-            "latitude": "35.19970336",
-            "longitude": "2.682895682"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Guettara",
-            "name_ar": "قطارة",
-            "daira": "Messaad",
-            "daira_ar": "مسعد",
-            "national_code": "1718",
-            "latitude": "33.158611",
-            "longitude": "4.685277"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Had Sahary",
-            "name_ar": "حد الصحاري",
-            "daira": "Had Sahary",
-            "daira_ar": "حد الصحاري",
-            "national_code": "1720",
-            "latitude": "35.35056",
-            "longitude": "3.3609"
-        },
-        {
-            "wilaya_code": "17",
             "name": "Hassi Bahbah",
             "name_ar": "حاسي بحبح",
             "daira": "Hassi Bahbah",
@@ -6025,16 +5505,6 @@
         },
         {
             "wilaya_code": "17",
-            "name": "Hassi Fedoul",
-            "name_ar": "حاسي فدول",
-            "daira": "Sidi Laadjel",
-            "daira_ar": "سيدي لعجال",
-            "national_code": "1733",
-            "latitude": "35.436666",
-            "longitude": "2.2142"
-        },
-        {
-            "wilaya_code": "17",
             "name": "M'liliha",
             "name_ar": "مليليحة",
             "daira": "Dar Chioukh",
@@ -6042,16 +5512,6 @@
             "national_code": "1713",
             "latitude": "34.71228784",
             "longitude": "3.765454396"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Messaad",
-            "name_ar": "مسعد",
-            "daira": "Messaad",
-            "daira_ar": "مسعد",
-            "national_code": "1717",
-            "latitude": "34.15429",
-            "longitude": "3.50309"
         },
         {
             "wilaya_code": "17",
@@ -6065,36 +5525,6 @@
         },
         {
             "wilaya_code": "17",
-            "name": "Oum Laadham",
-            "name_ar": "أم العظام",
-            "daira": "Faidh El Botma",
-            "daira_ar": "فيض البطمة",
-            "national_code": "1724",
-            "latitude": "33.720277",
-            "longitude": "4.53056"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Sed Rahal",
-            "name_ar": "سد الرحال",
-            "daira": "Messaad",
-            "daira_ar": "مسعد",
-            "national_code": "1706",
-            "latitude": "33.948333",
-            "longitude": "3.231111"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Selmana",
-            "name_ar": "سلمانة",
-            "daira": "Messaad",
-            "daira_ar": "مسعد",
-            "national_code": "1722",
-            "latitude": "34.16440361",
-            "longitude": "3.562011761"
-        },
-        {
-            "wilaya_code": "17",
             "name": "Sidi Baizid",
             "name_ar": "سيدي بايزيد",
             "daira": "Dar Chioukh",
@@ -6102,16 +5532,6 @@
             "national_code": "1712",
             "latitude": "35.058055",
             "longitude": "3.430556"
-        },
-        {
-            "wilaya_code": "17",
-            "name": "Sidi Laadjel",
-            "name_ar": "سيدي لعجال",
-            "daira": "Sidi Laadjel",
-            "daira_ar": "سيدي لعجال",
-            "national_code": "1719",
-            "latitude": "35.438055",
-            "longitude": "2.5"
         },
         {
             "wilaya_code": "17",
@@ -8695,16 +8115,6 @@
         },
         {
             "wilaya_code": "26",
-            "name": "Aziz",
-            "name_ar": "عزيز",
-            "daira": "Aziz",
-            "daira_ar": "عزيز",
-            "national_code": "2632",
-            "latitude": "35.816667",
-            "longitude": "2.45"
-        },
-        {
-            "wilaya_code": "26",
             "name": "Baata",
             "name_ar": "بعطة",
             "daira": "El Omaria",
@@ -8765,16 +8175,6 @@
         },
         {
             "wilaya_code": "26",
-            "name": "Bouaiche",
-            "name_ar": "بوعيش",
-            "daira": "Chahbounia",
-            "daira_ar": "الشهبونية",
-            "national_code": "2610",
-            "latitude": "35.552778",
-            "longitude": "2.1731"
-        },
-        {
-            "wilaya_code": "26",
             "name": "Bouaichoune",
             "name_ar": "بوعيشون",
             "daira": "Si Mahdjoub",
@@ -8795,16 +8195,6 @@
         },
         {
             "wilaya_code": "26",
-            "name": "Boughzoul",
-            "name_ar": "بوغزول",
-            "daira": "Chahbounia",
-            "daira_ar": "الشهبونية",
-            "national_code": "2651",
-            "latitude": "35.7533117",
-            "longitude": "2.7381672"
-        },
-        {
-            "wilaya_code": "26",
             "name": "Bouskene",
             "name_ar": "بوسكن",
             "daira": "Beni Slimane",
@@ -8812,16 +8202,6 @@
             "national_code": "2619",
             "latitude": "36.191111",
             "longitude": "3.2361"
-        },
-        {
-            "wilaya_code": "26",
-            "name": "Chabounia",
-            "name_ar": "الشهبونية",
-            "daira": "Chahbounia",
-            "daira_ar": "الشهبونية",
-            "national_code": "2638",
-            "latitude": "35.54472221",
-            "longitude": "2.603333"
         },
         {
             "wilaya_code": "26",
@@ -8842,26 +8222,6 @@
             "national_code": "2640",
             "latitude": "35.922222",
             "longitude": "3.5667"
-        },
-        {
-            "wilaya_code": "26",
-            "name": "Derrag",
-            "name_ar": "دراق",
-            "daira": "Aziz",
-            "daira_ar": "عزيز",
-            "national_code": "2608",
-            "latitude": "35.908611",
-            "longitude": "2.38778"
-        },
-        {
-            "wilaya_code": "26",
-            "name": "Djouab",
-            "name_ar": "جواب",
-            "daira": "Souaghi",
-            "daira_ar": "السواقي",
-            "national_code": "2637",
-            "latitude": "36.13821",
-            "longitude": "3.42701"
         },
         {
             "wilaya_code": "26",
@@ -8962,26 +8322,6 @@
             "national_code": "2663",
             "latitude": "36.1914",
             "longitude": "3.2367"
-        },
-        {
-            "wilaya_code": "26",
-            "name": "Ksar El Boukhari",
-            "name_ar": "قصر البخاري",
-            "daira": "Ksar El Boukhari",
-            "daira_ar": "قصر البخاري",
-            "national_code": "2635",
-            "latitude": "35.88889",
-            "longitude": "2.74905"
-        },
-        {
-            "wilaya_code": "26",
-            "name": "M'fatha",
-            "name_ar": "مفاتحة",
-            "daira": "Ksar El Boukhari",
-            "daira_ar": "قصر البخاري",
-            "national_code": "2649",
-            "latitude": "35.8889",
-            "longitude": "2.93637"
         },
         {
             "wilaya_code": "26",
@@ -9115,16 +8455,6 @@
         },
         {
             "wilaya_code": "26",
-            "name": "Oum El Djellil",
-            "name_ar": "أم الجليل",
-            "daira": "Aziz",
-            "daira_ar": "عزيز",
-            "national_code": "2642",
-            "latitude": "35.8275",
-            "longitude": "2.6239"
-        },
-        {
-            "wilaya_code": "26",
             "name": "Ouzera",
             "name_ar": "وزرة",
             "daira": "Ouzera",
@@ -9142,16 +8472,6 @@
             "national_code": "2620",
             "latitude": "36.02783",
             "longitude": "3.138055"
-        },
-        {
-            "wilaya_code": "26",
-            "name": "Saneg",
-            "name_ar": "السانق",
-            "daira": "Ksar El Boukhari",
-            "daira_ar": "قصر البخاري",
-            "national_code": "2664",
-            "latitude": "35.8514",
-            "longitude": "3.253056"
         },
         {
             "wilaya_code": "26",
@@ -9212,36 +8532,6 @@
             "national_code": "2655",
             "latitude": "36.14766",
             "longitude": "3.75"
-        },
-        {
-            "wilaya_code": "26",
-            "name": "Sidi Zahar",
-            "name_ar": "سيدي زهار",
-            "daira": "Souaghi",
-            "daira_ar": "السواقي",
-            "national_code": "2628",
-            "latitude": "36.07811",
-            "longitude": "3.3317554"
-        },
-        {
-            "wilaya_code": "26",
-            "name": "Sidi Ziane",
-            "name_ar": "سيدي زيان",
-            "daira": "Souaghi",
-            "daira_ar": "السواقي",
-            "national_code": "2614",
-            "latitude": "36.00933333",
-            "longitude": "3.2556"
-        },
-        {
-            "wilaya_code": "26",
-            "name": "Souagui",
-            "name_ar": "السواقي",
-            "daira": "Souaghi",
-            "daira_ar": "السواقي",
-            "national_code": "2633",
-            "latitude": "36.1167",
-            "longitude": "3.26446"
         },
         {
             "wilaya_code": "26",
@@ -9685,16 +8975,6 @@
         },
         {
             "wilaya_code": "28",
-            "name": "Ben Srour",
-            "name_ar": "بن سرور",
-            "daira": "Ben Srour",
-            "daira_ar": "بن سرور",
-            "national_code": "2824",
-            "latitude": "35.0404431",
-            "longitude": "4.5633795"
-        },
-        {
-            "wilaya_code": "28",
             "name": "Beni Ilmane",
             "name_ar": "بني يلمان",
             "daira": "Sidi Aissa",
@@ -9702,16 +8982,6 @@
             "national_code": "2845",
             "latitude": "35.949167",
             "longitude": "4.11917"
-        },
-        {
-            "wilaya_code": "28",
-            "name": "Benzouh",
-            "name_ar": "بن زوه",
-            "daira": "Ouled Sidi Brahim",
-            "daira_ar": "أولاد سيدي ابراهيم",
-            "national_code": "2835",
-            "latitude": "35.438055",
-            "longitude": "4.383333"
         },
         {
             "wilaya_code": "28",
@@ -9775,16 +9045,6 @@
         },
         {
             "wilaya_code": "28",
-            "name": "Djebel Messaad",
-            "name_ar": "جبل مساعد",
-            "daira": "Djebel Messaad",
-            "daira_ar": "جبل مساعد",
-            "national_code": "2847",
-            "latitude": "34.991121",
-            "longitude": "4.092493"
-        },
-        {
-            "wilaya_code": "28",
             "name": "El Hamel",
             "name_ar": "الهامل",
             "daira": "Bousaada",
@@ -9792,16 +9052,6 @@
             "national_code": "2827",
             "latitude": "35.1283",
             "longitude": "4.083333"
-        },
-        {
-            "wilaya_code": "28",
-            "name": "El Houamed",
-            "name_ar": "الحوامد",
-            "daira": "Khoubana",
-            "daira_ar": "خبانة",
-            "national_code": "2826",
-            "latitude": "35.2917758",
-            "longitude": "4.53358"
         },
         {
             "wilaya_code": "28",
@@ -9822,26 +9072,6 @@
             "national_code": "2832",
             "latitude": "35.687602",
             "longitude": "4.2538452"
-        },
-        {
-            "wilaya_code": "28",
-            "name": "Khoubana",
-            "name_ar": "خبانة",
-            "daira": "Khoubana",
-            "daira_ar": "خبانة",
-            "national_code": "2807",
-            "latitude": "35.31444444",
-            "longitude": "4.566944"
-        },
-        {
-            "wilaya_code": "28",
-            "name": "M'cif",
-            "name_ar": "مسيف",
-            "daira": "Khoubana",
-            "daira_ar": "خبانة",
-            "national_code": "2808",
-            "latitude": "35.3281",
-            "longitude": "4.8"
         },
         {
             "wilaya_code": "28",
@@ -9915,16 +9145,6 @@
         },
         {
             "wilaya_code": "28",
-            "name": "Mohamed Boudiaf",
-            "name_ar": "محمد بوضياف",
-            "daira": "Ben Srour",
-            "daira_ar": "بن سرور",
-            "national_code": "2834",
-            "latitude": "34.8941667",
-            "longitude": "4.428611"
-        },
-        {
-            "wilaya_code": "28",
             "name": "Ouanougha",
             "name_ar": "ونوغة",
             "daira": "Hammam Dalaa",
@@ -9975,26 +9195,6 @@
         },
         {
             "wilaya_code": "28",
-            "name": "Ouled Sidi Brahim",
-            "name_ar": "أولاد سيدي ابراهيم",
-            "daira": "Ouled Sidi Brahim",
-            "daira_ar": "أولاد سيدي ابراهيم",
-            "national_code": "2821",
-            "latitude": "36.2",
-            "longitude": "4.174722"
-        },
-        {
-            "wilaya_code": "28",
-            "name": "Ouled Slimane",
-            "name_ar": "أولاد سليمان",
-            "daira": "Ben Srour",
-            "daira_ar": "بن سرور",
-            "national_code": "2825",
-            "latitude": "34.91609",
-            "longitude": "4.73694444"
-        },
-        {
-            "wilaya_code": "28",
             "name": "Oulteme",
             "name_ar": "ولتام",
             "daira": "Bousaada",
@@ -10012,16 +9212,6 @@
             "national_code": "2816",
             "latitude": "35.88638889",
             "longitude": "3.77236"
-        },
-        {
-            "wilaya_code": "28",
-            "name": "Sidi Ameur",
-            "name_ar": "سيدي عامر",
-            "daira": "Sidi Ameur",
-            "daira_ar": "سيدي عامر",
-            "national_code": "2822",
-            "latitude": "35.3667",
-            "longitude": "3.9066533"
         },
         {
             "wilaya_code": "28",
@@ -10045,16 +9235,6 @@
         },
         {
             "wilaya_code": "28",
-            "name": "Slim",
-            "name_ar": "سليم",
-            "daira": "Djebel Messaad",
-            "daira_ar": "جبل مساعد",
-            "national_code": "2843",
-            "latitude": "34.938889",
-            "longitude": "3.734722222"
-        },
-        {
-            "wilaya_code": "28",
             "name": "Souamaa",
             "name_ar": "السوامع",
             "daira": "Ouled Derradj",
@@ -10065,16 +9245,6 @@
         },
         {
             "wilaya_code": "28",
-            "name": "Tamsa",
-            "name_ar": "تامسة",
-            "daira": "Sidi Ameur",
-            "daira_ar": "سيدي عامر",
-            "national_code": "2823",
-            "latitude": "35.173611",
-            "longitude": "3.925556"
-        },
-        {
-            "wilaya_code": "28",
             "name": "Tarmount",
             "name_ar": "تارمونت",
             "daira": "Hammam Dalaa",
@@ -10082,16 +9252,6 @@
             "national_code": "2805",
             "latitude": "35.688056",
             "longitude": "4.174722"
-        },
-        {
-            "wilaya_code": "28",
-            "name": "Zarzour",
-            "name_ar": "زرزور",
-            "daira": "Ben Srour",
-            "daira_ar": "بن سرور",
-            "national_code": "2833",
-            "latitude": "35.0358333",
-            "longitude": "4.433333"
         },
         {
             "wilaya_code": "29",
@@ -10905,26 +10065,6 @@
         },
         {
             "wilaya_code": "32",
-            "name": "Ain El Orak",
-            "name_ar": "عين العراك",
-            "daira": "Labiodh Sidi Cheikh",
-            "daira_ar": "الأبيض سيدي الشيخ",
-            "national_code": "3208",
-            "latitude": "33.4100573",
-            "longitude": "0.7385302"
-        },
-        {
-            "wilaya_code": "32",
-            "name": "Arbaouat",
-            "name_ar": "اربوات",
-            "daira": "Labiodh Sidi Cheikh",
-            "daira_ar": "الأبيض سيدي الشيخ",
-            "national_code": "3209",
-            "latitude": "33.08833333",
-            "longitude": "0.5823"
-        },
-        {
-            "wilaya_code": "32",
             "name": "Boualem",
             "name_ar": "بوعلام",
             "daira": "Boualem",
@@ -10942,26 +10082,6 @@
             "national_code": "3210",
             "latitude": "34.1436111",
             "longitude": "0.033333"
-        },
-        {
-            "wilaya_code": "32",
-            "name": "Boussemghoun",
-            "name_ar": "بوسمغون",
-            "daira": "Boussemghoun",
-            "daira_ar": "بوسمغون",
-            "national_code": "3213",
-            "latitude": "32.8643",
-            "longitude": "0.0201"
-        },
-        {
-            "wilaya_code": "32",
-            "name": "Brezina",
-            "name_ar": "بريزينة",
-            "daira": "Brezina",
-            "daira_ar": "بريزينة",
-            "national_code": "3204",
-            "latitude": "33.08333333",
-            "longitude": "1.261"
         },
         {
             "wilaya_code": "32",
@@ -10995,16 +10115,6 @@
         },
         {
             "wilaya_code": "32",
-            "name": "El Bnoud",
-            "name_ar": "البنود",
-            "daira": "Labiodh Sidi Cheikh",
-            "daira_ar": "الأبيض سيدي الشيخ",
-            "national_code": "3216",
-            "latitude": "32.31222222",
-            "longitude": "0.244444"
-        },
-        {
-            "wilaya_code": "32",
             "name": "El Kheiter",
             "name_ar": "الخيثر",
             "daira": "Bougtoub",
@@ -11025,16 +10135,6 @@
         },
         {
             "wilaya_code": "32",
-            "name": "Ghassoul",
-            "name_ar": "الغاسول",
-            "daira": "Brezina",
-            "daira_ar": "بريزينة",
-            "national_code": "3205",
-            "latitude": "33.377222",
-            "longitude": "1.2030556"
-        },
-        {
-            "wilaya_code": "32",
             "name": "Kef El Ahmar",
             "name_ar": "الكاف الأحمر",
             "daira": "Rogassa",
@@ -11042,26 +10142,6 @@
             "national_code": "3212",
             "latitude": "34.15",
             "longitude": "0.5975443"
-        },
-        {
-            "wilaya_code": "32",
-            "name": "Krakda",
-            "name_ar": "كراكدة",
-            "daira": "Brezina",
-            "daira_ar": "بريزينة",
-            "national_code": "3215",
-            "latitude": "33.319167",
-            "longitude": "0.957222"
-        },
-        {
-            "wilaya_code": "32",
-            "name": "Labiodh Sidi Cheikh",
-            "name_ar": "الأبيض سيدي الشيخ",
-            "daira": "Labiodh Sidi Cheikh",
-            "daira_ar": "الأبيض سيدي الشيخ",
-            "national_code": "3207",
-            "latitude": "32.898611",
-            "longitude": "0.544444"
         },
         {
             "wilaya_code": "32",
@@ -15412,6 +14492,926 @@
             "national_code": "5803",
             "latitude": "30.552222",
             "longitude": "2.915"
+        },
+        {
+            "wilaya_code": "59",
+            "name": "Aflou",
+            "name_ar": "أفلو",
+            "daira": "Aflou",
+            "daira_ar": "أفلو",
+            "national_code": "319",
+            "latitude": "34.11279",
+            "longitude": "2.1019"
+        },
+        {
+            "wilaya_code": "59",
+            "name": "Brida",
+            "name_ar": "بريدة",
+            "daira": "Brida",
+            "daira_ar": "بريدة",
+            "national_code": "313",
+            "latitude": "33.906111",
+            "longitude": "1.784444"
+        },
+        {
+            "wilaya_code": "59",
+            "name": "El Ghicha",
+            "name_ar": "الغيشة",
+            "daira": "El Ghicha",
+            "daira_ar": "الغيشة",
+            "national_code": "314",
+            "latitude": "33.930145",
+            "longitude": "2.140703"
+        },
+        {
+            "wilaya_code": "59",
+            "name": "Hadj Mechri",
+            "name_ar": "الحاج مشري",
+            "daira": "Brida",
+            "daira_ar": "بريدة",
+            "national_code": "315",
+            "latitude": "33.9571296",
+            "longitude": "1.5992068"
+        },
+        {
+            "wilaya_code": "59",
+            "name": "Oued M'zi",
+            "name_ar": "وادي مزي",
+            "daira": "Oued Morra",
+            "daira_ar": "وادي مرة",
+            "national_code": "322",
+            "latitude": "33.92422",
+            "longitude": "2.4369"
+        },
+        {
+            "wilaya_code": "59",
+            "name": "Oued Morra",
+            "name_ar": "وادي مرة",
+            "daira": "Oued Morra",
+            "daira_ar": "وادي مرة",
+            "national_code": "321",
+            "latitude": "34.1666669",
+            "longitude": "2.3166669"
+        },
+        {
+            "wilaya_code": "59",
+            "name": "Sebgag",
+            "name_ar": "سبقاق",
+            "daira": "Aflou",
+            "daira_ar": "أفلو",
+            "national_code": "316",
+            "latitude": "34.02958",
+            "longitude": "1.92798"
+        },
+        {
+            "wilaya_code": "59",
+            "name": "Sidi Bouzid",
+            "name_ar": "سيدي بوزيد",
+            "daira": "Aflou",
+            "daira_ar": "أفلو",
+            "national_code": "324",
+            "latitude": "34.342777",
+            "longitude": "2.261389"
+        },
+        {
+            "wilaya_code": "59",
+            "name": "Taouiala",
+            "name_ar": "تاويالة",
+            "daira": "Brida",
+            "daira_ar": "بريدة",
+            "national_code": "317",
+            "latitude": "33.87186",
+            "longitude": "1.8606"
+        },
+        {
+            "wilaya_code": "60",
+            "name": "Azil Abedelkader",
+            "name_ar": "عزيل عبد القادر",
+            "daira": "Djezzar",
+            "daira_ar": "الجزار",
+            "national_code": "515",
+            "latitude": "35.3667",
+            "longitude": "5.1833"
+        },
+        {
+            "wilaya_code": "60",
+            "name": "Barika",
+            "name_ar": "بريكة",
+            "daira": "Barika",
+            "daira_ar": "بريكة",
+            "national_code": "542",
+            "latitude": "35.3972",
+            "longitude": "5.3658"
+        },
+        {
+            "wilaya_code": "60",
+            "name": "Bitam",
+            "name_ar": "بيطام",
+            "daira": "Barika",
+            "daira_ar": "بريكة",
+            "national_code": "514",
+            "latitude": "35.0333",
+            "longitude": "5.3"
+        },
+        {
+            "wilaya_code": "60",
+            "name": "Djezzar",
+            "name_ar": "الجزار",
+            "daira": "Djezzar",
+            "daira_ar": "الجزار",
+            "national_code": "543",
+            "latitude": "35.50956",
+            "longitude": "5.26679"
+        },
+        {
+            "wilaya_code": "60",
+            "name": "M Doukal",
+            "name_ar": "إمدوكل",
+            "daira": "Barika",
+            "daira_ar": "بريكة",
+            "national_code": "555",
+            "latitude": "35.121",
+            "longitude": "5.485278"
+        },
+        {
+            "wilaya_code": "60",
+            "name": "Ouled Ammar",
+            "name_ar": "أولاد عمار",
+            "daira": "Djezzar",
+            "daira_ar": "الجزار",
+            "national_code": "556",
+            "latitude": "35.15",
+            "longitude": "5.34"
+        },
+        {
+            "wilaya_code": "60",
+            "name": "Seggana",
+            "name_ar": "سقانة",
+            "daira": "Seggana",
+            "daira_ar": "سقانة",
+            "national_code": "529",
+            "latitude": "35.365555",
+            "longitude": "5.575"
+        },
+        {
+            "wilaya_code": "60",
+            "name": "Tilatou",
+            "name_ar": "تيلاطو",
+            "daira": "Seggana",
+            "daira_ar": "سقانة",
+            "national_code": "518",
+            "latitude": "35.329167",
+            "longitude": "5.8667"
+        },
+        {
+            "wilaya_code": "61",
+            "name": "Ain Zaatout",
+            "name_ar": "عين زعطوط",
+            "daira": "El Kantara",
+            "daira_ar": "القنطرة",
+            "national_code": "718",
+            "latitude": "34.9080556",
+            "longitude": "5.83"
+        },
+        {
+            "wilaya_code": "61",
+            "name": "Branis",
+            "name_ar": "برانيس",
+            "daira": "Djemorah",
+            "daira_ar": "جمورة",
+            "national_code": "7003",
+            "latitude": "34.99338",
+            "longitude": "5.775"
+        },
+        {
+            "wilaya_code": "61",
+            "name": "Djemorah",
+            "name_ar": "جمورة",
+            "daira": "Djemorah",
+            "daira_ar": "جمورة",
+            "national_code": "720",
+            "latitude": "35.1026843",
+            "longitude": "5.864722"
+        },
+        {
+            "wilaya_code": "61",
+            "name": "El Kantara",
+            "name_ar": "القنطرة",
+            "daira": "El Kantara",
+            "daira_ar": "القنطرة",
+            "national_code": "717",
+            "latitude": "35.192365",
+            "longitude": "5.6668306"
+        },
+        {
+            "wilaya_code": "61",
+            "name": "El Outaya",
+            "name_ar": "الوطاية",
+            "daira": "El Outaya",
+            "daira_ar": "الوطاية",
+            "national_code": "719",
+            "latitude": "35.03412",
+            "longitude": "5.59517"
+        },
+        {
+            "wilaya_code": "62",
+            "name": "Bir-El-Ater",
+            "name_ar": "بئر العاتر",
+            "daira": "Bir El Ater",
+            "daira_ar": "بئر العاتر",
+            "national_code": "1202",
+            "latitude": "34.74488",
+            "longitude": "8.06"
+        },
+        {
+            "wilaya_code": "62",
+            "name": "El Ogla El Malha",
+            "name_ar": "العقلة المالحة",
+            "daira": "Bir El Ater",
+            "daira_ar": "بئر العاتر",
+            "national_code": "1215",
+            "latitude": "35.121944",
+            "longitude": "7.9402184"
+        },
+        {
+            "wilaya_code": "62",
+            "name": "Ferkane",
+            "name_ar": "فركان",
+            "daira": "Negrine",
+            "daira_ar": "نقرين",
+            "national_code": "1228",
+            "latitude": "34.56233",
+            "longitude": "7.412222"
+        },
+        {
+            "wilaya_code": "62",
+            "name": "Negrine",
+            "name_ar": "نقرين",
+            "daira": "Negrine",
+            "daira_ar": "نقرين",
+            "national_code": "1209",
+            "latitude": "34.48593",
+            "longitude": "7.5193093"
+        },
+        {
+            "wilaya_code": "63",
+            "name": "Azail",
+            "name_ar": "العزايل",
+            "daira": "Beni Snous",
+            "daira_ar": "بني سنوس",
+            "national_code": "1321",
+            "latitude": "34.68",
+            "longitude": "-1.4656"
+        },
+        {
+            "wilaya_code": "63",
+            "name": "Beni Bahdel",
+            "name_ar": "بني بهدل",
+            "daira": "Beni Snous",
+            "daira_ar": "بني سنوس",
+            "national_code": "1342",
+            "latitude": "34.693889",
+            "longitude": "-1.5186"
+        },
+        {
+            "wilaya_code": "63",
+            "name": "Beni Snous",
+            "name_ar": "بني سنوس",
+            "daira": "Beni Snous",
+            "daira_ar": "بني سنوس",
+            "national_code": "1317",
+            "latitude": "34.6593136",
+            "longitude": "-1.5450766"
+        },
+        {
+            "wilaya_code": "63",
+            "name": "Bouihi",
+            "name_ar": "البويهي",
+            "daira": "Sidi Djillali",
+            "daira_ar": "سيدي الجيلالي",
+            "national_code": "1343",
+            "latitude": "34.413889",
+            "longitude": "1.015"
+        },
+        {
+            "wilaya_code": "63",
+            "name": "El Aricha",
+            "name_ar": "العريشة",
+            "daira": "Sebdou",
+            "daira_ar": "سبدو",
+            "national_code": "1332",
+            "latitude": "34.22259",
+            "longitude": "-1.257"
+        },
+        {
+            "wilaya_code": "63",
+            "name": "El Gor",
+            "name_ar": "القور",
+            "daira": "Sebdou",
+            "daira_ar": "سبدو",
+            "national_code": "1310",
+            "latitude": "34.63797",
+            "longitude": "-1.15296"
+        },
+        {
+            "wilaya_code": "63",
+            "name": "Sebdou",
+            "name_ar": "سبدو",
+            "daira": "Sebdou",
+            "daira_ar": "سبدو",
+            "national_code": "1335",
+            "latitude": "34.639444",
+            "longitude": "-1.32694"
+        },
+        {
+            "wilaya_code": "63",
+            "name": "Sidi Djillali",
+            "name_ar": "سيدي الجيلالي",
+            "daira": "Sidi Djillali",
+            "daira_ar": "سيدي الجيلالي",
+            "national_code": "1341",
+            "latitude": "34.4609",
+            "longitude": "-1.5664"
+        },
+        {
+            "wilaya_code": "64",
+            "name": "Bougara",
+            "name_ar": "بوقرة",
+            "daira": "Hamadia",
+            "daira_ar": "حمادية",
+            "national_code": "1440",
+            "latitude": "35.553333",
+            "longitude": "2.545"
+        },
+        {
+            "wilaya_code": "64",
+            "name": "Hamadia",
+            "name_ar": "حمادية",
+            "daira": "Hamadia",
+            "daira_ar": "حمادية",
+            "national_code": "1435",
+            "latitude": "35.45918",
+            "longitude": "1.87316"
+        },
+        {
+            "wilaya_code": "64",
+            "name": "Ksar Chellala",
+            "name_ar": "قصر الشلالة",
+            "daira": "Ksar Chellala",
+            "daira_ar": "قصر الشلالة",
+            "national_code": "1429",
+            "latitude": "35.21222",
+            "longitude": "2.3189"
+        },
+        {
+            "wilaya_code": "64",
+            "name": "Rechaiga",
+            "name_ar": "الرشايقة",
+            "daira": "Hamadia",
+            "daira_ar": "حمادية",
+            "national_code": "1430",
+            "latitude": "35.4081",
+            "longitude": "1.9739"
+        },
+        {
+            "wilaya_code": "64",
+            "name": "Serghine",
+            "name_ar": "سرغين",
+            "daira": "Ksar Chellala",
+            "daira_ar": "قصر الشلالة",
+            "national_code": "1439",
+            "latitude": "35.254444",
+            "longitude": "2.30861"
+        },
+        {
+            "wilaya_code": "64",
+            "name": "Zmalet El Emir Abdelkade",
+            "name_ar": "زمالة الأمير عبد القادر",
+            "daira": "Ksar Chellala",
+            "daira_ar": "قصر الشلالة",
+            "national_code": "1409",
+            "latitude": "34.89336",
+            "longitude": "2.31"
+        },
+        {
+            "wilaya_code": "65",
+            "name": "Ain Fekka",
+            "name_ar": "عين فقه",
+            "daira": "Had Sahary",
+            "daira_ar": "حد الصحاري",
+            "national_code": "1735",
+            "latitude": "35.433333",
+            "longitude": "3.583333333"
+        },
+        {
+            "wilaya_code": "65",
+            "name": "Ain Oussera",
+            "name_ar": "عين وسارة",
+            "daira": "Ain Oussera",
+            "daira_ar": "عين وسارة",
+            "national_code": "1731",
+            "latitude": "35.4542653",
+            "longitude": "2.904444"
+        },
+        {
+            "wilaya_code": "65",
+            "name": "Benhar",
+            "name_ar": "بنهار",
+            "daira": "Birine",
+            "daira_ar": "بيرين",
+            "national_code": "1732",
+            "latitude": "35.4859395",
+            "longitude": "3.1081"
+        },
+        {
+            "wilaya_code": "65",
+            "name": "Birine",
+            "name_ar": "بيرين",
+            "daira": "Birine",
+            "daira_ar": "بيرين",
+            "national_code": "1708",
+            "latitude": "35.6383108",
+            "longitude": "3.2869"
+        },
+        {
+            "wilaya_code": "65",
+            "name": "Bouira Lahdab",
+            "name_ar": "بويرة الأحداب",
+            "daira": "Had Sahary",
+            "daira_ar": "حد الصحاري",
+            "national_code": "1709",
+            "latitude": "35.243889",
+            "longitude": "3.75"
+        },
+        {
+            "wilaya_code": "65",
+            "name": "El Khemis",
+            "name_ar": "الخميس",
+            "daira": "Sidi Laadjel",
+            "daira_ar": "سيدي لعجال",
+            "national_code": "1711",
+            "latitude": "35.5397",
+            "longitude": "2.515833"
+        },
+        {
+            "wilaya_code": "65",
+            "name": "Guernini",
+            "name_ar": "قرنيني",
+            "daira": "Ain Oussera",
+            "daira_ar": "عين وسارة",
+            "national_code": "1721",
+            "latitude": "35.19970336",
+            "longitude": "2.682895682"
+        },
+        {
+            "wilaya_code": "65",
+            "name": "Had Sahary",
+            "name_ar": "حد الصحاري",
+            "daira": "Had Sahary",
+            "daira_ar": "حد الصحاري",
+            "national_code": "1720",
+            "latitude": "35.35056",
+            "longitude": "3.3609"
+        },
+        {
+            "wilaya_code": "65",
+            "name": "Hassi Fedoul",
+            "name_ar": "حاسي فدول",
+            "daira": "Sidi Laadjel",
+            "daira_ar": "سيدي لعجال",
+            "national_code": "1733",
+            "latitude": "35.436666",
+            "longitude": "2.2142"
+        },
+        {
+            "wilaya_code": "65",
+            "name": "Sidi Laadjel",
+            "name_ar": "سيدي لعجال",
+            "daira": "Sidi Laadjel",
+            "daira_ar": "سيدي لعجال",
+            "national_code": "1719",
+            "latitude": "35.438055",
+            "longitude": "2.5"
+        },
+        {
+            "wilaya_code": "66",
+            "name": "Amourah",
+            "name_ar": "عمورة",
+            "daira": "Faidh El Botma",
+            "daira_ar": "فيض البطمة",
+            "national_code": "1734",
+            "latitude": "34.354444",
+            "longitude": "3.87083333"
+        },
+        {
+            "wilaya_code": "66",
+            "name": "Deldoul",
+            "name_ar": "دلدول",
+            "daira": "Messaad",
+            "daira_ar": "مسعد",
+            "national_code": "1729",
+            "latitude": "34.2053",
+            "longitude": "3.253056"
+        },
+        {
+            "wilaya_code": "66",
+            "name": "Faidh El Botma",
+            "name_ar": "فيض البطمة",
+            "daira": "Faidh El Botma",
+            "daira_ar": "فيض البطمة",
+            "national_code": "1707",
+            "latitude": "34.527777",
+            "longitude": "3.781944"
+        },
+        {
+            "wilaya_code": "66",
+            "name": "Guettara",
+            "name_ar": "قطارة",
+            "daira": "Messaad",
+            "daira_ar": "مسعد",
+            "national_code": "1718",
+            "latitude": "33.158611",
+            "longitude": "4.685277"
+        },
+        {
+            "wilaya_code": "66",
+            "name": "Messaad",
+            "name_ar": "مسعد",
+            "daira": "Messaad",
+            "daira_ar": "مسعد",
+            "national_code": "1717",
+            "latitude": "34.15429",
+            "longitude": "3.50309"
+        },
+        {
+            "wilaya_code": "66",
+            "name": "Oum Laadham",
+            "name_ar": "أم العظام",
+            "daira": "Faidh El Botma",
+            "daira_ar": "فيض البطمة",
+            "national_code": "1724",
+            "latitude": "33.720277",
+            "longitude": "4.53056"
+        },
+        {
+            "wilaya_code": "66",
+            "name": "Sed Rahal",
+            "name_ar": "سد الرحال",
+            "daira": "Messaad",
+            "daira_ar": "مسعد",
+            "national_code": "1706",
+            "latitude": "33.948333",
+            "longitude": "3.231111"
+        },
+        {
+            "wilaya_code": "66",
+            "name": "Selmana",
+            "name_ar": "سلمانة",
+            "daira": "Messaad",
+            "daira_ar": "مسعد",
+            "national_code": "1722",
+            "latitude": "34.16440361",
+            "longitude": "3.562011761"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "Aziz",
+            "name_ar": "عزيز",
+            "daira": "Aziz",
+            "daira_ar": "عزيز",
+            "national_code": "2632",
+            "latitude": "35.816667",
+            "longitude": "2.45"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "Bouaiche",
+            "name_ar": "بوعيش",
+            "daira": "Chahbounia",
+            "daira_ar": "الشهبونية",
+            "national_code": "2610",
+            "latitude": "35.552778",
+            "longitude": "2.1731"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "Boughzoul",
+            "name_ar": "بوغزول",
+            "daira": "Chahbounia",
+            "daira_ar": "الشهبونية",
+            "national_code": "2651",
+            "latitude": "35.7533117",
+            "longitude": "2.7381672"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "Chabounia",
+            "name_ar": "الشهبونية",
+            "daira": "Chahbounia",
+            "daira_ar": "الشهبونية",
+            "national_code": "2638",
+            "latitude": "35.54472221",
+            "longitude": "2.603333"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "Derrag",
+            "name_ar": "دراق",
+            "daira": "Aziz",
+            "daira_ar": "عزيز",
+            "national_code": "2608",
+            "latitude": "35.908611",
+            "longitude": "2.38778"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "Djouab",
+            "name_ar": "جواب",
+            "daira": "Souaghi",
+            "daira_ar": "السواقي",
+            "national_code": "2637",
+            "latitude": "36.13821",
+            "longitude": "3.42701"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "Ksar El Boukhari",
+            "name_ar": "قصر البخاري",
+            "daira": "Ksar El Boukhari",
+            "daira_ar": "قصر البخاري",
+            "national_code": "2635",
+            "latitude": "35.88889",
+            "longitude": "2.74905"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "M'fatha",
+            "name_ar": "مفاتحة",
+            "daira": "Ksar El Boukhari",
+            "daira_ar": "قصر البخاري",
+            "national_code": "2649",
+            "latitude": "35.8889",
+            "longitude": "2.93637"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "Oum El Djellil",
+            "name_ar": "أم الجليل",
+            "daira": "Aziz",
+            "daira_ar": "عزيز",
+            "national_code": "2642",
+            "latitude": "35.8275",
+            "longitude": "2.6239"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "Saneg",
+            "name_ar": "السانق",
+            "daira": "Ksar El Boukhari",
+            "daira_ar": "قصر البخاري",
+            "national_code": "2664",
+            "latitude": "35.8514",
+            "longitude": "3.253056"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "Sidi Zahar",
+            "name_ar": "سيدي زهار",
+            "daira": "Souaghi",
+            "daira_ar": "السواقي",
+            "national_code": "2628",
+            "latitude": "36.07811",
+            "longitude": "3.3317554"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "Sidi Ziane",
+            "name_ar": "سيدي زيان",
+            "daira": "Souaghi",
+            "daira_ar": "السواقي",
+            "national_code": "2614",
+            "latitude": "36.00933333",
+            "longitude": "3.2556"
+        },
+        {
+            "wilaya_code": "67",
+            "name": "Souagui",
+            "name_ar": "السواقي",
+            "daira": "Souaghi",
+            "daira_ar": "السواقي",
+            "national_code": "2633",
+            "latitude": "36.1167",
+            "longitude": "3.26446"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "Ben Srour",
+            "name_ar": "بن سرور",
+            "daira": "Ben Srour",
+            "daira_ar": "بن سرور",
+            "national_code": "2824",
+            "latitude": "35.0404431",
+            "longitude": "4.5633795"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "Benzouh",
+            "name_ar": "بن زوه",
+            "daira": "Ouled Sidi Brahim",
+            "daira_ar": "أولاد سيدي ابراهيم",
+            "national_code": "2835",
+            "latitude": "35.438055",
+            "longitude": "4.383333"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "Djebel Messaad",
+            "name_ar": "جبل مساعد",
+            "daira": "Djebel Messaad",
+            "daira_ar": "جبل مساعد",
+            "national_code": "2847",
+            "latitude": "34.991121",
+            "longitude": "4.092493"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "El Houamed",
+            "name_ar": "الحوامد",
+            "daira": "Khoubana",
+            "daira_ar": "خبانة",
+            "national_code": "2826",
+            "latitude": "35.2917758",
+            "longitude": "4.53358"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "Khoubana",
+            "name_ar": "خبانة",
+            "daira": "Khoubana",
+            "daira_ar": "خبانة",
+            "national_code": "2807",
+            "latitude": "35.31444444",
+            "longitude": "4.566944"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "M'cif",
+            "name_ar": "مسيف",
+            "daira": "Khoubana",
+            "daira_ar": "خبانة",
+            "national_code": "2808",
+            "latitude": "35.3281",
+            "longitude": "4.8"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "Mohamed Boudiaf",
+            "name_ar": "محمد بوضياف",
+            "daira": "Ben Srour",
+            "daira_ar": "بن سرور",
+            "national_code": "2834",
+            "latitude": "34.8941667",
+            "longitude": "4.428611"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "Ouled Sidi Brahim",
+            "name_ar": "أولاد سيدي ابراهيم",
+            "daira": "Ouled Sidi Brahim",
+            "daira_ar": "أولاد سيدي ابراهيم",
+            "national_code": "2821",
+            "latitude": "36.2",
+            "longitude": "4.174722"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "Ouled Slimane",
+            "name_ar": "أولاد سليمان",
+            "daira": "Ben Srour",
+            "daira_ar": "بن سرور",
+            "national_code": "2825",
+            "latitude": "34.91609",
+            "longitude": "4.73694444"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "Sidi Ameur",
+            "name_ar": "سيدي عامر",
+            "daira": "Sidi Ameur",
+            "daira_ar": "سيدي عامر",
+            "national_code": "2822",
+            "latitude": "35.3667",
+            "longitude": "3.9066533"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "Slim",
+            "name_ar": "سليم",
+            "daira": "Djebel Messaad",
+            "daira_ar": "جبل مساعد",
+            "national_code": "2843",
+            "latitude": "34.938889",
+            "longitude": "3.734722222"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "Tamsa",
+            "name_ar": "تامسة",
+            "daira": "Sidi Ameur",
+            "daira_ar": "سيدي عامر",
+            "national_code": "2823",
+            "latitude": "35.173611",
+            "longitude": "3.925556"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "Zarzour",
+            "name_ar": "زرزور",
+            "daira": "Ben Srour",
+            "daira_ar": "بن سرور",
+            "national_code": "2833",
+            "latitude": "35.0358333",
+            "longitude": "4.433333"
+        },
+        {
+            "wilaya_code": "69",
+            "name": "Ain El Orak",
+            "name_ar": "عين العراك",
+            "daira": "Labiodh Sidi Cheikh",
+            "daira_ar": "الأبيض سيدي الشيخ",
+            "national_code": "3208",
+            "latitude": "33.4100573",
+            "longitude": "0.7385302"
+        },
+        {
+            "wilaya_code": "69",
+            "name": "Arbaouat",
+            "name_ar": "اربوات",
+            "daira": "Labiodh Sidi Cheikh",
+            "daira_ar": "الأبيض سيدي الشيخ",
+            "national_code": "3209",
+            "latitude": "33.08833333",
+            "longitude": "0.5823"
+        },
+        {
+            "wilaya_code": "69",
+            "name": "Boussemghoun",
+            "name_ar": "بوسمغون",
+            "daira": "Boussemghoun",
+            "daira_ar": "بوسمغون",
+            "national_code": "3213",
+            "latitude": "32.8643",
+            "longitude": "0.0201"
+        },
+        {
+            "wilaya_code": "69",
+            "name": "Brezina",
+            "name_ar": "بريزينة",
+            "daira": "Brezina",
+            "daira_ar": "بريزينة",
+            "national_code": "3204",
+            "latitude": "33.08333333",
+            "longitude": "1.261"
+        },
+        {
+            "wilaya_code": "69",
+            "name": "El Bnoud",
+            "name_ar": "البنود",
+            "daira": "Labiodh Sidi Cheikh",
+            "daira_ar": "الأبيض سيدي الشيخ",
+            "national_code": "3216",
+            "latitude": "32.31222222",
+            "longitude": "0.244444"
+        },
+        {
+            "wilaya_code": "69",
+            "name": "Ghassoul",
+            "name_ar": "الغاسول",
+            "daira": "Brezina",
+            "daira_ar": "بريزينة",
+            "national_code": "3205",
+            "latitude": "33.377222",
+            "longitude": "1.2030556"
+        },
+        {
+            "wilaya_code": "69",
+            "name": "Krakda",
+            "name_ar": "كراكدة",
+            "daira": "Brezina",
+            "daira_ar": "بريزينة",
+            "national_code": "3215",
+            "latitude": "33.319167",
+            "longitude": "0.957222"
+        },
+        {
+            "wilaya_code": "69",
+            "name": "Labiodh Sidi Cheikh",
+            "name_ar": "الأبيض سيدي الشيخ",
+            "daira": "Labiodh Sidi Cheikh",
+            "daira_ar": "الأبيض سيدي الشيخ",
+            "national_code": "3207",
+            "latitude": "32.898611",
+            "longitude": "0.544444"
         }
     ]
 }

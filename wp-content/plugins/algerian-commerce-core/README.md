@@ -81,7 +81,7 @@ tests/Unit/                  unit tests — no WordPress required
 | GET | `/customers/{id}` | `ac_manage_customers` | profile **and** lifetime statistics |
 | PATCH | `/customers/{id}` | `ac_manage_customers` | name, email and addresses — never roles or credentials |
 | GET | `/customers/{id}/orders` | `ac_manage_customers` | order history (paginated; `status`, `orderby`, `order`) |
-| GET | `/locations/wilayas` | **public** | all 58 wilayas (`search`, `active_only`) |
+| GET | `/locations/wilayas` | **public** | all 69 wilayas (`search`, `active_only`) |
 | GET | `/locations/wilayas/{id}` | **public** | one wilaya, by its official code |
 | GET | `/locations/wilayas/{id}/communes` | **public** | its communes (`search`, `postal_code`, `active_only`) |
 | GET | `/locations/communes/{id}` | **public** | one commune |
@@ -783,7 +783,7 @@ Roadmap §51, docs/PLAN.md §10. Wilayas, communes, postal codes, and the shippi
 destination ids kept separate from all of it.
 
 ```
-data/algeria/wilayas.json                58 wilayas, with Arabic names
+data/algeria/wilayas.json                69 wilayas, with Arabic names
 data/algeria/communes.json               1,541 communes, with Arabic names,
                                          daira, national code and coordinates
 data/algeria/provider-destinations.json  empty until §53
@@ -800,8 +800,10 @@ docker compose run --rm wpcli wp algerian-commerce import-algeria
 Nothing here was written from memory. A wrong commune name is a rejected valid address and a failed
 delivery, so both files are generated from sources that can be re-read and diffed:
 
-- **Wilayas** — WooCommerce's own `i18n/states.php` `DZ` block, all 58 post-2019 wilayas, ISO 3166-2
-  aligned. Arabic names come from the commune source.
+- **Wilayas** — codes 01–58 from WooCommerce's own `i18n/states.php` `DZ` block, ISO 3166-2 aligned.
+  Codes 59–69 — the former circonscriptions administratives, since promoted to full wilayas — and
+  every Arabic name come from the commune source, because WooCommerce's list still reflects the 2019
+  map.
 - **Communes** — `data/algeria/sources/algeria_cities.csv`, 1,541 rows, converted by
   `scripts/build-algeria-dataset.php`.
 
@@ -815,24 +817,23 @@ docker compose run --rm -T --user "$(id -u):$(id -g)" -v "$PWD/scripts:/scripts"
 The build step exists so the datasets have a *provenance* rather than an origin story — a 1,541-row
 file is only reviewable as a diff against a re-run.
 
-### The source needed two corrections, and both are derived from it
+### 69 wilayas, and one correction the source needed
 
-The CSV carries **69** wilaya codes. Algeria has 58. The build script resolves the difference from
-evidence inside the file and prints what it did, so neither correction rests on anyone's memory:
+Algeria has **69 wilayas**: the 58 of the 2019 reform plus the eleven former circonscriptions
+administratives — Aflou, Barika, El Kantara, Bir El Ater, El Aricha, Ksar Chellala, Ain Oussera,
+Messaad, Ksar El Boukhari, Boussaâda and El Abiodh Sidi Cheikh — since promoted in full. Codes 1–69
+are all real and are kept as the source has them.
 
-1. **Codes 59–69 are circonscriptions administratives**, not wilayas — Aflou, Barika, Messaad,
-   Boussaâda and seven others. Their parent is read off `code_commune`, whose leading digits are the
-   wilaya: Aflou's 9 communes all say `3` (Laghouat), Boussaâda's 13 all say `28` (M'Sila), and so on
-   for all 11. That folds 92 communes back where they belong.
-2. **The 2019 Touggourt split was half-applied.** Eleven rows carry Ouargla's code 30 while being
-   named Touggourt, which exists separately as code 55. The script follows the name, and Touggourt
-   ends with its 13 communes instead of 2.
+One correction is applied, and it is derived from the file rather than from anyone's memory, with its
+evidence printed: **the 2019 Touggourt split was half-applied.** Eleven rows carry Ouargla's code 30
+while being named Touggourt, which exists separately as code 55. The script follows the name, and
+Touggourt ends with its 13 communes instead of 2.
 
-One row in the source has a `code_commune` of `7003`, implying wilaya 70. The range check rejects it
-rather than letting it vote, which is why El Kantara resolves cleanly to Biskra.
+Result: **69 wilayas, 1,541 communes — Algeria's exact count — every wilaya non-empty, and no two
+communes in a wilaya colliding on their slug.**
 
-After both corrections: **58 wilayas, 1,541 communes — Algeria's exact count — every wilaya
-non-empty, and no two communes in a wilaya colliding on their slug.**
+A code above 69, if a future source carries one, is folded into the parent its `code_commune` implies
+rather than inventing a wilaya — the leading digits of that code are the wilaya.
 
 ### What is not in the data
 

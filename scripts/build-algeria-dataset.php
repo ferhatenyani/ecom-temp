@@ -29,19 +29,23 @@ declare(strict_types=1);
  *   wilaya_code   wilaya_name      wilaya_name_fr
  *   code_commune  Lat  Long
  *
- * Two normalisations are applied, and **both are derived from the file rather
- * than from anybody's memory of Algerian administrative geography**. Each is
- * reported with its evidence so it can be checked:
+ * Algeria has **69 wilayas**: the 58 of the 2019 reform plus the eleven former
+ * circonscriptions administratives — Aflou, Barika, El Kantara, Bir El Ater,
+ * El Aricha, Ksar Chellala, Ain Oussera, Messaad, Ksar El Boukhari, Boussaâda
+ * and El Abiodh Sidi Cheikh — since promoted in full. Codes 1-69 are all real
+ * and are kept as they are.
  *
- *  1. Codes above 58 are circonscriptions administratives, not wilayas —
- *     Algeria has had exactly 58 wilayas since the 2019 reform. Their parent
- *     is read off `code_commune`, whose leading digits are the wilaya.
- *  2. Rows whose `wilaya_name_fr` disagrees with their `wilaya_code` follow
- *     the name. This catches the half-applied 2019 split where Touggourt's
- *     communes still carry Ouargla's code while being named Touggourt.
+ * One normalisation is applied, and it is derived from the file rather than
+ * from anybody's memory, and reported with its evidence: rows whose
+ * `wilaya_name_fr` disagrees with their `wilaya_code` follow the name. That
+ * catches the half-applied 2019 split, where eleven of Touggourt's communes
+ * still carry Ouargla's code 30 while being named Touggourt.
+ *
+ * Codes beyond WILAYA_COUNT, if a future source carries any, are folded into
+ * the parent their `code_commune` implies rather than inventing a wilaya.
  */
 
-const WILAYA_COUNT = 58;
+const WILAYA_COUNT = 69;
 
 $source = $argv[1] ?? null;
 
@@ -155,7 +159,7 @@ foreach ($byCode as $code => $group) {
 }
 
 if ($parents !== []) {
-    printf("\n%d administrative district(s) folded into their parent wilaya.\n\n", count($parents));
+    printf("\n%d unknown code(s) folded into their parent wilaya.\n\n", count($parents));
 }
 
 // --------------------------------------------- names that disagree with codes
@@ -285,6 +289,18 @@ foreach ($rows as $row) {
     }
 }
 
+$latin = [];
+
+foreach ($rows as $row) {
+    $code = (int) $row['wilaya_code'];
+    $key = $code . '|' . $row['wilaya_name_fr'];
+    $code = isset($renamed[$key]) ? $renamed[$key]['to'] : $code;
+
+    if ($code <= WILAYA_COUNT) {
+        $latin[$code][$row['wilaya_name_fr']] = ($latin[$code][$row['wilaya_name_fr']] ?? 0) + 1;
+    }
+}
+
 $enriched = 0;
 
 foreach ($wilayas['wilayas'] as &$wilaya) {
@@ -298,6 +314,38 @@ foreach ($wilayas['wilayas'] as &$wilaya) {
 unset($wilaya);
 
 /*
+ * Codes 59-69 are not in WooCommerce's DZ state list, which still reflects the
+ * 2019 map, so their names come from the source dataset. Appended rather than
+ * regenerating the whole file: the 1-58 entries are ISO 3166-2 spellings that
+ * match what WooCommerce stores in an order's billing_state, and rewriting them
+ * from the CSV would swap "Algiers" for "Alger" across data already in use.
+ */
+$known = array_map(static fn (array $w): int => (int) $w['code'], $wilayas['wilayas']);
+$added = 0;
+
+foreach ($counts as $code => $_) {
+    if (in_array($code, $known, true)) {
+        continue;
+    }
+
+    $names = $latin[$code] ?? [];
+    arsort($names);
+
+    $wilayas['wilayas'][] = [
+        'code' => str_pad((string) $code, 2, '0', STR_PAD_LEFT),
+        'name' => (string) array_key_first($names),
+        'name_ar' => $arabic[$code] ?? '',
+    ];
+    $added++;
+}
+
+usort($wilayas['wilayas'], static fn (array $a, array $b): int => (int) $a['code'] <=> (int) $b['code']);
+
+if ($added > 0) {
+    printf("  added %d wilaya(s) absent from WooCommerce's DZ list\n\n", $added);
+}
+
+/*
  * The Latin names stay as they are — ISO 3166-2, matching WooCommerce's own DZ
  * state list, which is what an order's billing_state carries. The source CSV
  * spells some differently (Alger for Algiers, Tipaza for Tipasa); a client who
@@ -306,8 +354,9 @@ unset($wilaya);
  */
 $wilayas['note'] = 'Latin names follow ISO 3166-2, matching WooCommerce\'s DZ state list. '
     . 'Arabic names come from the commune source dataset.';
-$wilayas['source'] = 'WooCommerce i18n/states.php (DZ) — ISO 3166-2:DZ, post-2019 reform; '
-    . 'Arabic names from ' . basename($source);
+$wilayas['source'] = 'Codes 01-58 from WooCommerce i18n/states.php (DZ), ISO 3166-2:DZ. '
+    . 'Codes 59-69 — the former circonscriptions administratives, now full wilayas — '
+    . 'and all Arabic names from ' . basename($source);
 
 // ------------------------------------------------------------------- write
 

@@ -10,9 +10,8 @@
  * dataset or renumbering ids that orders point at.
  *
  * The commune fixtures are written to a temporary directory and removed from
- * the database at the end. The shipped communes.json is empty on purpose, and
- * this suite must not be the thing that quietly fills the canonical table with
- * invented place names.
+ * the database at the end, so the canonical tables are left holding exactly the
+ * shipped dataset and nothing this suite invented.
  *
  *   scripts/test.sh                                  # runs this and everything else
  *   docker compose run --rm -T wpcli wp eval-file - < tests/Api/locations.php
@@ -181,14 +180,14 @@ ac_check('GET /locations/coverage signed out', ac_req('GET', '/locations/coverag
 
 echo PHP_EOL, "=== the shipped wilayas ===", PHP_EOL;
 
-$all = ac_check('all 58 wilayas are loaded', ac_req('GET', '/locations/wilayas'), 200, function ($d) {
-    return ($d['meta']['total'] ?? 0) === 58 ?: 'got ' . ($d['meta']['total'] ?? '?');
+$all = ac_check('all 69 wilayas are loaded', ac_req('GET', '/locations/wilayas'), 200, function ($d) {
+    return ($d['meta']['total'] ?? 0) === 69 ?: 'got ' . ($d['meta']['total'] ?? '?');
 });
 
-ac_assert('codes run 1 to 58 with no gaps', (function () use ($all) {
+ac_assert('codes run 1 to 69 with no gaps', (function () use ($all) {
     $ids = array_column($all['data'], 'id');
 
-    return $ids === range(1, 58) ?: 'ids are not a contiguous 1..58';
+    return $ids === range(1, 69) ?: 'ids are not a contiguous 1..69';
 })());
 
 ac_assert('the id is the official wilaya code', (function () use ($all) {
@@ -219,7 +218,7 @@ ac_check('read one wilaya', ac_req('GET', '/locations/wilayas/31'), 200, functio
     return ($d['data']['id'] ?? 0) === 31 ?: 'got ' . ($d['data']['id'] ?? '?');
 });
 
-ac_check('a wilaya that does not exist', ac_req('GET', '/locations/wilayas/59'), 404);
+ac_check('a wilaya that does not exist', ac_req('GET', '/locations/wilayas/70'), 404);
 ac_check('a wilaya code of zero', ac_req('GET', '/locations/wilayas/0'), 400);
 
 ac_check('search by name', ac_req('GET', '/locations/wilayas', ['search' => 'Oran']), 200, function ($d) {
@@ -237,10 +236,9 @@ ac_check('search for nothing', ac_req('GET', '/locations/wilayas', ['search' => 
 
 echo PHP_EOL, "=== the shipped communes ===", PHP_EOL;
 
-// Algeria's real commune count. The source dataset splits 92 communes into
-// circonscriptions administratives and files 11 of Touggourt's under Ouargla's
-// old code; scripts/build-algeria-dataset.php resolves both, and this is what
-// says it resolved them into 58 wilayas rather than 69.
+// Algeria's real commune count, across its 69 wilayas — the 58 of the 2019
+// reform plus the eleven former circonscriptions administratives since
+// promoted in full.
 $coverage = ac_check('all 1,541 communes are loaded', ac_req('GET', '/locations/coverage'), 200, function ($d) {
     return ($d['data']['communes'] ?? 0) === 1541 ?: 'got ' . ($d['data']['communes'] ?? '?');
 });
@@ -248,7 +246,7 @@ $coverage = ac_check('all 1,541 communes are loaded', ac_req('GET', '/locations/
 ac_assert('every wilaya has at least one commune', (function () {
     $empty = [];
 
-    for ($code = 1; $code <= 58; $code++) {
+    for ($code = 1; $code <= 69; $code++) {
         if ((ac_req('GET', "/locations/wilayas/{$code}/communes")[1]['meta']['total'] ?? 0) === 0) {
             $empty[] = $code;
         }
@@ -262,21 +260,33 @@ ac_check('Alger has its 57 communes', ac_req('GET', '/locations/wilayas/16/commu
 });
 
 // The 2019 split was half-applied in the source: 11 of these carried Ouargla's
-// code while being named Touggourt.
+// code 30 while being named Touggourt, and the build script follows the name.
 ac_check('Touggourt has its 13, not 2', ac_req('GET', '/locations/wilayas/55/communes'), 200, function ($d) {
     return ($d['meta']['total'] ?? 0) === 13 ?: 'got ' . ($d['meta']['total'] ?? '?');
 });
 
-// 34 filed under M'Sila plus 13 filed under the Boussaâda circonscription.
-ac_check('M\'Sila absorbed the Boussaâda district', ac_req('GET', '/locations/wilayas/28/communes'), 200, function ($d) {
-    if (($d['meta']['total'] ?? 0) !== 47) {
-        return 'got ' . ($d['meta']['total'] ?? '?');
-    }
+// Boussaâda is its own wilaya now, so M'Sila keeps its 34 and the other 13
+// sit under code 68 rather than being folded back.
+ac_check('M\'Sila keeps its own 34', ac_req('GET', '/locations/wilayas/28/communes'), 200, function ($d) {
+    return ($d['meta']['total'] ?? 0) === 34 ?: 'got ' . ($d['meta']['total'] ?? '?');
+});
 
-    // Matched on the slug: the district is spelled "Boussaâda" and the commune
-    // inside it "Bou Saada", which is exactly the spelling variance the
-    // accent-folded key exists to absorb.
-    return in_array('bou-saada', array_column($d['data'], 'slug'), true) ?: 'Bou Saada itself is missing';
+ac_check('Boussaâda stands on its own', ac_req('GET', '/locations/wilayas/68/communes'), 200, function ($d) {
+    return ($d['meta']['total'] ?? 0) === 13 ?: 'got ' . ($d['meta']['total'] ?? '?');
+});
+
+// The source files the town itself under M'Sila while the wilaya named after
+// it holds thirteen others. Its slug folds "Bou Saada" and the daira's
+// "Bousaada" to the same key, which is what that fold is for.
+ac_check('Bou Saada the town is where the source puts it', ac_req('GET', '/locations/wilayas/28/communes', ['search' => 'saada']), 200, function ($d) {
+    return in_array('bou-saada', array_column($d['data'], 'slug'), true)
+        ?: 'got ' . implode(', ', array_column($d['data'], 'slug'));
+});
+
+// Not in WooCommerce's DZ state list, which still reflects the 2019 map.
+ac_check('the newest wilayas carry Arabic names too', ac_req('GET', '/locations/wilayas/59'), 200, function ($d) {
+    return ($d['data']['name'] ?? '') === 'Aflou' && ($d['data']['name_ar'] ?? '') !== ''
+        ?: 'got ' . wp_json_encode($d['data']);
 });
 
 ac_check('communes carry Arabic names and coordinates', ac_req('GET', '/locations/wilayas/16/communes'), 200, function ($d) {
@@ -400,7 +410,7 @@ ac_check('a commune that does not exist', ac_req('GET', '/locations/communes/999
 
 // "No communes loaded" and "no such wilaya" are different answers, and a
 // client filling an address form has to tell them apart.
-ac_check('communes of a wilaya that does not exist', ac_req('GET', '/locations/wilayas/59/communes'), 404);
+ac_check('communes of a wilaya that does not exist', ac_req('GET', '/locations/wilayas/70/communes'), 404);
 ac_check('search within a wilaya', ac_req('GET', '/locations/wilayas/16/communes', ['search' => 'Zz Test M']), 200, function ($d) {
     return ($d['meta']['total'] ?? 0) === 1 ?: 'got ' . ($d['meta']['total'] ?? '?');
 });
@@ -493,7 +503,7 @@ ac_check('nor into a wilaya', ac_req('GET', '/locations/wilayas/16'), 200, funct
 echo PHP_EOL, "=== coverage ===", PHP_EOL;
 
 ac_check('coverage reports what is loaded', ac_req('GET', '/locations/coverage'), 200, function ($d) {
-    if (($d['data']['wilayas'] ?? 0) !== 58) {
+    if (($d['data']['wilayas'] ?? 0) !== 69) {
         return 'wilayas: ' . ($d['data']['wilayas'] ?? '?');
     }
 

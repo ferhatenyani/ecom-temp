@@ -38,11 +38,11 @@ return new class implements Migration {
     }
 
     /**
-     * The primary key is the official wilaya code, 1–58, not an auto-increment.
+     * The primary key is the official wilaya code, 1–69, not an auto-increment.
      *
      * It is a real natural key: every Algerian knows Alger is 16, it is printed
-     * on number plates and identity documents, and the 2019 reform that took
-     * the count from 48 to 58 *added* codes 49–58 rather than renumbering the
+     * on number plates and identity documents, and every reform since — 48 to
+     * 58 in 2019, then to 69 — has *added* codes rather than renumbering the
      * originals. An auto-increment would invent a second identity for something
      * that already has a stable one, and re-importing the dataset could quietly
      * change it.
