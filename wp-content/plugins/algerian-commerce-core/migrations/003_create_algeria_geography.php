@@ -91,20 +91,41 @@ return new class implements Migration {
     {
         $table = $wpdb->prefix . 'ac_geo_communes';
 
+        /*
+         * `daira` is the administrative level between a wilaya and a commune.
+         * It is part of the canonical hierarchy and some couriers key their
+         * destinations on it, so it is stored rather than flattened away.
+         *
+         * `national_code` is the commune's code in the national numbering. Its
+         * first digits are the *pre-2019* wilaya, so it is an identifier to
+         * reconcile other datasets against, never the wilaya to deliver to.
+         *
+         * Coordinates are carried for §53 shipping — distance banding and map
+         * pins — rather than used now. They arrive with the same rows and
+         * dropping them would cost a migration and a full re-import to undo.
+         * Nullable: a dataset without them is still a usable dataset.
+         */
         $sql = "CREATE TABLE {$table} (
             id int(10) unsigned NOT NULL AUTO_INCREMENT,
             wilaya_id smallint(5) unsigned NOT NULL,
             slug varchar(160) NOT NULL DEFAULT '',
             name varchar(160) NOT NULL DEFAULT '',
             name_ar varchar(160) NOT NULL DEFAULT '',
+            daira varchar(160) NOT NULL DEFAULT '',
+            daira_ar varchar(160) NOT NULL DEFAULT '',
             postal_code varchar(10) NOT NULL DEFAULT '',
+            national_code varchar(16) NOT NULL DEFAULT '',
+            latitude decimal(10,7) NULL DEFAULT NULL,
+            longitude decimal(10,7) NULL DEFAULT NULL,
             is_active tinyint(1) NOT NULL DEFAULT 1,
             updated_at datetime NOT NULL,
             PRIMARY KEY  (id),
             UNIQUE KEY wilaya_slug (wilaya_id,slug),
             KEY wilaya_id (wilaya_id),
             KEY name (name),
+            KEY daira (daira),
             KEY postal_code (postal_code),
+            KEY national_code (national_code),
             KEY is_active (is_active)
         ) {$charsetCollate};";
 

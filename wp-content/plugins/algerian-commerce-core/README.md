@@ -18,9 +18,6 @@ Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (au
 (orders and customers) and §51 (Algerian geography) are in, along with rate limiting. Not implemented
 yet: 2FA, customer sessions, COD, shipping, payments, analytics, CMS.
 
-**The commune dataset ships empty.** See [Algerian geography](#algerian-geography) — the mechanism is
-complete and the 58 wilayas are loaded, but the ~1,500 communes have to be sourced.
-
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
 src/Core/                    Autoloader, Config, Logger, Plugin (wiring + lifecycle)
@@ -43,7 +40,8 @@ src/Customers/               CustomerController, CustomerService, CustomerInput,
                              CustomerStatistics, CustomerRepository, CustomerPresenter
 src/Geography/               LocationController, GeoService, GeoDataset, GeoSlug,
                              GeoRepository, GeoImporter
-data/algeria/                wilayas.json, communes.json, provider-destinations.json
+data/algeria/                wilayas.json, communes.json, provider-destinations.json,
+                             sources/ (the CSV they are built from)
 src/API/                     Response envelope, ApiException, ErrorNormalizer, Cors, OriginPolicy,
                              AbstractController, RestApi, HealthController, AuditLogController
 src/CLI/                     WP-CLI commands
@@ -785,9 +783,11 @@ Roadmap §51, docs/PLAN.md §10. Wilayas, communes, postal codes, and the shippi
 destination ids kept separate from all of it.
 
 ```
-data/algeria/wilayas.json               58 wilayas — complete
-data/algeria/communes.json              EMPTY — see below
-data/algeria/provider-destinations.json empty until §53
+data/algeria/wilayas.json                58 wilayas, with Arabic names
+data/algeria/communes.json               1,541 communes, with Arabic names,
+                                         daira, national code and coordinates
+data/algeria/provider-destinations.json  empty until §53
+data/algeria/sources/                    the CSV the two above are built from
 ```
 
 ```bash
@@ -795,21 +795,54 @@ docker compose run --rm wpcli wp algerian-commerce import-algeria --dry-run
 docker compose run --rm wpcli wp algerian-commerce import-algeria
 ```
 
-### The communes are not shipped, on purpose
+### Where the data comes from
 
-Algeria has roughly 1,500 communes and this repository does not contain them. They were **not**
-written from memory: a wrong commune name is a rejected valid address and a failed delivery, and a
-list that is 95% right is worse than an empty one, because nothing about a working checkout tells you
-which 5% is missing.
+Nothing here was written from memory. A wrong commune name is a rejected valid address and a failed
+delivery, so both files are generated from sources that can be re-read and diffed:
 
-So `communes.json` ships empty, with its field documentation inside it. Source a real dataset — the
-ONS commune list, a courier's published destination export, or the client's own — drop it in, and run
-the import. `GET /locations/coverage` and the importer's own warning both report the gap, so an
-install that never loaded them is visible rather than silently answering every commune lookup with an
-empty list.
+- **Wilayas** — WooCommerce's own `i18n/states.php` `DZ` block, all 58 post-2019 wilayas, ISO 3166-2
+  aligned. Arabic names come from the commune source.
+- **Communes** — `data/algeria/sources/algeria_cities.csv`, 1,541 rows, converted by
+  `scripts/build-algeria-dataset.php`.
 
-The wilayas *are* complete, and they were not written from memory either: they are generated from
-WooCommerce's own `i18n/states.php` `DZ` block, which carries all 58 post-2019 wilayas.
+```bash
+docker compose run --rm -T --user "$(id -u):$(id -g)" -v "$PWD/scripts:/scripts" \
+  --entrypoint php wpcli /scripts/build-algeria-dataset.php \
+  /var/www/html/wp-content/plugins/algerian-commerce-core/data/algeria/sources/algeria_cities.csv \
+  /var/www/html/wp-content/plugins/algerian-commerce-core/data/algeria
+```
+
+The build step exists so the datasets have a *provenance* rather than an origin story — a 1,541-row
+file is only reviewable as a diff against a re-run.
+
+### The source needed two corrections, and both are derived from it
+
+The CSV carries **69** wilaya codes. Algeria has 58. The build script resolves the difference from
+evidence inside the file and prints what it did, so neither correction rests on anyone's memory:
+
+1. **Codes 59–69 are circonscriptions administratives**, not wilayas — Aflou, Barika, Messaad,
+   Boussaâda and seven others. Their parent is read off `code_commune`, whose leading digits are the
+   wilaya: Aflou's 9 communes all say `3` (Laghouat), Boussaâda's 13 all say `28` (M'Sila), and so on
+   for all 11. That folds 92 communes back where they belong.
+2. **The 2019 Touggourt split was half-applied.** Eleven rows carry Ouargla's code 30 while being
+   named Touggourt, which exists separately as code 55. The script follows the name, and Touggourt
+   ends with its 13 communes instead of 2.
+
+One row in the source has a `code_commune` of `7003`, implying wilaya 70. The range check rejects it
+rather than letting it vote, which is why El Kantara resolves cleanly to Biskra.
+
+After both corrections: **58 wilayas, 1,541 communes — Algeria's exact count — every wilaya
+non-empty, and no two communes in a wilaya colliding on their slug.**
+
+### What is not in the data
+
+**Postal codes.** The source has none. `code_commune` is the *national commune code*, three or four
+digits against Algeria's five-digit postal codes, so it is stored as `national_code` and
+`postal_code` is left empty. Mapping one to the other would have put a wrong postal code on every
+address in the country.
+
+Coordinates are carried for §53 shipping rather than used now — they arrive with the same rows, and
+dropping them would cost a migration and a full re-import to undo.
 
 ### Why custom tables
 

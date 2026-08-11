@@ -1,297 +1,297 @@
 {
     "version": "2019-12-05",
-    "source": "WooCommerce i18n/states.php (DZ) — ISO 3166-2:DZ, post-2019 reform",
-    "note": "name_ar is intentionally empty; supply Arabic names with your own dataset.",
+    "source": "WooCommerce i18n/states.php (DZ) — ISO 3166-2:DZ, post-2019 reform; Arabic names from algeria_cities.csv",
+    "note": "Latin names follow ISO 3166-2, matching WooCommerce's DZ state list. Arabic names come from the commune source dataset.",
     "wilayas": [
         {
             "code": "01",
             "name": "Adrar",
-            "name_ar": ""
+            "name_ar": "أدرار"
         },
         {
             "code": "02",
             "name": "Chlef",
-            "name_ar": ""
+            "name_ar": "الشلف"
         },
         {
             "code": "03",
             "name": "Laghouat",
-            "name_ar": ""
+            "name_ar": "الأغواط"
         },
         {
             "code": "04",
             "name": "Oum El Bouaghi",
-            "name_ar": ""
+            "name_ar": "أم البواقي"
         },
         {
             "code": "05",
             "name": "Batna",
-            "name_ar": ""
+            "name_ar": "باتنة"
         },
         {
             "code": "06",
             "name": "Béjaïa",
-            "name_ar": ""
+            "name_ar": "بجاية"
         },
         {
             "code": "07",
             "name": "Biskra",
-            "name_ar": ""
+            "name_ar": "بسكرة"
         },
         {
             "code": "08",
             "name": "Béchar",
-            "name_ar": ""
+            "name_ar": "بشار"
         },
         {
             "code": "09",
             "name": "Blida",
-            "name_ar": ""
+            "name_ar": "البليدة"
         },
         {
             "code": "10",
             "name": "Bouira",
-            "name_ar": ""
+            "name_ar": "البويرة"
         },
         {
             "code": "11",
             "name": "Tamanrasset",
-            "name_ar": ""
+            "name_ar": "تمنراست"
         },
         {
             "code": "12",
             "name": "Tébessa",
-            "name_ar": ""
+            "name_ar": "تبسة"
         },
         {
             "code": "13",
             "name": "Tlemcen",
-            "name_ar": ""
+            "name_ar": "تلمسان"
         },
         {
             "code": "14",
             "name": "Tiaret",
-            "name_ar": ""
+            "name_ar": "تيارت"
         },
         {
             "code": "15",
             "name": "Tizi Ouzou",
-            "name_ar": ""
+            "name_ar": "تيزي وزو"
         },
         {
             "code": "16",
             "name": "Algiers",
-            "name_ar": ""
+            "name_ar": "الجزائر"
         },
         {
             "code": "17",
             "name": "Djelfa",
-            "name_ar": ""
+            "name_ar": "الجلفة"
         },
         {
             "code": "18",
             "name": "Jijel",
-            "name_ar": ""
+            "name_ar": "جيجل"
         },
         {
             "code": "19",
             "name": "Sétif",
-            "name_ar": ""
+            "name_ar": "سطيف"
         },
         {
             "code": "20",
             "name": "Saïda",
-            "name_ar": ""
+            "name_ar": "سعيدة"
         },
         {
             "code": "21",
             "name": "Skikda",
-            "name_ar": ""
+            "name_ar": "سكيكدة"
         },
         {
             "code": "22",
             "name": "Sidi Bel Abbès",
-            "name_ar": ""
+            "name_ar": "سيدي بلعباس"
         },
         {
             "code": "23",
             "name": "Annaba",
-            "name_ar": ""
+            "name_ar": "عنابة"
         },
         {
             "code": "24",
             "name": "Guelma",
-            "name_ar": ""
+            "name_ar": "قالمة"
         },
         {
             "code": "25",
             "name": "Constantine",
-            "name_ar": ""
+            "name_ar": "قسنطينة"
         },
         {
             "code": "26",
             "name": "Médéa",
-            "name_ar": ""
+            "name_ar": "المدية"
         },
         {
             "code": "27",
             "name": "Mostaganem",
-            "name_ar": ""
+            "name_ar": "مستغانم"
         },
         {
             "code": "28",
             "name": "M’Sila",
-            "name_ar": ""
+            "name_ar": "المسيلة"
         },
         {
             "code": "29",
             "name": "Mascara",
-            "name_ar": ""
+            "name_ar": "معسكر"
         },
         {
             "code": "30",
             "name": "Ouargla",
-            "name_ar": ""
+            "name_ar": "ورقلة"
         },
         {
             "code": "31",
             "name": "Oran",
-            "name_ar": ""
+            "name_ar": "وهران"
         },
         {
             "code": "32",
             "name": "El Bayadh",
-            "name_ar": ""
+            "name_ar": "البيض"
         },
         {
             "code": "33",
             "name": "Illizi",
-            "name_ar": ""
+            "name_ar": "إليزي"
         },
         {
             "code": "34",
             "name": "Bordj Bou Arréridj",
-            "name_ar": ""
+            "name_ar": "برج بوعريريج"
         },
         {
             "code": "35",
             "name": "Boumerdès",
-            "name_ar": ""
+            "name_ar": "بومرداس"
         },
         {
             "code": "36",
             "name": "El Tarf",
-            "name_ar": ""
+            "name_ar": "الطارف"
         },
         {
             "code": "37",
             "name": "Tindouf",
-            "name_ar": ""
+            "name_ar": "تندوف"
         },
         {
             "code": "38",
             "name": "Tissemsilt",
-            "name_ar": ""
+            "name_ar": "تيسمسيلت"
         },
         {
             "code": "39",
             "name": "El Oued",
-            "name_ar": ""
+            "name_ar": "الوادي"
         },
         {
             "code": "40",
             "name": "Khenchela",
-            "name_ar": ""
+            "name_ar": "خنشلة"
         },
         {
             "code": "41",
             "name": "Souk Ahras",
-            "name_ar": ""
+            "name_ar": "سوق أهراس"
         },
         {
             "code": "42",
             "name": "Tipasa",
-            "name_ar": ""
+            "name_ar": "تيبازة"
         },
         {
             "code": "43",
             "name": "Mila",
-            "name_ar": ""
+            "name_ar": "ميلة"
         },
         {
             "code": "44",
             "name": "Aïn Defla",
-            "name_ar": ""
+            "name_ar": "عين الدفلة"
         },
         {
             "code": "45",
             "name": "Naama",
-            "name_ar": ""
+            "name_ar": "النعامة"
         },
         {
             "code": "46",
             "name": "Aïn Témouchent",
-            "name_ar": ""
+            "name_ar": "عين تيموشنت"
         },
         {
             "code": "47",
             "name": "Ghardaïa",
-            "name_ar": ""
+            "name_ar": "غرداية"
         },
         {
             "code": "48",
             "name": "Relizane",
-            "name_ar": ""
+            "name_ar": "غليزان"
         },
         {
             "code": "49",
             "name": "Timimoun",
-            "name_ar": ""
+            "name_ar": "تيميمون"
         },
         {
             "code": "50",
             "name": "Bordj Badji Mokhtar",
-            "name_ar": ""
+            "name_ar": "برج باجي مختار"
         },
         {
             "code": "51",
             "name": "Ouled Djellal",
-            "name_ar": ""
+            "name_ar": "أولاد جلال"
         },
         {
             "code": "52",
             "name": "Béni Abbès",
-            "name_ar": ""
+            "name_ar": "بني عباس"
         },
         {
             "code": "53",
             "name": "In Salah",
-            "name_ar": ""
+            "name_ar": "عين صالح"
         },
         {
             "code": "54",
             "name": "In Guezzam",
-            "name_ar": ""
+            "name_ar": "عين قزام"
         },
         {
             "code": "55",
             "name": "Touggourt",
-            "name_ar": ""
+            "name_ar": "تقرت"
         },
         {
             "code": "56",
             "name": "Djanet",
-            "name_ar": ""
+            "name_ar": "جانت"
         },
         {
             "code": "57",
             "name": "El Meghaier",
-            "name_ar": ""
+            "name_ar": "المغير"
         },
         {
             "code": "58",
             "name": "El Meniaa",
-            "name_ar": ""
+            "name_ar": "المنيعة"
         }
     ]
 }

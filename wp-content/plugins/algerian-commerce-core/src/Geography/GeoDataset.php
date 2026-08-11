@@ -30,6 +30,7 @@ final class GeoDataset
     public const MAX_NAME = 120;
     public const MAX_COMMUNE_NAME = 160;
     public const MAX_POSTAL_CODE = 10;
+    public const MAX_NATIONAL_CODE = 16;
     public const MAX_PROVIDER = 32;
     public const MAX_DESTINATION_ID = 64;
 
@@ -160,12 +161,27 @@ final class GeoDataset
                 continue;
             }
 
+            $latitude = self::coordinate($entry['latitude'] ?? null, 90, $at, 'latitude', $errors);
+            $longitude = self::coordinate($entry['longitude'] ?? null, 180, $at, 'longitude', $errors);
+
+            if ($latitude === false || $longitude === false) {
+                continue;
+            }
+
             $rows[] = [
                 'wilaya_id' => $code,
                 'slug' => $slug,
                 'name' => $name,
                 'name_ar' => self::optionalName($entry['name_ar'] ?? null, self::MAX_COMMUNE_NAME),
+                // The daira is the level between a wilaya and a commune. Kept
+                // as a label, never as a key: dairas are renamed and merged far
+                // more often than communes are.
+                'daira' => self::optionalName($entry['daira'] ?? null, self::MAX_COMMUNE_NAME),
+                'daira_ar' => self::optionalName($entry['daira_ar'] ?? null, self::MAX_COMMUNE_NAME),
                 'postal_code' => $postal,
+                'national_code' => self::optionalName($entry['national_code'] ?? null, self::MAX_NATIONAL_CODE),
+                'latitude' => $latitude,
+                'longitude' => $longitude,
                 'is_active' => self::flag($entry['is_active'] ?? true),
             ];
         }
@@ -373,6 +389,44 @@ final class GeoDataset
         }
 
         return $postal;
+    }
+
+    /**
+     * A coordinate, or null when absent.
+     *
+     * Returned as a string so the decimal the dataset supplied is the decimal
+     * that gets stored — casting through a float and back is how 36.7538 turns
+     * into 36.75379999999999.
+     *
+     * Range-checked rather than merely type-checked, because the failure being
+     * guarded against is a file with latitude and longitude the wrong way
+     * round: 2.15 and 36.75 are both valid floats, and only the range says
+     * which of them cannot be a latitude in Algeria's half of the world.
+     *
+     * @param list<string> $errors
+     * @return string|null|false false when invalid
+     */
+    private static function coordinate(mixed $value, float $limit, string $at, string $field, array &$errors): string|null|false
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (!is_scalar($value) || !is_numeric($value)) {
+            $errors[] = "{$at}: {$field} must be a number.";
+
+            return false;
+        }
+
+        $number = (float) $value;
+
+        if ($number < -$limit || $number > $limit) {
+            $errors[] = "{$at}: {$field} {$number} is outside ±{$limit}.";
+
+            return false;
+        }
+
+        return trim((string) $value);
     }
 
     private static function flag(mixed $value): int

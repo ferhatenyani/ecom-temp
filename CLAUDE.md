@@ -17,10 +17,11 @@ relevant section before implementing a feature; section 4 gives the exact implem
 milestones, and section 29 the per-feature loop. **§50 and §51 are done** — orders, notes, timeline, customers,
 and the Algerian geography mechanism. **Next up is §52, COD.**
 
-One open gap: `data/algeria/communes.json` ships **empty**. The importer, schema and endpoints are complete and all
-58 wilayas are loaded, but the ~1,500 communes must be sourced from real data — never written from memory, because a
-wrong commune name is a rejected valid address. `wp algerian-commerce import-algeria` loads it; `/locations/coverage`
-reports the gap. §52 and §53 can address a wilaya but not a commune until it is filled.
+Geographic data is complete: 58 wilayas and 1,541 communes with Arabic names, daira and coordinates. Both files are
+**generated**, never hand-written — `scripts/build-algeria-dataset.php` converts the source CSV in
+`data/algeria/sources/`, and `wp algerian-commerce import-algeria` loads the result. Regenerate rather than editing
+the JSON by hand. Postal codes are absent from the source and deliberately left empty; `national_code` is the
+national commune code, not a postal code.
 
 [docs/PLAN.md](docs/PLAN.md) — the functional specification — answers *what* we build.
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (layering, module map, provider abstraction, data/schema design) and

@@ -113,13 +113,19 @@ final class GeoRepository
         }
 
         if (!empty($filters['search'])) {
-            $where[] = '(name LIKE %s OR slug LIKE %s)';
+            // Matches the daira too: people routinely name the daira when
+            // asked where they live, and an autocomplete that only knows
+            // communes rejects half of what they type.
+            $where[] = '(name LIKE %s OR slug LIKE %s OR name_ar LIKE %s OR daira LIKE %s)';
             $like = '%' . $this->wpdb->esc_like((string) $filters['search']) . '%';
+            $params[] = $like;
+            $params[] = $like;
             $params[] = $like;
             $params[] = $like;
         }
 
-        $sql = 'SELECT id, wilaya_id, slug, name, name_ar, postal_code, is_active
+        $sql = 'SELECT id, wilaya_id, slug, name, name_ar, daira, daira_ar,
+                       postal_code, national_code, latitude, longitude, is_active
                 FROM ' . $this->communeTable()
             . ($where === [] ? '' : ' WHERE ' . implode(' AND ', $where))
             . ' ORDER BY wilaya_id ASC, name ASC';
@@ -137,7 +143,8 @@ final class GeoRepository
     {
         $row = $this->wpdb->get_row(
             $this->wpdb->prepare(
-                'SELECT id, wilaya_id, slug, name, name_ar, postal_code, is_active
+                'SELECT id, wilaya_id, slug, name, name_ar, daira, daira_ar,
+                        postal_code, national_code, latitude, longitude, is_active
                  FROM ' . $this->communeTable() . ' WHERE id = %d',
                 $id
             ),
@@ -233,19 +240,36 @@ final class GeoRepository
         foreach ($rows as $row) {
             $key = $row['wilaya_id'] . '/' . $row['slug'];
 
+            /*
+             * Coordinates go in as %s, not %f. wpdb's %f formats through the
+             * locale, so on a fr_FR host a longitude of -0.297222 is written
+             * as "-0,297222" and MySQL stores 0. Passing the decimal string
+             * through unchanged lets MySQL parse it, which it does correctly.
+             * NULL is passed as a literal because prepare() has no null
+             * placeholder.
+             */
+            $latitude = $row['latitude'] === null ? 'NULL' : "'" . esc_sql((string) $row['latitude']) . "'";
+            $longitude = $row['longitude'] === null ? 'NULL' : "'" . esc_sql((string) $row['longitude']) . "'";
+
             $this->wpdb->query($this->wpdb->prepare(
                 'INSERT INTO ' . $this->communeTable() . '
-                    (wilaya_id, slug, name, name_ar, postal_code, is_active, updated_at)
-                 VALUES (%d, %s, %s, %s, %s, %d, %s)
+                    (wilaya_id, slug, name, name_ar, daira, daira_ar, postal_code,
+                     national_code, latitude, longitude, is_active, updated_at)
+                 VALUES (%d, %s, %s, %s, %s, %s, %s, %s, ' . $latitude . ', ' . $longitude . ', %d, %s)
                  ON DUPLICATE KEY UPDATE
                     name = VALUES(name), name_ar = VALUES(name_ar),
-                    postal_code = VALUES(postal_code), is_active = VALUES(is_active),
-                    updated_at = VALUES(updated_at)',
+                    daira = VALUES(daira), daira_ar = VALUES(daira_ar),
+                    postal_code = VALUES(postal_code), national_code = VALUES(national_code),
+                    latitude = VALUES(latitude), longitude = VALUES(longitude),
+                    is_active = VALUES(is_active), updated_at = VALUES(updated_at)',
                 $row['wilaya_id'],
                 $row['slug'],
                 $row['name'],
                 $row['name_ar'],
+                $row['daira'],
+                $row['daira_ar'],
                 $row['postal_code'],
+                $row['national_code'],
                 $row['is_active'],
                 $now
             ));
@@ -324,7 +348,15 @@ final class GeoRepository
             'slug' => (string) $row['slug'],
             'name' => (string) $row['name'],
             'name_ar' => (string) $row['name_ar'],
+            'daira' => (string) $row['daira'],
+            'daira_ar' => (string) $row['daira_ar'],
             'postal_code' => (string) $row['postal_code'],
+            'national_code' => (string) $row['national_code'],
+            // Emitted as strings, like every other decimal this API returns:
+            // a coordinate is a fixed-precision value, and JSON floats are the
+            // one thing guaranteed to change it in transit.
+            'latitude' => $row['latitude'] === null ? null : (string) $row['latitude'],
+            'longitude' => $row['longitude'] === null ? null : (string) $row['longitude'],
             'is_active' => (bool) $row['is_active'],
         ];
     }

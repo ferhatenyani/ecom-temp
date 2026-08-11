@@ -235,9 +235,99 @@ ac_check('search for nothing', ac_req('GET', '/locations/wilayas', ['search' => 
     return $d['data'] === [] ?: 'expected no matches';
 });
 
+echo PHP_EOL, "=== the shipped communes ===", PHP_EOL;
+
+// Algeria's real commune count. The source dataset splits 92 communes into
+// circonscriptions administratives and files 11 of Touggourt's under Ouargla's
+// old code; scripts/build-algeria-dataset.php resolves both, and this is what
+// says it resolved them into 58 wilayas rather than 69.
+$coverage = ac_check('all 1,541 communes are loaded', ac_req('GET', '/locations/coverage'), 200, function ($d) {
+    return ($d['data']['communes'] ?? 0) === 1541 ?: 'got ' . ($d['data']['communes'] ?? '?');
+});
+
+ac_assert('every wilaya has at least one commune', (function () {
+    $empty = [];
+
+    for ($code = 1; $code <= 58; $code++) {
+        if ((ac_req('GET', "/locations/wilayas/{$code}/communes")[1]['meta']['total'] ?? 0) === 0) {
+            $empty[] = $code;
+        }
+    }
+
+    return $empty === [] ?: 'no communes for wilaya(s) ' . implode(', ', $empty);
+})());
+
+ac_check('Alger has its 57 communes', ac_req('GET', '/locations/wilayas/16/communes'), 200, function ($d) {
+    return ($d['meta']['total'] ?? 0) === 57 ?: 'got ' . ($d['meta']['total'] ?? '?');
+});
+
+// The 2019 split was half-applied in the source: 11 of these carried Ouargla's
+// code while being named Touggourt.
+ac_check('Touggourt has its 13, not 2', ac_req('GET', '/locations/wilayas/55/communes'), 200, function ($d) {
+    return ($d['meta']['total'] ?? 0) === 13 ?: 'got ' . ($d['meta']['total'] ?? '?');
+});
+
+// 34 filed under M'Sila plus 13 filed under the Boussaâda circonscription.
+ac_check('M\'Sila absorbed the Boussaâda district', ac_req('GET', '/locations/wilayas/28/communes'), 200, function ($d) {
+    if (($d['meta']['total'] ?? 0) !== 47) {
+        return 'got ' . ($d['meta']['total'] ?? '?');
+    }
+
+    // Matched on the slug: the district is spelled "Boussaâda" and the commune
+    // inside it "Bou Saada", which is exactly the spelling variance the
+    // accent-folded key exists to absorb.
+    return in_array('bou-saada', array_column($d['data'], 'slug'), true) ?: 'Bou Saada itself is missing';
+});
+
+ac_check('communes carry Arabic names and coordinates', ac_req('GET', '/locations/wilayas/16/communes'), 200, function ($d) {
+    foreach ($d['data'] as $row) {
+        if ($row['name'] === 'Bab El Oued') {
+            if ($row['name_ar'] === '') {
+                return 'no Arabic name';
+            }
+
+            if ($row['daira'] === '') {
+                return 'no daira';
+            }
+
+            // Strings, like every other decimal this API emits: a JSON float
+            // is the one thing guaranteed to change a coordinate in transit.
+            return is_string($row['latitude']) && is_string($row['longitude'])
+                ?: 'coordinates are not strings';
+        }
+    }
+
+    return 'Bab El Oued is missing from Alger';
+});
+
+ac_check('wilayas carry Arabic names', ac_req('GET', '/locations/wilayas/6'), 200, function ($d) {
+    return ($d['data']['name_ar'] ?? '') !== '' ?: 'no Arabic name on Béjaïa';
+});
+
+// The national commune code is NOT a postal code — three or four digits
+// against Algeria's five — so it has a column of its own and postal_code
+// stays empty rather than carrying a wrong number onto every address.
+ac_check('the national code is not passed off as a postal code', ac_req('GET', '/locations/wilayas/16/communes'), 200, function ($d) {
+    foreach ($d['data'] as $row) {
+        if ($row['national_code'] === '') {
+            return 'a commune has no national code';
+        }
+
+        if ($row['postal_code'] !== '') {
+            return 'postal_code was filled with ' . $row['postal_code'];
+        }
+    }
+
+    return true;
+});
+
 echo PHP_EOL, "=== importing communes ===", PHP_EOL;
 
 ac_drop_fixtures($FIXTURE_SLUGS, $FIXTURE_PROVIDER);
+
+// Counts move relative to the shipped dataset now, not from zero.
+$baseline16 = ac_req('GET', '/locations/wilayas/16/communes')[1]['meta']['total'];
+$baseline31 = ac_req('GET', '/locations/wilayas/31/communes')[1]['meta']['total'];
 
 $dir = ac_fixture_dir('good', [
     GeoImporter::WILAYAS => $WILAYAS,
@@ -249,8 +339,8 @@ $dry = ac_importer($dir)->import(true);
 ac_assert('a dry run validates without writing', $dry['errors'] === [] ?: implode('; ', $dry['errors']));
 ac_assert('and reports what it would add', $dry['communes']['inserted'] === 3 ?: 'reported ' . $dry['communes']['inserted']);
 
-ac_check('nothing was actually written', ac_req('GET', '/locations/wilayas/16/communes'), 200, function ($d) {
-    return ($d['meta']['total'] ?? 0) === 0 ?: 'the dry run wrote ' . $d['meta']['total'] . ' communes';
+ac_check('nothing was actually written', ac_req('GET', '/locations/wilayas/16/communes'), 200, function ($d) use ($baseline16) {
+    return ($d['meta']['total'] ?? 0) === $baseline16 ?: 'the dry run wrote ' . ($d['meta']['total'] - $baseline16) . ' communes';
 });
 
 $first = ac_importer($dir)->import();
@@ -267,11 +357,15 @@ ac_assert('and updates in place', $second['communes']['updated'] === 3 ?: 'got '
 
 echo PHP_EOL, "=== reading communes ===", PHP_EOL;
 
-$communes = ac_check('a wilaya\'s communes', ac_req('GET', '/locations/wilayas/16/communes'), 200, function ($d) {
-    return ($d['meta']['total'] ?? 0) === 2 ?: 'got ' . ($d['meta']['total'] ?? '?');
+$communes = ac_check('a wilaya\'s communes', ac_req('GET', '/locations/wilayas/16/communes'), 200, function ($d) use ($baseline16) {
+    return ($d['meta']['total'] ?? 0) === $baseline16 + 2 ?: 'got ' . ($d['meta']['total'] ?? '?');
 });
 
-$communeId = (int) ($communes['data'][0]['id'] ?? 0);
+$communeId = (int) array_values(array_filter(
+    array_column($communes['data'], 'id', 'slug'),
+    static fn (string $slug): bool => $slug === 'zz-test-bejaia-ville',
+    ARRAY_FILTER_USE_KEY
+))[0];
 
 ac_assert('the accented name is kept for display', (function () use ($communes) {
     foreach ($communes['data'] as $row) {
@@ -307,12 +401,17 @@ ac_check('a commune that does not exist', ac_req('GET', '/locations/communes/999
 // "No communes loaded" and "no such wilaya" are different answers, and a
 // client filling an address form has to tell them apart.
 ac_check('communes of a wilaya that does not exist', ac_req('GET', '/locations/wilayas/59/communes'), 404);
-ac_check('communes of a wilaya with none loaded', ac_req('GET', '/locations/wilayas/2/communes'), 200, function ($d) {
-    return $d['data'] === [] ?: 'expected an empty list';
+ac_check('search within a wilaya', ac_req('GET', '/locations/wilayas/16/communes', ['search' => 'Zz Test M']), 200, function ($d) {
+    return ($d['meta']['total'] ?? 0) === 1 ?: 'got ' . ($d['meta']['total'] ?? '?');
 });
 
-ac_check('search within a wilaya', ac_req('GET', '/locations/wilayas/16/communes', ['search' => 'Sila']), 200, function ($d) {
-    return ($d['meta']['total'] ?? 0) === 1 ?: 'got ' . ($d['meta']['total'] ?? '?');
+// People name the daira as often as the commune when asked where they live.
+ac_check('search matches a daira too', ac_req('GET', '/locations/wilayas/16/communes', ['search' => 'Cheraga']), 200, function ($d) {
+    return ($d['meta']['total'] ?? 0) > 1 ?: 'a daira search returned ' . ($d['meta']['total'] ?? '?');
+});
+
+ac_check('search matches an Arabic name', ac_req('GET', '/locations/wilayas/16/communes', ['search' => 'باب الوادي']), 200, function ($d) {
+    return ($d['meta']['total'] ?? 0) >= 1 ?: 'an Arabic search returned nothing';
 });
 
 ac_check('filter by postal code', ac_req('GET', '/locations/wilayas/16/communes', ['postal_code' => '16000']), 200, function ($d) {
@@ -321,12 +420,12 @@ ac_check('filter by postal code', ac_req('GET', '/locations/wilayas/16/communes'
 
 ac_check('a malformed postal code is refused', ac_req('GET', '/locations/wilayas/16/communes', ['postal_code' => '16A']), 400);
 
-ac_check('active_only hides a switched-off commune', ac_req('GET', '/locations/wilayas/31/communes', ['active_only' => true]), 200, function ($d) {
-    return $d['data'] === [] ?: 'the inactive fixture was returned';
+ac_check('active_only hides a switched-off commune', ac_req('GET', '/locations/wilayas/31/communes', ['active_only' => true]), 200, function ($d) use ($baseline31) {
+    return ($d['meta']['total'] ?? 0) === $baseline31 ?: 'got ' . ($d['meta']['total'] ?? '?');
 });
 
-ac_check('and it is still there without the filter', ac_req('GET', '/locations/wilayas/31/communes'), 200, function ($d) {
-    return ($d['meta']['total'] ?? 0) === 1 ?: 'got ' . ($d['meta']['total'] ?? '?');
+ac_check('and it is still there without the filter', ac_req('GET', '/locations/wilayas/31/communes'), 200, function ($d) use ($baseline31) {
+    return ($d['meta']['total'] ?? 0) === $baseline31 + 1 ?: 'got ' . ($d['meta']['total'] ?? '?');
 });
 
 echo PHP_EOL, "=== a bad dataset imports nothing ===", PHP_EOL;
@@ -398,7 +497,7 @@ ac_check('coverage reports what is loaded', ac_req('GET', '/locations/coverage')
         return 'wilayas: ' . ($d['data']['wilayas'] ?? '?');
     }
 
-    if (($d['data']['communes'] ?? 0) < 3) {
+    if (($d['data']['communes'] ?? 0) !== 1544) {
         return 'communes: ' . ($d['data']['communes'] ?? '?');
     }
 
@@ -412,8 +511,12 @@ $removed = ac_drop_fixtures($FIXTURE_SLUGS, $FIXTURE_PROVIDER);
 ac_assert('fixture communes removed', $removed === 3 ?: "removed {$removed}");
 
 ac_check('the canonical table is back to its shipped state', ac_req('GET', '/locations/coverage'), 200, function ($d) {
-    return ($d['data']['communes'] ?? -1) === 0
-        ?: 'left ' . $d['data']['communes'] . ' invented communes behind';
+    if (($d['data']['communes'] ?? -1) !== 1541) {
+        return 'left ' . (($d['data']['communes'] ?? 0) - 1541) . ' fixture communes behind';
+    }
+
+    return ($d['data']['provider_destinations'] ?? -1) === 0
+        ?: 'left ' . $d['data']['provider_destinations'] . ' fixture destinations behind';
 });
 
 echo PHP_EOL;

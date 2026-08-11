@@ -261,6 +261,85 @@ final class GeoDatasetTest extends TestCase
         self::assertSame([], $result['rows']);
     }
 
+    public function testCarriesTheDairaAndNationalCode(): void
+    {
+        $result = GeoDataset::communes([
+            'communes' => [[
+                'wilaya_code' => '16',
+                'name' => 'Bab El Oued',
+                'name_ar' => 'باب الوادي',
+                'daira' => 'Bab El Oued',
+                'daira_ar' => 'باب الوادي',
+                'national_code' => '1605',
+            ]],
+        ], self::knownCodes(16));
+
+        self::assertSame([], $result['errors']);
+        self::assertSame('Bab El Oued', $result['rows'][0]['daira']);
+        self::assertSame('باب الوادي', $result['rows'][0]['name_ar']);
+        self::assertSame('1605', $result['rows'][0]['national_code']);
+    }
+
+    public function testCoordinatesAreOptional(): void
+    {
+        $result = GeoDataset::communes([
+            'communes' => [
+                ['wilaya_code' => '16', 'name' => 'A'],
+                ['wilaya_code' => '16', 'name' => 'B', 'latitude' => null, 'longitude' => ''],
+            ],
+        ], self::knownCodes(16));
+
+        self::assertSame([], $result['errors']);
+        self::assertNull($result['rows'][0]['latitude']);
+        self::assertNull($result['rows'][1]['longitude']);
+    }
+
+    /** Kept as the string the dataset supplied — a float round trip loses it. */
+    public function testCoordinatePrecisionSurvives(): void
+    {
+        $result = GeoDataset::communes([
+            'communes' => [[
+                'wilaya_code' => '16',
+                'name' => 'Ain Benian',
+                'latitude' => '36.7919440',
+                'longitude' => '-0.297222',
+            ]],
+        ], self::knownCodes(16));
+
+        self::assertSame('36.7919440', $result['rows'][0]['latitude']);
+        self::assertSame('-0.297222', $result['rows'][0]['longitude']);
+    }
+
+    /**
+     * The failure being guarded against is a file with latitude and longitude
+     * swapped. Both are valid floats; only the range says which cannot be a
+     * latitude.
+     */
+    public function testCoordinatesAreRangeChecked(): void
+    {
+        $result = GeoDataset::communes([
+            'communes' => [
+                ['wilaya_code' => '16', 'name' => 'A', 'latitude' => '191.5', 'longitude' => '2.0'],
+                ['wilaya_code' => '16', 'name' => 'B', 'latitude' => '36.0', 'longitude' => '-500'],
+                ['wilaya_code' => '16', 'name' => 'C', 'latitude' => 'north', 'longitude' => '2.0'],
+            ],
+        ], self::knownCodes(16));
+
+        self::assertCount(3, $result['errors']);
+        self::assertSame([], $result['rows']);
+    }
+
+    public function testALongitudeBeyondNinetyIsStillValid(): void
+    {
+        // ±90 is the latitude limit, not the longitude one; sharing a bound
+        // would reject half the planet.
+        $result = GeoDataset::communes([
+            'communes' => [['wilaya_code' => '16', 'name' => 'A', 'latitude' => '36.0', 'longitude' => '120.0']],
+        ], self::knownCodes(16));
+
+        self::assertSame([], $result['errors']);
+    }
+
     public function testAnEmptyCommuneListIsValid(): void
     {
         // The shipped file is empty on purpose; that must not be an error.

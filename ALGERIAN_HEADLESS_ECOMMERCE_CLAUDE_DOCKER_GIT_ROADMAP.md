@@ -2411,14 +2411,18 @@ Keep the dataset updateable.
 
 ## Status
 
-**The mechanism is complete. The commune data is not, and that is a real gap.**
+**Done, data included.**
 
 ``` text
-data/algeria/wilayas.json                 58 wilayas — DONE
-data/algeria/communes.json                EMPTY — needs a real dataset
+data/algeria/wilayas.json                 58 wilayas + Arabic names
+data/algeria/communes.json                1,541 communes + Arabic names,
+                                          daira, national code, coordinates
+data/algeria/sources/                     the CSV they are generated from
 data/algeria/provider-destinations.json   empty until §53
 
+scripts/build-algeria-dataset.php         source CSV -> the two JSON files
 wp algerian-commerce import-algeria [--dry-run]
+
 GET /locations/wilayas
 GET /locations/wilayas/{id}
 GET /locations/wilayas/{id}/communes
@@ -2426,17 +2430,33 @@ GET /locations/communes/{id}
 GET /locations/coverage
 ```
 
-The ~1,500 communes were **not** written from memory. A wrong commune name is
-a rejected valid address and a failed delivery, and a list that is 95% right is
-worse than an empty one because nothing about a working checkout says which 5%
-is missing. Source the real dataset — ONS, a courier's published destination
-export, or the client's own — drop it into `communes.json` and run the import.
-The importer warns when no communes load, and `/locations/coverage` reports it,
-so the gap is visible rather than silent.
+Nothing was written from memory. Wilayas come from WooCommerce's own
+`i18n/states.php` `DZ` block; communes from a supplied CSV, converted by a
+committed build script so the dataset is a diff rather than an origin story.
 
-The wilayas were not written from memory either: they are generated from
-WooCommerce's own `i18n/states.php` `DZ` block, which carries all 58 post-2019
-wilayas.
+The source carried **69** wilaya codes against Algeria's 58, and the build
+script resolves that from evidence inside the file rather than from anyone's
+recollection, printing what it did:
+
+``` text
+codes 59-69 are circonscriptions administratives, not wilayas
+    parent read off code_commune, whose leading digits are the wilaya
+    (Aflou -> 3, Boussaâda -> 28, ...) — 92 communes folded back
+
+11 rows carry Ouargla's code 30 while being named Touggourt (55)
+    the 2019 split was half-applied; the name is followed
+    Touggourt ends with its 13 communes instead of 2
+```
+
+Result: 58 wilayas, 1,541 communes — Algeria's exact count — every wilaya
+non-empty, no slug collisions.
+
+**Postal codes are still absent**, because the source has none. `code_commune`
+is the national commune code (3-4 digits) and not a postal code (5), so it is
+stored as `national_code` and `postal_code` stays empty. Mapping one onto the
+other would have put a wrong postal code on every address in the country. If
+postal codes matter to a client, they are a second dataset merged into
+`communes.json` and re-imported.
 
 Decisions worth keeping:
 
@@ -2447,11 +2467,8 @@ slugs      = accent-folded, so Bejaia and Béjaïa are one commune
 import     = all-or-nothing, idempotent, never deletes
 provider   = its own table; ids are opaque strings, never parsed
 /locations = the only public routes in the plugin
+coordinates = carried for §53, not used yet
 ```
-
-Until the communes are loaded, anything that needs a delivery destination —
-COD confirmation (§52) and the shipping adapters (§53) — can address a wilaya
-but not a commune.
 
 ------------------------------------------------------------------------
 
