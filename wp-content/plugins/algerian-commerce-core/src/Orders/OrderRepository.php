@@ -521,8 +521,12 @@ final class OrderRepository
      *
      * A bare `Y-m-d` covers the whole day at both ends, so from == to returns
      * that day rather than nothing.
+     *
+     * Public because COD's funnel counts orders over the same windows this
+     * endpoint filters on, and two implementations of "what does date_from mean
+     * at the edges" would eventually disagree by a day.
      */
-    private static function dateRange(string $from, string $to): string
+    public static function dateRange(string $from, string $to): string
     {
         if ($from !== '' && $to !== '') {
             return "{$from}...{$to}";

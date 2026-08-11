@@ -160,6 +160,25 @@ final class OrderTimeline
 
                 return $reason === '' ? 'Order cancelled' : "Order cancelled — {$reason}";
 
+            /*
+             * COD writes its confirmation history here rather than into a
+             * table of its own, so these two are what a shop reads to see who
+             * called a customer and what was said. Keyed by action string —
+             * this is a table of sentences, not a dependency on the module.
+             */
+            case 'cod.attempt_recorded':
+                $reason = trim((string) ($metadata['reason'] ?? ''));
+
+                return sprintf(
+                    'COD confirmation attempt %d — %s%s',
+                    (int) ($metadata['attempt'] ?? 0),
+                    (string) ($metadata['outcome'] ?? '?'),
+                    $reason === '' ? '' : " — {$reason}"
+                );
+
+            case 'cod.settings_changed':
+                return ($metadata['enabled'] ?? false) ? 'COD enabled' : 'COD disabled';
+
             case 'order.updated':
                 $fields = is_array($metadata['fields'] ?? null) ? $metadata['fields'] : [];
 

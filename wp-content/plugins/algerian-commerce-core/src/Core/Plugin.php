@@ -17,6 +17,10 @@ use AlgerianCommerce\CLI\ImportAlgeriaCommand;
 use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
 use AlgerianCommerce\CLI\UnlockCommand;
+use AlgerianCommerce\COD\CodController;
+use AlgerianCommerce\COD\CodRepository;
+use AlgerianCommerce\COD\CodService;
+use AlgerianCommerce\COD\CodSubscriber;
 use AlgerianCommerce\Core\Migrations\MigrationRunner;
 use AlgerianCommerce\Inventory\InventoryController;
 use AlgerianCommerce\Inventory\InventoryRepository;
@@ -86,6 +90,9 @@ final class Plugin
     private ?OrderStockSubscriber $orderStockSubscriber = null;
     private ?CustomerRepository $customerRepository = null;
     private ?CustomerService $customerService = null;
+    private ?CodRepository $codRepository = null;
+    private ?CodService $codService = null;
+    private ?CodSubscriber $codSubscriber = null;
     private ?GeoRepository $geoRepository = null;
     private ?GeoService $geoService = null;
     private ?GeoImporter $geoImporter = null;
@@ -118,6 +125,12 @@ final class Plugin
          * to see all of it — see OrderStockSubscriber.
          */
         $this->orderStockSubscriber()->register();
+        /*
+         * Also not tied to the REST API: an order is cancelled from wp-admin,
+         * WP-CLI, cron and gateways too, and a confirmation queue that keeps
+         * calling customers about cancelled orders is the failure this stops.
+         */
+        $this->codSubscriber()->register();
         $this->registerCliCommands();
 
         $this->logger()->debug('Plugin booted', ['version' => VERSION]);
@@ -161,7 +174,30 @@ final class Plugin
             new OrderController($this->logger(), $this->orderService()),
             new CustomerController($this->logger(), $this->customerService()),
             new LocationController($this->logger(), $this->geoService()),
+            new CodController($this->logger(), $this->codService()),
         ]);
+    }
+
+    /**
+     * Takes the order repository: a COD record is about an order, and this is
+     * the direction the dependency runs — nothing in Orders/ knows COD exists.
+     */
+    public function codRepository(): CodRepository
+    {
+        return $this->codRepository ??= new CodRepository($this->orderRepository());
+    }
+
+    public function codService(): CodService
+    {
+        return $this->codService ??= new CodService(
+            $this->codRepository(),
+            $this->auditLogger()
+        );
+    }
+
+    public function codSubscriber(): CodSubscriber
+    {
+        return $this->codSubscriber ??= new CodSubscriber($this->codRepository());
     }
 
     public function geoRepository(): GeoRepository
