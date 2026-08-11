@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Orders;
 
 use AlgerianCommerce\API\ApiException;
+use AlgerianCommerce\Commerce\AddressInput;
 
 /**
  * Validates and normalizes an order write payload.
