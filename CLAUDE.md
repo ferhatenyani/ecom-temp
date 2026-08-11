@@ -8,8 +8,8 @@ Roadmap §1–§49 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products and inventory — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
-went the way it did. Read it before extending a module. [scripts/](scripts/) and [backups/](backups/) are still empty
-placeholders.
+went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test-api.sh`; the rest of §66 and
+[backups/](backups/) are still empty placeholders.
 
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
@@ -90,8 +90,11 @@ curl http://localhost:8090/wp-json/algerian-commerce/v1/health   # → {"success
 fix when touching config: `compose.yaml` hardcodes port `8090` instead of using `${WP_PORT}`, so changing `WP_PORT`
 currently does nothing.
 
-The roadmap plans `scripts/{setup,reset,seed,health,test,backup}.sh` (§66); none exist yet. `reset.sh` is destructive by
-design and must say so loudly.
+`scripts/test-api.sh` runs the HTTP-level API tests (authentication, capabilities, brute-force
+lockout). Run it before touching auth or rate limiting — `rest_do_request()` never parses an
+`Authorization` header, so in-process checks cannot see either. The rest of
+`scripts/{setup,reset,seed,health,backup}.sh` (§66) does not exist yet. `reset.sh` is destructive by
+design and must say so loudly, and `backup.sh` cannot use `wp db query`/`wp db export` — see §66.
 
 ## API conventions
 

@@ -223,6 +223,15 @@ Privileged credentials never reach browser JavaScript. Admin operations are prox
 Next.js admin. Customer sessions use a dedicated customer strategy with HTTP-only cookies — never an
 administrator credential, never a long-lived privileged token in browser storage.
 
+The admin credential is a **WordPress Application Password** held by a dedicated service account.
+Core verifies it on `determine_current_user` before any plugin route runs, so there is no login
+endpoint and no token store of our own to secure. It requires HTTPS, or `WP_ENVIRONMENT_TYPE=local`
+in development. `GET /auth/me` lets a client confirm which capabilities its credential actually
+carries — for rendering decisions only; authorization is always re-enforced server-side.
+
+Customer authentication is a separate, unbuilt strategy. Application Passwords are server-to-server
+and must never be issued to storefront customers.
+
 Authorization is always enforced in `permission_callback` and services. A hidden button in the frontend is
 not an access control.
 

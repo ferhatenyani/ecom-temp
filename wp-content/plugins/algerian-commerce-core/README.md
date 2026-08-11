@@ -14,8 +14,9 @@ PSR-4 autoloading, configuration and feature flags, logging with secret redactio
 `algerian-commerce/v1` namespace, the shared response envelope, error handling, the health endpoint,
 the migration runner, roles and capabilities, and audit recording.
 
-Milestone 5 is complete; roadmap §47 (product CRUD) and §49 (inventory) are in. Not implemented yet: rate limiting,
-orders, customers, shipping, payments, CMS.
+Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory) and §44 (authentication) are in,
+along with rate limiting. Not implemented yet: 2FA, customer sessions, orders, customers, shipping,
+payments, CMS.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -23,6 +24,8 @@ src/Core/                    Autoloader, Config, Logger, Plugin (wiring + lifecy
 src/Core/Migrations/         Migration interface, MigrationPlan (ordering), MigrationRunner
 src/Permissions/             Capabilities (the matrix), Roles (install), Permissions (enforcement)
 src/Audit/                   AuditEvent, AuditRepository, AuditLogger
+src/Auth/                    AuthController (/auth/me), AuthService, Identity
+src/Security/                RateLimit, RateLimitStore, RateLimiter, RateLimitGuard
 src/Products/                ProductController, ProductService, ProductInput,
                              ProductRepository, ProductPresenter
 src/Inventory/               InventoryController, InventoryService, StockAdjustment,
@@ -111,6 +114,138 @@ retention window is a client policy decision and is not enforced by the schema.
 Quantities are **signed** bigints: negative stock is how a backordered line is represented, and
 integers keep `SUM()` exact. WooCommerce's `wc_stock_amount()` casts to int unless a store filters
 it, so a shop selling by weight needs a forward migration to widen those columns.
+
+## Authentication
+
+Roadmap §44. **There is no login endpoint here, and that is the design.** WordPress verifies an
+Application Password sent as HTTP Basic auth on `determine_current_user`, before any route in this
+plugin runs. Issuing our own tokens would mean owning a credential store, rotation and revocation
+that core already provides and that other people already audit.
+
+```
+Browser  →  Next.js server  →  WordPress API
+            (holds the Application Password)
+```
+
+The credential belongs to a dedicated service account, never to a human's login, and never reaches
+browser JavaScript. Application Passwords are individually revocable, so one integration can be cut
+off without touching anything else.
+
+```bash
+# create the service account and its credential
+docker compose run --rm wpcli wp user create ac_service svc@example.dz --role=ac_admin
+docker compose run --rm wpcli wp user application-password create ac_service nextjs-server
+
+curl -u "ac_service:xxxx xxxx xxxx xxxx" \
+  http://localhost:8090/wp-json/algerian-commerce/v1/auth/me
+```
+
+**`wp_is_application_passwords_supported()` is `is_ssl() || 'local' === wp_get_environment_type()`.**
+Development is plain HTTP, so `compose.yaml` sets `WP_ENVIRONMENT_TYPE=local` — without it every
+request is rejected and the cause is invisible. Staging and production run TLS and must set the
+variable to their real environment instead.
+
+Basic auth survives this stack because mod_php populates `PHP_AUTH_USER` / `PHP_AUTH_PW`, which is
+what core reads. The raw `Authorization` header does *not* reach PHP through the rewrite — worth
+knowing before anyone adds a Bearer-token scheme, which would need `CGIPassAuth On` or a
+`SetEnvIf` in [docker/apache-wordpress.conf](../../../docker/apache-wordpress.conf).
+
+| Method | Route | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/auth/me` | any signed-in caller | identity, roles and this plugin's capabilities |
+
+`/auth/me` is what the Next.js server calls at startup to confirm its credential is valid and
+carries the capabilities it expects, rather than discovering a misconfigured account on the first
+customer order. Two rules about its response:
+
+- **The capability list is for rendering, never for access control.** Every route still enforces its
+  own `permission_callback` and every service still calls `Permissions::assert()`.
+- **Only this plugin's `ac_` capabilities are returned.** A WordPress administrator carries dozens of
+  core capabilities (`install_plugins`, `edit_themes`) that say nothing about commerce and would hand
+  a client a map of the platform underneath. Denied capabilities (`allcaps` entries set to `false`)
+  are dropped too — a present key is not a grant.
+
+Still outstanding for §44: **2FA for privileged users** (PLAN §3, SECURITY.md) and a customer-facing
+session strategy. Customers must not use Application Passwords — that is a server-to-server
+mechanism, and SECURITY.md calls for HTTP-only cookie sessions on the storefront.
+
+## Rate limiting
+
+docs/SECURITY.md, docs/PLAN.md §35. Scoped to `algerian-commerce/v1` only — throttling `wp/v2` or
+`wc/v3` would change behaviour other code depends on, exactly as the CORS handler leaves them alone.
+
+| Limit | Default | Window | Keyed on |
+| --- | --- | --- | --- |
+| reads | 600 | 1 min | identity **and** IP |
+| writes | 120 | 1 min | identity **and** IP |
+| failed authentications | 10 | 15 min | IP |
+
+Both counters run on every guarded request and the stricter wins: the identity counter bounds one
+compromised credential, the IP counter bounds a flood that has no identity yet. Over-limit returns
+**429 with `Retry-After`**, and rejections are logged — a blocked request leaves no other
+server-side trace.
+
+**The authentication limit is the one that matters most.** Enabling Application Passwords put a
+credential-guessing surface on the network, and WordPress does not throttle it at all.
+
+Two hooks close it, and the second is not optional:
+
+- `wp_is_application_passwords_available` returns false for a blocked address, so core never
+  attempts the password comparison. Skipping that hash is what stops the endpoint being a CPU oracle.
+- `rest_authentication_errors` turns the resulting 401 into a 429.
+
+`rest_pre_dispatch` alone is **not** enough, and it is worth knowing why: when Basic auth
+credentials are present and wrong, core fails the request during authentication and serves 401
+without ever dispatching. A guard that only runs at dispatch watches an attacker walk straight past
+it, answering 401 to every attempt forever. That is exactly what the first version of this did, and
+only a live test caught it — the unit tests were perfectly green.
+
+### The availability trade
+
+The lockout is keyed on IP, so an attacker guessing against a known service account locks out
+everyone sharing that address — **including the Next.js server**. Every brute-force defence makes
+this trade; this is the escape hatch it has to ship with:
+
+```bash
+AC_RATE_LIMIT_TRUSTED_IPS=203.0.113.7      # the application server
+```
+
+A trusted address skips the lockout but is still rate limited normally. Exact IPs only —
+CIDR ranges and hostnames are dropped rather than honoured, so a typo cannot silently exempt
+something unintended. `AC_RATE_LIMIT_DISABLED=true` is the blunt kill switch.
+
+**How wide is the blast radius, really?** Narrower than it first looks. The counter is keyed on IP,
+so an attacker on a different address cannot lock out your application server — that is the point of
+keying on IP. The exposure is a shared egress address: an attacker behind the same NAT as the
+Next.js server, which `AC_RATE_LIMIT_TRUSTED_IPS` is there to cover.
+
+### Getting back in
+
+Counter keys are hashed, so there is no transient name to guess. Recovery is a command:
+
+```bash
+docker compose run --rm wpcli wp algerian-commerce unlock 203.0.113.7
+# Success: Cleared 10 recorded failure(s) for 203.0.113.7 (backend: transient).
+```
+
+The address is the one WordPress sees in `REMOTE_ADDR`, which behind Docker is the gateway rather
+than your laptop — `docker compose logs wordpress` shows it in the access lines.
+
+### Where the boundary falls
+
+The failure from the request in flight is recorded during authentication, before
+`rest_authentication_errors` runs. The request that spends the last of the budget therefore reports
+**429 rather than 401** — a caller is told the moment it is exhausted rather than one request later.
+
+### Storage
+
+Counters prefer a persistent object cache, where `wp_cache_incr()` is atomic. Without one they fall
+back to transients, which is a read-then-write and can **undercount** under concurrency — it lets a
+few extra requests through, and can never lock out a legitimate caller. That is a deliberate,
+bounded compromise, not an oversight. **Run a persistent object cache in production**; without one
+these counters also land in the options table. The window is fixed, not sliding: a caller can spend
+one allowance at the end of a window and another at the start of the next. It bounds sustained
+abuse, which is the job; it is not a traffic shaper.
 
 ## Roles and capabilities
 
@@ -462,8 +597,20 @@ docker compose exec wordpress sh -c \
   'find /var/www/html/wp-content/plugins/algerian-commerce-core -name "*.php" -exec php -l {} \;'
 ```
 
-Unit tests must run without booting WordPress. Integration tests that need a live WordPress arrive
-with the WP test suite in a later milestone.
+Unit tests must run without booting WordPress. The full WP integration suite arrives with §65.
+
+```bash
+# HTTP-level API tests — authentication, capabilities, brute-force lockout
+scripts/test-api.sh
+```
+
+**Run this one before touching auth or rate limiting.** `rest_do_request()` — what the in-process
+checks use — never parses an `Authorization` header, so it cannot observe authentication or rate
+limiting at all. The first rate-limit guard shipped letting every credential-guessing attempt
+through, with all 321 unit tests green, because nothing exercised a real HTTP request with real
+credentials. Comment out the two `add_filter` calls in `RateLimitGuard::register()` and the unit
+suite stays green while `scripts/test-api.sh` turns red on exactly the right assertions — that is
+the regression it exists to catch.
 
 ## Configuration
 
