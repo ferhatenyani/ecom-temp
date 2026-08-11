@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Orders;
 
 use AlgerianCommerce\API\ApiException;
+use AlgerianCommerce\Commerce\AddressInput;
 use WC_Order;
 use WC_Product;
 use WC_Product_Variation;
@@ -147,15 +148,61 @@ final class OrderRepository
         $this->applyProps($order, $input);
 
         if ($lines !== null) {
-            $this->replaceLineItems($order, $lines);
-            // Saves, so the new lines are in the database before any status
-            // transition below can act on them.
-            $order->calculate_totals();
+            $this->rewriteLineItems($order, $lines);
         } else {
             $order->save();
         }
 
         return $this->applyStatus($order, $input);
+    }
+
+    /**
+     * Replace an order's lines, returning and re-taking stock if it held any.
+     *
+     * An order that has already reduced stock carries a `_reduced_stock` marker
+     * on each item recording how many units that line took. Replacing the items
+     * destroys the markers, and nothing afterwards can return those units — the
+     * ledger is left with a reduction and no matching restoration.
+     *
+     * So the stock is unwound first and re-taken after, through the same two
+     * functions WooCommerce uses itself. The `maybe_` wrappers are the right
+     * entry points because they also maintain the order's `stock_reduced` flag;
+     * calling wc_increase_stock_levels() directly would move the units and
+     * leave the flag saying they were still held.
+     *
+     * Both fire the hooks OrderStockSubscriber listens to, so the ledger records
+     * the whole manoeuvre — a restoration of the old lines, then a reduction for
+     * the new ones — instead of a quantity that changes with nothing to explain
+     * it. That verbosity is the point: the shelf really did move twice.
+     *
+     * WooCommerce's own helper for adjusting a single line in place,
+     * wc_maybe_adjust_line_item_product_stock(), is not usable here — it lives
+     * in an admin-only file that is not loaded during a REST request.
+     *
+     * @param list<array{product: WC_Product, quantity: int}> $lines
+     */
+    private function rewriteLineItems(WC_Order $order, array $lines): void
+    {
+        $orderId = $order->get_id();
+        $heldStock = self::stockReduced($order);
+
+        if ($heldStock) {
+            wc_maybe_increase_stock_levels($orderId);
+        }
+
+        $this->replaceLineItems($order, $lines);
+        // Saves, so the new lines are in the database before the re-reduction
+        // below — and before any status transition can act on them.
+        $order->calculate_totals();
+
+        if ($heldStock) {
+            /*
+             * Guarded on $heldStock rather than run unconditionally: reducing
+             * here for an order that was never holding stock — a pending one —
+             * would take units off the shelf for an order nobody has confirmed.
+             */
+            wc_maybe_reduce_stock_levels($orderId);
+        }
     }
 
     private function applyStatus(WC_Order $order, OrderInput $input): WC_Order
@@ -168,6 +215,117 @@ final class OrderRepository
         }
 
         return $this->find($order->get_id()) ?? $order;
+    }
+
+    /**
+     * Every order a customer has placed, oldest first, projected to the few
+     * fields the statistics need.
+     *
+     * One query rather than a COUNT per status: the counts, the revenue and the
+     * first and last order all fall out of a single pass, and they cannot
+     * disagree with each other the way five separate queries can.
+     *
+     * `limit => -1` is bounded by *one customer's* order count, not the shop's,
+     * which is a few dozen rows for a retail buyer. Store-wide reporting is a
+     * different problem with a different answer — §60's `ac_analytics_aggregates`,
+     * which exists precisely so a dashboard never scans the order book.
+     *
+     * @return list<array{id: int, status: string, total: string, date_created: ?string}>
+     */
+    public function customerOrderSummaries(int $customerId): array
+    {
+        $orders = wc_get_orders([
+            'customer_id' => $customerId,
+            'type' => 'shop_order',
+            'limit' => -1,
+            'orderby' => 'date',
+            'order' => 'ASC',
+        ]);
+
+        $summaries = [];
+
+        foreach (is_array($orders) ? $orders : [] as $order) {
+            if (!$order instanceof WC_Order) {
+                continue;
+            }
+
+            $summaries[] = [
+                'id' => $order->get_id(),
+                'status' => $order->get_status(),
+                'total' => (string) $order->get_total(),
+                'date_created' => self::iso($order->get_date_created()),
+            ];
+        }
+
+        return $summaries;
+    }
+
+    private static function iso(mixed $date): ?string
+    {
+        return is_object($date) && method_exists($date, 'date') ? $date->date('c') : null;
+    }
+
+    /**
+     * Write a note against an order.
+     *
+     * `$isCustomerNote` is passed straight through because WooCommerce acts on
+     * it: a customer note is emailed to the buyer as it is saved. The third
+     * argument marks the note as added by the signed-in user rather than by
+     * "WooCommerce", so the timeline can attribute it.
+     *
+     * @return int the new note id
+     */
+    public function addNote(WC_Order $order, OrderNoteInput $note): int
+    {
+        return (int) $order->add_order_note($note->note, $note->customerNote ? 1 : 0, true);
+    }
+
+    /**
+     * @return list<array<string, mixed>> newest first, in the shape
+     *         OrderTimeline and OrderPresenter both consume
+     */
+    public function notes(int $orderId, int $limit): array
+    {
+        $notes = wc_get_order_notes([
+            'order_id' => $orderId,
+            'limit' => $limit,
+            'orderby' => 'date_created',
+            'order' => 'DESC',
+        ]);
+
+        $rows = [];
+
+        foreach (is_array($notes) ? $notes : [] as $note) {
+            $rows[] = [
+                'id' => (int) $note->id,
+                'content' => (string) $note->content,
+                'customer_note' => (bool) $note->customer_note,
+                // WooCommerce reports its own automatic notes as "system".
+                'added_by' => (string) $note->added_by,
+                // Normalized to the 'Y-m-d H:i:s' UTC that the audit and
+                // ledger tables store, so the timeline sorts one kind of value.
+                'created_at' => self::utc($note->date_created),
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * A WC_DateTime to 'Y-m-d H:i:s' in UTC.
+     *
+     * WooCommerce hands back a WC_DateTime carrying the *site* timezone. Taking
+     * its ->date('Y-m-d H:i:s') would mix local wall-clock times into a feed
+     * sorted against two tables that store UTC, and the timeline would
+     * interleave wrongly by exactly the UTC offset.
+     */
+    private static function utc(mixed $date): string
+    {
+        if (!is_object($date) || !method_exists($date, 'getTimestamp')) {
+            return '';
+        }
+
+        return gmdate('Y-m-d H:i:s', $date->getTimestamp());
     }
 
     /** The caller has already checked that the transition is legal. */

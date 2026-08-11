@@ -22,6 +22,9 @@ use AlgerianCommerce\Inventory\InventoryRepository;
 use AlgerianCommerce\Inventory\InventoryService;
 use AlgerianCommerce\Inventory\MovementRepository;
 use AlgerianCommerce\Inventory\StockLedger;
+use AlgerianCommerce\Customers\CustomerController;
+use AlgerianCommerce\Customers\CustomerRepository;
+use AlgerianCommerce\Customers\CustomerService;
 use AlgerianCommerce\Orders\OrderController;
 use AlgerianCommerce\Orders\OrderRepository;
 use AlgerianCommerce\Orders\OrderService;
@@ -76,6 +79,8 @@ final class Plugin
     private ?OrderRepository $orderRepository = null;
     private ?OrderService $orderService = null;
     private ?OrderStockSubscriber $orderStockSubscriber = null;
+    private ?CustomerRepository $customerRepository = null;
+    private ?CustomerService $customerService = null;
     private bool $booted = false;
 
     private function __construct()
@@ -145,7 +150,27 @@ final class Plugin
             new ProductCategoryController($this->logger()),
             new InventoryController($this->logger(), $this->inventoryService()),
             new OrderController($this->logger(), $this->orderService()),
+            new CustomerController($this->logger(), $this->customerService()),
         ]);
+    }
+
+    public function customerRepository(): CustomerRepository
+    {
+        return $this->customerRepository ??= new CustomerRepository();
+    }
+
+    /**
+     * Takes the order repository: a customer's history and lifetime statistics
+     * are made of orders. The dependency runs one way — nothing in Orders/
+     * reaches back for a customer object.
+     */
+    public function customerService(): CustomerService
+    {
+        return $this->customerService ??= new CustomerService(
+            $this->customerRepository(),
+            $this->orderRepository(),
+            $this->auditLogger()
+        );
     }
 
     public function orderRepository(): OrderRepository
@@ -157,7 +182,9 @@ final class Plugin
     {
         return $this->orderService ??= new OrderService(
             $this->orderRepository(),
-            $this->auditLogger()
+            $this->auditLogger(),
+            $this->auditRepository(),
+            $this->movementRepository()
         );
     }
 

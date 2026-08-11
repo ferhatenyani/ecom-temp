@@ -6,6 +6,8 @@ namespace AlgerianCommerce\Orders;
 
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Audit\AuditLogger;
+use AlgerianCommerce\Audit\AuditRepository;
+use AlgerianCommerce\Inventory\MovementRepository;
 use AlgerianCommerce\Permissions\Capabilities;
 use AlgerianCommerce\Permissions\Permissions;
 use WC_Data_Exception;
@@ -41,9 +43,21 @@ final class OrderService
     /** Long enough for an explanation, short enough not to bloat an audit row. */
     public const MAX_CANCEL_REASON = 500;
 
+    /** How far back a note or timeline read may reach in one request. */
+    public const MAX_NOTES = 200;
+    public const DEFAULT_NOTES = 50;
+
     public function __construct(
         private readonly OrderRepository $repository,
-        private readonly AuditLogger $audit
+        private readonly AuditLogger $audit,
+        /**
+         * Read-only, and only for the timeline: an order's history is spread
+         * across the notes, the audit trail and the stock ledger, and merging
+         * them on read is what stops a fourth copy existing that can disagree
+         * with all three.
+         */
+        private readonly AuditRepository $auditLog,
+        private readonly MovementRepository $movements
     ) {
     }
 
@@ -200,6 +214,85 @@ final class OrderService
         return $cancelled;
     }
 
+    /**
+     * Add a note to an order.
+     *
+     * Allowed at any status, deliberately. A note is a record of something that
+     * happened, and the orders people most need to annotate — delivered,
+     * cancelled, refunded — are exactly the ones no longer editable.
+     *
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed> the stored note
+     */
+    public function addNote(int $id, array $payload): array
+    {
+        Permissions::assert(Capabilities::MANAGE_ORDERS);
+
+        $order = $this->requireOrder($id);
+        $input = OrderNoteInput::fromPayload($payload);
+
+        $noteId = $this->repository->addNote($order, $input);
+
+        if ($noteId === 0) {
+            throw ApiException::internal('The note could not be saved.');
+        }
+
+        /*
+         * Audited even though the note is itself a record, because the two
+         * stores have different guarantees: ac_audit_logs is append-only,
+         * while WooCommerce notes are comments and an administrator can delete
+         * one. The timeline drops this entry so notes are not shown twice.
+         */
+        $this->audit->record('order.note_added', 'order', $id, [
+            'note_id' => $noteId,
+            'customer_note' => $input->customerNote,
+            'length' => mb_strlen($input->note),
+        ]);
+
+        foreach ($this->repository->notes($id, self::MAX_NOTES) as $note) {
+            if ($note['id'] === $noteId) {
+                return $note;
+            }
+        }
+
+        // Saved, but not readable back — report the save rather than invent a
+        // response body.
+        throw ApiException::internal('The note was saved but could not be read back.');
+    }
+
+    /** @return list<array<string, mixed>> newest first */
+    public function notes(int $id, int $limit): array
+    {
+        Permissions::assert(Capabilities::MANAGE_ORDERS);
+
+        $this->requireOrder($id);
+
+        return $this->repository->notes($id, $limit);
+    }
+
+    /**
+     * Everything that ever happened to this order, newest first.
+     *
+     * Each source is asked for its newest `$limit` and the merge keeps the
+     * newest `$limit` of the union — which is exactly right, since no source
+     * can contribute an entry to the top N that is not in its own top N.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function timeline(int $id, int $limit): array
+    {
+        Permissions::assert(Capabilities::MANAGE_ORDERS);
+
+        $this->requireOrder($id);
+
+        return OrderTimeline::merge(
+            $this->repository->notes($id, $limit),
+            $this->auditLog->paginate(['resource_type' => 'order', 'resource_id' => (string) $id], 1, $limit),
+            $this->movements->paginate(['order_id' => $id], 1, $limit),
+            $limit
+        );
+    }
+
     private function requireOrder(int $id): WC_Order
     {
         $order = $this->repository->find($id);
@@ -231,42 +324,31 @@ final class OrderService
     }
 
     /**
-     * Line items may be rewritten only while the order holds no stock.
+     * Line items may be rewritten only while WooCommerce considers the order
+     * editable — `pending` and `on-hold`.
      *
-     * Two conditions, and they are not the same one twice:
+     * That is WooCommerce's own rule and it is the right one: a `completed` or
+     * `refunded` order's lines are what was invoiced and delivered, and editing
+     * them rewrites history rather than correcting it.
      *
-     *  - `is_editable()` is WooCommerce's own rule — pending and on-hold only.
-     *    Rewriting a completed order's lines would change what was already
-     *    invoiced and delivered.
-     *  - Stock must not have been reduced. An on-hold order passes the first
-     *    test and can still be holding units, because on-hold is one of the
-     *    statuses that reduces stock. Replacing its lines drops the
-     *    `_reduced_stock` marker WooCommerce writes on each item, and those
-     *    units are then never returned to the shelf by anything — the ledger
-     *    would show a reduction with no matching restoration and no way to
-     *    reconcile it.
-     *
-     * Adjusting a line on an order that has already taken stock needs a
-     * per-line reconciliation. WooCommerce's own helper for that,
-     * wc_maybe_adjust_line_item_product_stock(), lives in an admin-only file
-     * that is not loaded during a REST request, so doing it properly means
-     * writing it here — a later refinement, not a silent half-measure now.
+     * Stock is *not* a second condition. An on-hold order is editable and may
+     * still be holding units — on-hold is one of the statuses that reduces
+     * stock — and that case is handled rather than refused: the repository
+     * returns the units, replaces the lines and takes them again, so the
+     * ledger records the whole manoeuvre. Refusing it would block the one
+     * moment an amendment is most likely, an order paused awaiting
+     * confirmation.
      */
     private function guardLineItemsWritable(WC_Order $order): void
     {
-        if (!$order->is_editable()) {
-            throw ApiException::conflict(
-                'The line items of an order in this status cannot be changed.',
-                ['status' => $order->get_status(), 'editable_in' => [OrderStatus::PENDING, OrderStatus::ON_HOLD]]
-            );
+        if ($order->is_editable()) {
+            return;
         }
 
-        if (OrderRepository::stockReduced($order)) {
-            throw ApiException::conflict(
-                'This order has already reduced stock; cancel it and place a new one to change what was ordered.',
-                ['status' => $order->get_status(), 'stock_reduced' => true]
-            );
-        }
+        throw ApiException::conflict(
+            'The line items of an order in this status cannot be changed.',
+            ['status' => $order->get_status(), 'editable_in' => [OrderStatus::PENDING, OrderStatus::ON_HOLD]]
+        );
     }
 
     /** @return array<string, mixed> */

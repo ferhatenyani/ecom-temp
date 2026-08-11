@@ -53,6 +53,28 @@ final class OrderController extends AbstractController
             'args' => $this->idArg(),
         ]);
 
+        register_rest_route($this->restNamespace(), '/orders/(?P<id>\d+)/notes', [
+            [
+                'methods' => 'GET',
+                'callback' => $this->handle([$this, 'notes']),
+                'permission_callback' => $guard,
+                'args' => $this->idArg() + $this->limitArg(),
+            ],
+            [
+                'methods' => 'POST',
+                'callback' => $this->handle([$this, 'storeNote']),
+                'permission_callback' => $guard,
+                'args' => $this->idArg(),
+            ],
+        ]);
+
+        register_rest_route($this->restNamespace(), '/orders/(?P<id>\d+)/timeline', [
+            'methods' => 'GET',
+            'callback' => $this->handle([$this, 'timeline']),
+            'permission_callback' => $guard,
+            'args' => $this->idArg() + $this->limitArg(),
+        ]);
+
         register_rest_route($this->restNamespace(), '/orders/(?P<id>\d+)', [
             [
                 'methods' => 'GET',
@@ -111,6 +133,30 @@ final class OrderController extends AbstractController
                 'default' => 'desc',
                 'enum' => ['asc', 'desc'],
                 'validate_callback' => 'rest_validate_request_arg',
+            ],
+        ];
+    }
+
+    /**
+     * A depth limit rather than `page`/`per_page`.
+     *
+     * Notes and the timeline are read newest-first as a feed, and the timeline
+     * merges three stores that cannot share an offset — page 2 of a merged feed
+     * would need a cursor per source. "The newest N" is what a client actually
+     * wants here, and it is correct without one.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    private function limitArg(): array
+    {
+        return [
+            'limit' => [
+                'type' => 'integer',
+                'default' => OrderService::DEFAULT_NOTES,
+                'minimum' => 1,
+                'maximum' => OrderService::MAX_NOTES,
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'absint',
             ],
         ];
     }
@@ -180,6 +226,30 @@ final class OrderController extends AbstractController
 
         return Response::success(OrderPresenter::toArray(
             $this->service->cancel((int) $request->get_param('id'), $reason)
+        ));
+    }
+
+    public function notes(WP_REST_Request $request): WP_REST_Response
+    {
+        return Response::success($this->service->notes(
+            (int) $request->get_param('id'),
+            (int) $request->get_param('limit')
+        ));
+    }
+
+    public function storeNote(WP_REST_Request $request): WP_REST_Response
+    {
+        return Response::success(
+            $this->service->addNote((int) $request->get_param('id'), $this->payload($request)),
+            201
+        );
+    }
+
+    public function timeline(WP_REST_Request $request): WP_REST_Response
+    {
+        return Response::success($this->service->timeline(
+            (int) $request->get_param('id'),
+            (int) $request->get_param('limit')
         ));
     }
 

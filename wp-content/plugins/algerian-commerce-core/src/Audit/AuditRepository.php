@@ -96,6 +96,13 @@ final class AuditRepository
             $params[] = (string) $filters['resource_type'];
         }
 
+        // Only meaningful alongside resource_type — ids are unique per type,
+        // not globally. The order timeline pairs the two.
+        if (!empty($filters['resource_id'])) {
+            $clauses[] = 'resource_id = %s';
+            $params[] = (string) $filters['resource_id'];
+        }
+
         return [$clauses === [] ? '' : 'WHERE ' . implode(' AND ', $clauses), $params];
     }
 
