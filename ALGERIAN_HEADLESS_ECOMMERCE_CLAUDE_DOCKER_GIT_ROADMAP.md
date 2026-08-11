@@ -2440,13 +2440,25 @@ Nothing was written from memory. Codes 01-58 come from WooCommerce's own
 CSV, converted by a committed build script so the dataset is a diff rather than
 an origin story.
 
-One correction, derived from the file and printed with its evidence:
+Two corrections, printed with their evidence on every build:
 
 ``` text
 11 rows carry Ouargla's code 30 while being named Touggourt (55)
     the 2019 split was half-applied; the name is followed
     Touggourt ends with its 13 communes instead of 2
+
+daira Bousaada was still filed under M'Sila (28)
+    a wilaya is named after its chef-lieu, and 10 of the 11 new
+    wilayas contain their namesake commune — Boussaâda (68) was
+    the only one that did not
+    Bou Saada, El Hamel and Oulteme move to 68
 ```
+
+A chef-lieu check now runs on every build and prints any wilaya holding no
+commune of its own name, so that class of misfiling is caught rather than
+noticed. Seven wilayas stay on the list permanently (Algiers/Alger Centre,
+Tipasa/Tipaza, In Salah/Ain Salah …) — spelling, not misfiling — which is why
+it reports and never enforces.
 
 Result: 69 wilayas, 1,541 communes — Algeria's exact count — every wilaya
 non-empty, no slug collisions.

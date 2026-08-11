@@ -9005,16 +9005,6 @@
         },
         {
             "wilaya_code": "28",
-            "name": "Bou Saada",
-            "name_ar": "بوسعادة",
-            "daira": "Bousaada",
-            "daira_ar": "بوسعادة",
-            "national_code": "2820",
-            "latitude": "35.219167",
-            "longitude": "4.17402"
-        },
-        {
-            "wilaya_code": "28",
             "name": "Bouti Sayeh",
             "name_ar": "بوطي السايح",
             "daira": "Sidi Aissa",
@@ -9042,16 +9032,6 @@
             "national_code": "2830",
             "latitude": "35.916667",
             "longitude": "5.00884"
-        },
-        {
-            "wilaya_code": "28",
-            "name": "El Hamel",
-            "name_ar": "الهامل",
-            "daira": "Bousaada",
-            "daira_ar": "بوسعادة",
-            "national_code": "2827",
-            "latitude": "35.1283",
-            "longitude": "4.083333"
         },
         {
             "wilaya_code": "28",
@@ -9192,16 +9172,6 @@
             "national_code": "2828",
             "latitude": "35.729444",
             "longitude": "4.3770704"
-        },
-        {
-            "wilaya_code": "28",
-            "name": "Oulteme",
-            "name_ar": "ولتام",
-            "daira": "Bousaada",
-            "daira_ar": "بوسعادة",
-            "national_code": "2846",
-            "latitude": "35.0350816",
-            "longitude": "5.3360215"
         },
         {
             "wilaya_code": "28",
@@ -15225,6 +15195,16 @@
         },
         {
             "wilaya_code": "68",
+            "name": "Bou Saada",
+            "name_ar": "بوسعادة",
+            "daira": "Bousaada",
+            "daira_ar": "بوسعادة",
+            "national_code": "2820",
+            "latitude": "35.219167",
+            "longitude": "4.17402"
+        },
+        {
+            "wilaya_code": "68",
             "name": "Djebel Messaad",
             "name_ar": "جبل مساعد",
             "daira": "Djebel Messaad",
@@ -15232,6 +15212,16 @@
             "national_code": "2847",
             "latitude": "34.991121",
             "longitude": "4.092493"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "El Hamel",
+            "name_ar": "الهامل",
+            "daira": "Bousaada",
+            "daira_ar": "بوسعادة",
+            "national_code": "2827",
+            "latitude": "35.1283",
+            "longitude": "4.083333"
         },
         {
             "wilaya_code": "68",
@@ -15292,6 +15282,16 @@
             "national_code": "2825",
             "latitude": "34.91609",
             "longitude": "4.73694444"
+        },
+        {
+            "wilaya_code": "68",
+            "name": "Oulteme",
+            "name_ar": "ولتام",
+            "daira": "Bousaada",
+            "daira_ar": "بوسعادة",
+            "national_code": "2846",
+            "latitude": "35.0350816",
+            "longitude": "5.3360215"
         },
         {
             "wilaya_code": "68",

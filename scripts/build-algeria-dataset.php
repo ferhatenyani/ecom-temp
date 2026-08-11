@@ -215,6 +215,32 @@ if ($renamed !== []) {
     echo "\n";
 }
 
+// ------------------------------------------------ documented source fixes
+
+/**
+ * Corrections the file cannot make for itself.
+ *
+ * Kept as an explicit list rather than dressed up as a derivation: each one is
+ * a judgement about Algerian geography, and a judgement should be visible and
+ * checkable rather than hidden inside a fuzzy string match that might fire on
+ * something else next time the source changes.
+ */
+$corrections = [
+    [
+        'daira' => 'Bousaada',
+        'from' => 28,
+        'to' => 68,
+        // A wilaya is named after its chef-lieu, and the diagnostic below shows
+        // ten of the eleven new wilayas contain their own. Boussaâda is the
+        // only one that does not: its whole daira — Bou Saada, El Hamel and
+        // Oulteme — is still filed under M'Sila, where it sat before the
+        // promotion.
+        'why' => 'the wilaya of Boussaâda must contain the town of Bou Saada',
+    ],
+];
+
+$corrected = [];
+
 // ------------------------------------------------------------ build communes
 
 $communes = [];
@@ -229,6 +255,13 @@ foreach ($rows as $row) {
     }
 
     $code = $parents[$code] ?? $code;
+
+    foreach ($corrections as $index => $fix) {
+        if ($code === $fix['from'] && $row['daira_name_fr'] === $fix['daira']) {
+            $code = $fix['to'];
+            $corrected[$index] = ($corrected[$index] ?? 0) + 1;
+        }
+    }
 
     if ($code < 1 || $code > WILAYA_COUNT) {
         fwrite(STDERR, "row \"{$row['commune_name_fr']}\" landed on wilaya {$code}, outside 1-" . WILAYA_COUNT . "\n");
@@ -255,6 +288,21 @@ foreach ($rows as $row) {
 usort($communes, static function (array $a, array $b): int {
     return [$a['wilaya_code'], $a['name']] <=> [$b['wilaya_code'], $b['name']];
 });
+
+foreach ($corrected as $index => $moved) {
+    printf(
+        "  daira \"%s\": %d commune(s) moved from wilaya %d to %d — %s\n",
+        $corrections[$index]['daira'],
+        $moved,
+        $corrections[$index]['from'],
+        $corrections[$index]['to'],
+        $corrections[$index]['why']
+    );
+}
+
+if ($corrected !== []) {
+    echo "\n";
+}
 
 $missing = [];
 
@@ -357,6 +405,54 @@ $wilayas['note'] = 'Latin names follow ISO 3166-2, matching WooCommerce\'s DZ st
 $wilayas['source'] = 'Codes 01-58 from WooCommerce i18n/states.php (DZ), ISO 3166-2:DZ. '
     . 'Codes 59-69 — the former circonscriptions administratives, now full wilayas — '
     . 'and all Arabic names from ' . basename($source);
+
+// ------------------------------------------------------- chef-lieu check
+
+/**
+ * A wilaya is named after its chef-lieu, so each should contain a commune of
+ * its own name. This is the check that caught Boussaâda holding thirteen
+ * communes while the town of Bou Saada sat in M'Sila.
+ *
+ * Run against the names actually written to wilayas.json, and with repeated
+ * letters collapsed so Boussaâda matches Bou Saada. Reported, never enforced:
+ * a few wilayas genuinely spell their capital differently from themselves —
+ * Algiers/Alger Centre, El Abiodh/Labiodh — and that is naming, not misfiling.
+ * The list is short enough to read every time.
+ */
+$loose = static function (string $name): string {
+    $folded = strtr(mb_strtolower(trim($name)), [
+        'à' => 'a', 'â' => 'a', 'ä' => 'a', 'è' => 'e', 'é' => 'e', 'ê' => 'e', 'ë' => 'e',
+        'î' => 'i', 'ï' => 'i', 'ô' => 'o', 'ö' => 'o', 'û' => 'u', 'ü' => 'u', 'ç' => 'c',
+    ]);
+
+    $stripped = (string) preg_replace('/[^a-z0-9]+/', '', $folded);
+
+    // Collapse runs: "boussaada" and "bousaada" are the same place.
+    return (string) preg_replace('/(.)\\1+/', '$1', $stripped);
+};
+
+$chefLieu = [];
+
+foreach ($communes as $commune) {
+    $chefLieu[(int) $commune['wilaya_code']][] = $loose($commune['name']);
+}
+
+$unnamed = [];
+
+foreach ($wilayas['wilayas'] as $wilaya) {
+    $code = (int) $wilaya['code'];
+
+    if (!in_array($loose($wilaya['name']), $chefLieu[$code] ?? [], true)) {
+        $unnamed[] = $wilaya['code'] . ' ' . $wilaya['name'];
+    }
+}
+
+if ($unnamed !== []) {
+    printf(
+        "  no commune shares its wilaya's name — check, do not assume:\n    %s\n\n",
+        implode("\n    ", $unnamed)
+    );
+}
 
 // ------------------------------------------------------------------- write
 

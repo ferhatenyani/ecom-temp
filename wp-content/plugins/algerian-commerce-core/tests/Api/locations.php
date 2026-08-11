@@ -265,22 +265,27 @@ ac_check('Touggourt has its 13, not 2', ac_req('GET', '/locations/wilayas/55/com
     return ($d['meta']['total'] ?? 0) === 13 ?: 'got ' . ($d['meta']['total'] ?? '?');
 });
 
-// Boussaâda is its own wilaya now, so M'Sila keeps its 34 and the other 13
-// sit under code 68 rather than being folded back.
-ac_check('M\'Sila keeps its own 34', ac_req('GET', '/locations/wilayas/28/communes'), 200, function ($d) {
-    return ($d['meta']['total'] ?? 0) === 34 ?: 'got ' . ($d['meta']['total'] ?? '?');
+ac_check('M\'Sila keeps its own 31', ac_req('GET', '/locations/wilayas/28/communes'), 200, function ($d) {
+    return ($d['meta']['total'] ?? 0) === 31 ?: 'got ' . ($d['meta']['total'] ?? '?');
 });
 
-ac_check('Boussaâda stands on its own', ac_req('GET', '/locations/wilayas/68/communes'), 200, function ($d) {
-    return ($d['meta']['total'] ?? 0) === 13 ?: 'got ' . ($d['meta']['total'] ?? '?');
+/*
+ * A wilaya is named after its chef-lieu. The source left the whole daira of
+ * Bou Saada under M'Sila, where it sat before the promotion, so the wilaya
+ * named Boussaâda did not contain the town of Bou Saada. Ten of the eleven new
+ * wilayas do contain their namesake; this was the only one that did not, which
+ * is the evidence the build script's correction rests on.
+ */
+ac_check('Boussaâda has its 16, including its own chef-lieu', ac_req('GET', '/locations/wilayas/68/communes'), 200, function ($d) {
+    if (($d['meta']['total'] ?? 0) !== 16) {
+        return 'got ' . ($d['meta']['total'] ?? '?');
+    }
+
+    return in_array('bou-saada', array_column($d['data'], 'slug'), true) ?: 'Bou Saada itself is missing';
 });
 
-// The source files the town itself under M'Sila while the wilaya named after
-// it holds thirteen others. Its slug folds "Bou Saada" and the daira's
-// "Bousaada" to the same key, which is what that fold is for.
-ac_check('Bou Saada the town is where the source puts it', ac_req('GET', '/locations/wilayas/28/communes', ['search' => 'saada']), 200, function ($d) {
-    return in_array('bou-saada', array_column($d['data'], 'slug'), true)
-        ?: 'got ' . implode(', ', array_column($d['data'], 'slug'));
+ac_check('and M\'Sila no longer holds it', ac_req('GET', '/locations/wilayas/28/communes', ['search' => 'saada']), 200, function ($d) {
+    return !in_array('bou-saada', array_column($d['data'], 'slug'), true) ?: 'Bou Saada is still under M\'Sila';
 });
 
 // Not in WooCommerce's DZ state list, which still reflects the 2019 map.

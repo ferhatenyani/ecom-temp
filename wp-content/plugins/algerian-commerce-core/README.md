@@ -824,10 +824,19 @@ administratives — Aflou, Barika, El Kantara, Bir El Ater, El Aricha, Ksar Chel
 Messaad, Ksar El Boukhari, Boussaâda and El Abiodh Sidi Cheikh — since promoted in full. Codes 1–69
 are all real and are kept as the source has them.
 
-One correction is applied, and it is derived from the file rather than from anyone's memory, with its
-evidence printed: **the 2019 Touggourt split was half-applied.** Eleven rows carry Ouargla's code 30
-while being named Touggourt, which exists separately as code 55. The script follows the name, and
-Touggourt ends with its 13 communes instead of 2.
+Two corrections are applied, both printed with their evidence:
+
+1. **The 2019 Touggourt split was half-applied.** Eleven rows carry Ouargla's code 30 while being
+   named Touggourt, which exists separately as code 55. The script follows the name, and Touggourt
+   ends with its 13 communes instead of 2. Derived from the file.
+2. **The wilaya of Boussaâda did not contain the town of Bou Saada.** Its whole daira — Bou Saada,
+   El Hamel, Oulteme — was still filed under M'Sila, where it sat before the promotion. A wilaya is
+   named after its chef-lieu, and ten of the eleven new wilayas contain their namesake commune;
+   Boussaâda was the only one that did not. The build script now runs that chef-lieu check on every
+   run and prints any wilaya with no commune of its own name, so this class of misfiling is caught
+   rather than noticed. Seven wilayas stay on that list permanently — Algiers/Alger Centre,
+   Tipasa/Tipaza, In Salah/Ain Salah and so on — and those are spelling, not misfiling, which is why
+   the check reports and never enforces.
 
 Result: **69 wilayas, 1,541 communes — Algeria's exact count — every wilaya non-empty, and no two
 communes in a wilaya colliding on their slug.**
