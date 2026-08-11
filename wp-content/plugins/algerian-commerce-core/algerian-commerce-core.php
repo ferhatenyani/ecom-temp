@@ -29,7 +29,7 @@ const VERSION = '0.1.0';
  * Schema version for custom tables. Bump when a migration is added under
  * migrations/ — see docs/ARCHITECTURE.md §7.
  */
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 /** REST namespace every route in this plugin registers under. */
 const REST_NAMESPACE = 'algerian-commerce/v1';

@@ -6,6 +6,7 @@ namespace AlgerianCommerce\Products;
 
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Audit\AuditLogger;
+use AlgerianCommerce\Inventory\StockLedger;
 use AlgerianCommerce\Permissions\Capabilities;
 use AlgerianCommerce\Permissions\Permissions;
 use WC_Product;
@@ -24,7 +25,9 @@ final class VariationService
     public function __construct(
         private readonly ProductRepository $products,
         private readonly VariationRepository $variations,
-        private readonly AuditLogger $audit
+        private readonly AuditLogger $audit,
+        /** Variations hold their own stock, so they write to the ledger too. */
+        private readonly StockLedger $ledger
     ) {
     }
 
@@ -49,6 +52,8 @@ final class VariationService
         $this->guardSku((string) ($input->get('sku') ?? ''));
 
         $variation = $this->variations->create($parent, $input);
+
+        $this->ledger->recordProductEdit($variation, 0, $variation->get_stock_quantity());
 
         $this->audit->record('product.variation_created', 'product_variation', $variation->get_id(), [
             'parent_id' => $productId,
@@ -83,7 +88,12 @@ final class VariationService
 
         $this->guardSalePriceAgainstStored($variation, $input);
 
+        // Read before the write: the repository mutates this object in place.
+        $quantityBefore = $variation->get_stock_quantity();
+
         $updated = $this->variations->update($variation, $input);
+
+        $this->ledger->recordProductEdit($updated, $quantityBefore, $updated->get_stock_quantity());
 
         $this->audit->record('product.variation_updated', 'product_variation', $variationId, [
             'parent_id' => $productId,

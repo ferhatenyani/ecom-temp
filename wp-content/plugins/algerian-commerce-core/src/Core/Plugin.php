@@ -14,6 +14,11 @@ use AlgerianCommerce\Audit\AuditRepository;
 use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
 use AlgerianCommerce\Core\Migrations\MigrationRunner;
+use AlgerianCommerce\Inventory\InventoryController;
+use AlgerianCommerce\Inventory\InventoryRepository;
+use AlgerianCommerce\Inventory\InventoryService;
+use AlgerianCommerce\Inventory\MovementRepository;
+use AlgerianCommerce\Inventory\StockLedger;
 use AlgerianCommerce\Permissions\Roles;
 use AlgerianCommerce\Products\ProductCategoryController;
 use AlgerianCommerce\Products\ProductController;
@@ -50,6 +55,10 @@ final class Plugin
     private ?ProductRepository $productRepository = null;
     private ?ProductService $productService = null;
     private ?VariationService $variationService = null;
+    private ?InventoryRepository $inventoryRepository = null;
+    private ?MovementRepository $movementRepository = null;
+    private ?StockLedger $stockLedger = null;
+    private ?InventoryService $inventoryService = null;
     private bool $booted = false;
 
     private function __construct()
@@ -107,7 +116,42 @@ final class Plugin
             new ProductController($this->logger(), $this->productService()),
             new VariationController($this->logger(), $this->variationService()),
             new ProductCategoryController($this->logger()),
+            new InventoryController($this->logger(), $this->inventoryService()),
         ]);
+    }
+
+    public function inventoryRepository(): InventoryRepository
+    {
+        global $wpdb;
+
+        return $this->inventoryRepository ??= new InventoryRepository($wpdb);
+    }
+
+    public function movementRepository(): MovementRepository
+    {
+        global $wpdb;
+
+        return $this->movementRepository ??= new MovementRepository($wpdb);
+    }
+
+    /**
+     * Shared with the product and variation services, whose write endpoints
+     * also accept a stock quantity. One ledger, every writer — otherwise the
+     * movement history has gaps it cannot account for.
+     */
+    public function stockLedger(): StockLedger
+    {
+        return $this->stockLedger ??= new StockLedger($this->movementRepository(), $this->logger());
+    }
+
+    public function inventoryService(): InventoryService
+    {
+        return $this->inventoryService ??= new InventoryService(
+            $this->inventoryRepository(),
+            $this->movementRepository(),
+            $this->stockLedger(),
+            $this->auditLogger()
+        );
     }
 
     public function productRepository(): ProductRepository
@@ -119,7 +163,8 @@ final class Plugin
     {
         return $this->productService ??= new ProductService(
             $this->productRepository(),
-            $this->auditLogger()
+            $this->auditLogger(),
+            $this->stockLedger()
         );
     }
 
@@ -128,7 +173,8 @@ final class Plugin
         return $this->variationService ??= new VariationService(
             $this->productRepository(),
             new VariationRepository(),
-            $this->auditLogger()
+            $this->auditLogger(),
+            $this->stockLedger()
         );
     }
 

@@ -93,35 +93,9 @@ final class ProductController extends AbstractController
     }
 
     /** @return array<string, array<string, mixed>> */
-    private function idArg(): array
-    {
-        return [
-            'id' => [
-                'type' => 'integer',
-                'required' => true,
-                'minimum' => 1,
-                'sanitize_callback' => 'absint',
-            ],
-        ];
-    }
-
-    /** @return array<string, array<string, mixed>> */
     private function indexArgs(): array
     {
-        return [
-            'page' => [
-                'type' => 'integer',
-                'default' => 1,
-                'minimum' => 1,
-                'sanitize_callback' => 'absint',
-            ],
-            'per_page' => [
-                'type' => 'integer',
-                'default' => Response::DEFAULT_PER_PAGE,
-                'minimum' => 1,
-                'maximum' => Response::MAX_PER_PAGE,
-                'sanitize_callback' => 'absint',
-            ],
+        return $this->paginationArgs() + $this->idArg('category', false) + [
             'search' => [
                 'type' => 'string',
                 'sanitize_callback' => 'sanitize_text_field',
@@ -133,11 +107,6 @@ final class ProductController extends AbstractController
             'status' => [
                 'type' => 'string',
                 'enum' => ProductInput::STATUSES,
-            ],
-            'category' => [
-                'type' => 'integer',
-                'minimum' => 1,
-                'sanitize_callback' => 'absint',
             ],
             'orderby' => [
                 'type' => 'string',

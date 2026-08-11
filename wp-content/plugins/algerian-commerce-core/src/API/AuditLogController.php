@@ -49,34 +49,27 @@ final class AuditLogController extends AbstractController
      */
     private function indexArgs(): array
     {
-        return [
-            'page' => [
-                'type' => 'integer',
-                'default' => 1,
-                'minimum' => 1,
-                'sanitize_callback' => 'absint',
-            ],
-            'per_page' => [
-                'type' => 'integer',
-                'default' => Response::DEFAULT_PER_PAGE,
-                'minimum' => 1,
-                'maximum' => Response::MAX_PER_PAGE,
-                'sanitize_callback' => 'absint',
-            ],
+        return $this->paginationArgs() + [
+            /*
+             * Not sanitize_key(): it strips periods, and every action this
+             * plugin records is dotted — `product.created`, `inventory.adjusted`.
+             * Filtering by one therefore matched nothing at all, because the
+             * filter value arrived at the query as `productcreated`. The
+             * pattern keeps the value narrow without eating the separator.
+             */
             'action' => [
                 'type' => 'string',
-                'sanitize_callback' => 'sanitize_key',
+                'pattern' => '^[a-z0-9._-]+$',
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'sanitize_text_field',
             ],
             'resource_type' => [
                 'type' => 'string',
-                'sanitize_callback' => 'sanitize_key',
+                'pattern' => '^[a-z0-9._-]+$',
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'sanitize_text_field',
             ],
-            'actor_id' => [
-                'type' => 'integer',
-                'minimum' => 0,
-                'sanitize_callback' => 'absint',
-            ],
-        ];
+        ] + $this->idArg('actor_id', false);
     }
 
     public function index(WP_REST_Request $request): WP_REST_Response

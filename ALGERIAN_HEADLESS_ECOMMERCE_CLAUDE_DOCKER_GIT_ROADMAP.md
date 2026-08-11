@@ -2945,6 +2945,55 @@ integration tests
 API tests
 ```
 
+## backup.sh
+
+Back up (§44):
+
+``` text
+database
+wp-content/uploads
+configuration
+custom plugin code
+```
+
+**Do not use `wp db export` or `wp db query`.** Both are broken in this
+stack and always will be while the images stay as they are: the
+`wordpress:cli` image ships a MariaDB client, MySQL 8 authenticates with
+`caching_sha2_password`, and the plugin that implements it is not in
+`/usr/lib/mariadb/plugin/`. The connection fails before any SQL runs:
+
+``` text
+mariadb-dump: Got error: 1045: "Plugin caching_sha2_password could not be
+loaded ... No such file or directory" when trying to connect
+```
+
+Dump from the `db` container instead, which has MySQL's own client:
+
+``` bash
+docker compose exec -T db sh -c \
+  'MYSQL_PWD="$MYSQL_PASSWORD" mysqldump \
+     --single-transaction --quick --no-tablespaces \
+     -u"$MYSQL_USER" "$MYSQL_DATABASE"' > backups/db-$(date +%F-%H%M).sql
+```
+
+Why those flags, and why it reads the password from the container's own
+environment:
+
+``` text
+MYSQL_PWD           keeps the password out of the process list and out of shell history
+--single-transaction consistent InnoDB snapshot without locking the site
+--quick              streams rows instead of buffering the table in memory
+--no-tablespaces     avoids the PROCESS privilege, which the wordpress user does not have
+```
+
+Uploads live in the `wordpress_data` volume, not the repository, so they
+need `docker compose cp` or a volume mount — copying the repo is not a
+backup of the media library.
+
+`backups/` is for local development only. Production backups belong
+off-site (§44), and **a backup is not valid until a restore has been
+tested** — script the restore too, and run it.
+
 ------------------------------------------------------------------------
 
 # 67. Seed Data

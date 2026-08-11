@@ -168,6 +168,11 @@ Namespace `algerian-commerce/v1`. One envelope everywhere:
 - Exceptions map to error codes in one place (`API/`), so no controller formats its own error.
 - CORS uses an environment-specific origin allowlist. Never `*` on private routes.
 
+- Args that carry a `sanitize_callback` must also carry an explicit `validate_callback`. WordPress
+  only runs a validate_callback when one is registered, and a custom sanitize_callback displaces the
+  `rest_parse_request_arg()` default that would otherwise validate — leaving `minimum`, `maximum`,
+  `enum` and `pattern` unenforced.
+
 Planned surface: `/products`, `/orders`, `/customers`, `/inventory`, `/analytics/*`, `/shipping/shipments`,
 `/payments/checkout`, `/cms/*`, `/webhooks/{chargily,yalidine,zedair}`, `/health`.
 
@@ -181,6 +186,7 @@ Custom tables (prefix `{$wpdb->prefix}ac_`) only for genuinely custom, high-volu
 | Table | Purpose |
 | --- | --- |
 | `ac_audit_logs` | who changed what, when, from where |
+| `ac_inventory_movements` | stock ledger — every change to a quantity, with reason and actor |
 | `ac_shipments` | provider shipment records and tracking state |
 | `ac_payment_transactions` | payment attempts, provider references, verification results |
 | `ac_webhook_events` | received event ids — the idempotency ledger |
@@ -197,7 +203,15 @@ replays — MySQL will not roll DDL back inside a transaction. There is delibera
 migration must never require deleting existing data to succeed, and a rollback path invites exactly
 that. Reverse a mistake with a new forward migration.
 
-`001` is applied — `ac_audit_logs` exists. The remaining tables below are planned.
+`001` and `002` are applied — `ac_audit_logs` and `ac_inventory_movements` exist. The remaining
+tables above are planned.
+
+Both are append-only. A stock ledger is corrected by writing a compensating movement, never by
+editing a row: `quantity_before + delta = quantity_after` is enforced when a row is built, and an
+UPDATE could break it after the fact. The two tables are deliberately separate — movements are
+machine-generated per order line and would bury the human actions the audit trail exists to record,
+they are filtered and summed by typed columns rather than decoded from JSON metadata, and the two
+have different retention policies.
 
 ## 8. Authentication
 
