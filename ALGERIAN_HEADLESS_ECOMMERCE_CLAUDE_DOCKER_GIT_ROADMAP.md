@@ -2314,6 +2314,48 @@ statistics
 
 Use WooCommerce's native commerce model where appropriate.
 
+## Status
+
+**Orders are half done.** Implemented: `GET /orders`, `GET /orders/{id}`,
+`POST /orders`, `PATCH /orders/{id}`, `POST /orders/{id}/cancel`, with search,
+filters (status, customer, date range), pagination, sorting, a status
+transition matrix, and order-driven stock movements wired into the §49 ledger
+through WooCommerce's own hooks.
+
+There is deliberately **no `DELETE /orders/{id}`**. An order is cancelled, never
+removed — accounting, the courier and the customer's history all keep
+referring to it.
+
+Still to build in this section:
+
+``` text
+POST /orders/{id}/notes      notes
+     order timeline          (notes + audit + ledger, merged and time-ordered)
+GET  /customers
+GET  /customers/{id}
+PATCH /customers/{id}
+GET  /customers/{id}/orders
+     customer statistics     (§9: totals, AOV, first/last order, COD history)
+```
+
+Two things were left as later refinements rather than half-built:
+
+``` text
+line-item edits on an order that already reduced stock
+    — currently a 409; needs per-line stock reconciliation, and
+      WooCommerce's own helper for it lives in an admin-only file
+      that is not loaded during a REST request
+
+refunds
+    — PATCH to status "refunded" works; creating an actual
+      WC_Order_Refund with amounts belongs with §57 payments
+```
+
+The operational states PLAN §8 lists — COD Pending Confirmation, Shipping
+Prepared, Shipped, Delivered, Returned — were **not** added as statuses. They
+arrive as metadata and events in §52 and §53, which is what "avoid creating
+redundant statuses when metadata/events are sufficient" asks for.
+
 ------------------------------------------------------------------------
 
 # 51. Algerian Geographic Data

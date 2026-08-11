@@ -6,15 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Roadmap §1–§49 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
-REST foundation, migrations, RBAC, audit trail, products and inventory — and its
+REST foundation, migrations, RBAC, audit trail, products, inventory and orders — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
-went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test-api.sh`; the rest of §66 and
-[backups/](backups/) are still empty placeholders.
+went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
+rest of §66 and [backups/](backups/) are still empty placeholders.
 
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **Next up is §50, orders and customers.**
+milestones, and section 29 the per-feature loop. **§50 is in progress**: order CRUD, status transitions and
+cancellation are done; **next up are order notes and the timeline, then customers.**
 
 [docs/PLAN.md](docs/PLAN.md) — the functional specification — answers *what* we build.
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (layering, module map, provider abstraction, data/schema design) and
@@ -40,9 +41,13 @@ supported APIs for products/orders/customers. Add custom tables only for genuine
 events, shipment records, payment transactions, notification events, analytics aggregates.
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
-`Core/`, `API/`, `Permissions/`, `Audit/`, `Products/`, `Inventory/`, `CLI/`, alongside `migrations/` and `tests/`.
-Still to come: `Auth/`, `Orders/`, `Customers/`, `Shipping/`, `Payments/`, `COD/`, `Analytics/`, `CMS/`, … and
-`integrations/{Yalidine,Zedair,Chargily}/`.
+`Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Products/`, `Inventory/`, `Orders/`, `CLI/`,
+alongside `migrations/` and `tests/`. Still to come: `Customers/`, `Shipping/`, `Payments/`, `COD/`, `Analytics/`,
+`CMS/`, … and `integrations/{Yalidine,Zedair,Chargily}/`.
+
+WooCommerce runs with **HPOS enabled**, and the plugin declares `custom_order_tables` compatibility. Reach orders only
+through `wc_get_order()`, `wc_get_orders()` and the `WC_Order` CRUD — never `get_post()`, `get_post_meta()` or `$wpdb`
+against `wp_posts`. Direct reads work on a legacy install and silently return nothing here.
 
 Third-party providers (Yalidine, Zedair for shipping; Chargily for payments) sit behind adapters in `integrations/` —
 domain code must never call a provider SDK or endpoint directly. Do not implement an adapter from memory or guesswork;

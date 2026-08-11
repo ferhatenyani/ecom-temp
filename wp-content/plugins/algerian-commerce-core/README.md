@@ -14,9 +14,9 @@ PSR-4 autoloading, configuration and feature flags, logging with secret redactio
 `algerian-commerce/v1` namespace, the shared response envelope, error handling, the health endpoint,
 the migration runner, roles and capabilities, and audit recording.
 
-Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory) and §44 (authentication) are in,
-along with rate limiting. Not implemented yet: 2FA, customer sessions, orders, customers, shipping,
-payments, CMS.
+Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (authentication) and the
+order half of §50 are in, along with rate limiting. Not implemented yet: 2FA, customer sessions,
+order notes and timeline, customers, shipping, payments, CMS.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -32,6 +32,9 @@ src/Inventory/               InventoryController, InventoryService, StockAdjustm
                              InventorySettingsInput, BulkStockRequest, InventoryRepository,
                              MovementReason, InventoryMovement, MovementRepository, StockLedger,
                              InventoryPresenter
+src/Orders/                  OrderController, OrderService, OrderStatus, OrderInput,
+                             AddressInput, LineItemInput, OrderRepository, OrderPresenter,
+                             OrderStockSubscriber
 src/API/                     Response envelope, ApiException, ErrorNormalizer, Cors, OriginPolicy,
                              AbstractController, RestApi, HealthController, AuditLogController
 src/CLI/                     WP-CLI commands
@@ -59,6 +62,11 @@ tests/Unit/                  unit tests — no WordPress required
 | GET | `/inventory/low-stock` | `ac_manage_inventory` | low-stock report, lowest first |
 | GET | `/inventory/movements` | `ac_manage_inventory` | the ledger (paginated; `product_id`, `reason`, `order_id`, `actor_id`, `date_from`, `date_to`) |
 | GET | `/inventory/movements/summary` | `ac_manage_inventory` | net change and movement count per reason |
+| GET | `/orders` | `ac_manage_orders` | list (paginated; `search`, `status`, `customer_id`, `date_from`, `date_to`, `orderby`, `order`) |
+| POST | `/orders` | `ac_manage_orders` | create → 201 |
+| GET | `/orders/{id}` | `ac_manage_orders` | read |
+| PATCH | `/orders/{id}` | `ac_manage_orders` | partial update, including status |
+| POST | `/orders/{id}/cancel` | `ac_manage_orders` | cancel, with an optional `reason` |
 
 ```bash
 curl http://localhost:8090/wp-json/algerian-commerce/v1/health
@@ -542,6 +550,110 @@ answers "what needs attention" in quantity order.
 
 SKU lookup takes a **query parameter**, not a path segment: WooCommerce SKUs are free text and
 routinely contain `/`, which no amount of encoding makes safe in a REST route pattern.
+
+## Orders
+
+Roadmap §50, docs/PLAN.md §8. Order notes, the timeline and the customer endpoints are still to come.
+
+```
+OrderController      routes, args schema, JSON body → service
+OrderService         authorization, transition and editability guards, audit
+OrderStatus          the status vocabulary and the transition matrix (pure)
+OrderInput           write payload validation (pure)
+AddressInput         billing/shipping validation, shared (pure)
+LineItemInput        one product line (pure)
+OrderRepository      the only place that knows WC_Order exists
+OrderPresenter       the wire format
+OrderStockSubscriber WooCommerce's stock hooks → the §49 ledger
+```
+
+**There is no `DELETE /orders/{id}`.** An order is cancelled, never removed: it is the record of a
+commercial event that accounting, the courier and the customer's history all keep referring to.
+
+### Statuses and transitions
+
+The vocabulary is WooCommerce's, unchanged — `pending`, `processing`, `on-hold`, `completed`,
+`cancelled`, `refunded`, `failed`. The operational states PLAN.md §8 lists ("COD Pending
+Confirmation", "Shipped", "Delivered") are **not** statuses; they arrive as metadata and events in
+§52 and §53, which is what "avoid creating redundant statuses" asks for.
+
+What this plugin adds is a policy WooCommerce deliberately does not have. `set_status()` validates
+the *name* and never the *move*, which is right for a gateway replaying a callback and wrong for an
+admin API — the interesting mistakes are the ones that unwind a finished order.
+
+| From | May become |
+| --- | --- |
+| `pending` | `processing`, `on-hold`, `completed`, `cancelled`, `failed` |
+| `processing` | `on-hold`, `completed`, `cancelled`, `refunded`, `failed` |
+| `on-hold` | `pending`, `processing`, `completed`, `cancelled`, `failed` |
+| `completed` | `refunded` |
+| `failed` | `pending`, `processing`, `on-hold`, `cancelled` |
+| `cancelled`, `refunded` | nothing — terminal |
+
+`refunded` is reachable only from `processing` and `completed`, the two statuses that imply money was
+taken. Refunding an order that was never paid is a cancellation, and conflating them corrupts every
+revenue figure derived from the order book. Re-setting the status an order already has is a
+permitted no-op, so a retry and a full-object PATCH both succeed.
+
+**Creatable is a separate list, not "reachable from `pending`".** `pending → cancelled` is a legal
+move, but an order that is *born* cancelled records the calling-off of something never placed — so
+`OrderStatus::CREATABLE` excludes both terminal statuses. Deriving one rule from the other is a bug
+the REST suite caught.
+
+### Prices come from the catalogue
+
+`LineItemInput` has no price field and will not get one. A line is priced by `add_product()` from the
+product, and every monetary field on the order — `total`, `subtotal`, `discount_total`,
+`shipping_total`, `total_tax` — is read-only. A total a request can set is not a total.
+
+Money is emitted as decimal strings. WooCommerce returns some totals as floats and others as
+strings; the presenter puts all of them through `wc_format_decimal()` so no amount picks up
+floating-point rounding on the way out.
+
+### Editing an order that already holds stock
+
+`PATCH` with `line_items` replaces the product lines wholesale, and is refused unless **both** hold:
+
+- `WC_Order::is_editable()` — WooCommerce's own rule, so `pending` and `on-hold` only.
+- The order has not reduced stock.
+
+They are not the same test twice. `on-hold` passes the first and can still be holding units, because
+on-hold is one of the statuses that reduces stock. Rewriting its lines drops the `_reduced_stock`
+marker WooCommerce writes on each item, and those units are then never returned by anything — the
+ledger shows a reduction with no matching restoration. Reintroducing this bug on purpose stranded 5
+units and left the ledger netting −5 instead of 0.
+
+Everything else — addresses, the customer note, the payment method — stays editable at any status,
+because a phone typo on a shipped COD order has to be fixable.
+
+### Stock movements reach the ledger through hooks
+
+`OrderStockSubscriber` listens to `woocommerce_reduce_order_item_stock` and
+`woocommerce_restore_order_item_stock` rather than being called from `OrderService`. WooCommerce
+moves order stock on a status *transition*, from places this plugin does not own — a gateway
+completing a payment, a scheduled task expiring a held order, WP-CLI, wp-admin, a future storefront
+checkout. A ledger fed only by our own service would miss every movement that did not come through
+our API.
+
+Both hooks fire after WooCommerce has written the new quantity, so the figures are the real ones, and
+each item is marked once — a second transition into a reducing status writes no rows rather than
+double-counting. Order-driven movements write a movement row and **no** audit row: the status change
+that caused them is already audited.
+
+### WooCommerce API notes worth keeping
+
+Three things cost real debugging time here:
+
+- **`remove_order_items('line_item')` cannot be followed by `add_product()`** on the same object. The
+  plural form deletes immediately and unsets the in-memory group; the next `add_product()` re-reads
+  that group and the line it just saved is dropped on the following save — leaving an order with the
+  correct total and no items. Use `remove_item($id)` per line, which queues the deletion so
+  `save_items()` processes it *before* writing the new lines.
+- **`WC_Data_Store` is a `__call` decorator**, so `method_exists($store, …)` is always false. Use
+  `$store->has_callable(…)`. Getting this wrong pinned `stock_reduced` to false everywhere and left
+  the guard above as dead code that always passed.
+- **`wc_get_orders()` returns refunds by default.** `shop_order_refund` is in the default `type`, and
+  `WC_Order_Refund` does not extend `WC_Order`. Ask for `'type' => 'shop_order'` explicitly.
 
 ## Response contract
 
