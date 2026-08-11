@@ -1,0 +1,13 @@
+{
+    "version": "",
+    "source": "",
+    "note": "Provider destination ids, kept out of the canonical geography on purpose (roadmap §51). Yalidine and Zedair renumber their destinations on their own schedule; holding their ids here means that churn never touches the wilaya and commune tables, and adding a third provider is a data change rather than a schema change. Populated from each provider's own docs during roadmap §53 — do not fill this in from memory.",
+    "fields": {
+        "provider": "required — slug, e.g. \"yalidine\" or \"zedair\"",
+        "wilaya_code": "required — 1 to 58",
+        "commune": "optional — the commune name; omit it to map the whole wilaya, which is how stopdesk services are addressed",
+        "destination_id": "required — the provider's own identifier, stored as an opaque string and never parsed as a number",
+        "metadata": "optional — an object of provider-specific extras"
+    },
+    "destinations": []
+}

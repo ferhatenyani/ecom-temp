@@ -207,7 +207,8 @@ Custom tables (prefix `{$wpdb->prefix}ac_`) only for genuinely custom, high-volu
 | `ac_webhook_events` | received event ids — the idempotency ledger |
 | `ac_notification_events` | queued/sent notifications |
 | `ac_analytics_aggregates` | pre-computed metrics; dashboards must not scan all orders per request |
-| `ac_geo_wilayas` / `ac_geo_communes` | Algerian geography + per-provider destination mappings |
+| `ac_geo_wilayas` / `ac_geo_communes` | canonical Algerian geography — no provider data in either |
+| `ac_geo_provider_destinations` | per-provider destination ids, deliberately a separate table: providers renumber on their own schedule, and that churn must not touch the canonical geography or need a schema change per provider |
 
 Schema changes ship as numbered migrations (`migrations/001_create_audit_logs.php`, …) gated on
 `AC_DB_VERSION`, which must equal the highest migration on disk. They run on plugin activation and

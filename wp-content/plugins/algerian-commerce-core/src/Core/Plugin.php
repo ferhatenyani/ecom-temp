@@ -13,6 +13,7 @@ use AlgerianCommerce\Audit\AuditLogger;
 use AlgerianCommerce\Audit\AuditRepository;
 use AlgerianCommerce\Auth\AuthController;
 use AlgerianCommerce\Auth\AuthService;
+use AlgerianCommerce\CLI\ImportAlgeriaCommand;
 use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
 use AlgerianCommerce\CLI\UnlockCommand;
@@ -23,6 +24,10 @@ use AlgerianCommerce\Inventory\InventoryService;
 use AlgerianCommerce\Inventory\MovementRepository;
 use AlgerianCommerce\Inventory\StockLedger;
 use AlgerianCommerce\Customers\CustomerController;
+use AlgerianCommerce\Geography\GeoImporter;
+use AlgerianCommerce\Geography\GeoRepository;
+use AlgerianCommerce\Geography\GeoService;
+use AlgerianCommerce\Geography\LocationController;
 use AlgerianCommerce\Customers\CustomerRepository;
 use AlgerianCommerce\Customers\CustomerService;
 use AlgerianCommerce\Orders\OrderController;
@@ -81,6 +86,9 @@ final class Plugin
     private ?OrderStockSubscriber $orderStockSubscriber = null;
     private ?CustomerRepository $customerRepository = null;
     private ?CustomerService $customerService = null;
+    private ?GeoRepository $geoRepository = null;
+    private ?GeoService $geoService = null;
+    private ?GeoImporter $geoImporter = null;
     private bool $booted = false;
 
     private function __construct()
@@ -124,6 +132,7 @@ final class Plugin
         WP_CLI::add_command('algerian-commerce migrate', new MigrateCommand($this->migrations()));
         WP_CLI::add_command('algerian-commerce roles', new RolesCommand($this->roles()));
         WP_CLI::add_command('algerian-commerce unlock', new UnlockCommand($this->rateLimiter(), $this->rateLimitStore()));
+        WP_CLI::add_command('algerian-commerce import-algeria', new ImportAlgeriaCommand($this->geoImporter()));
     }
 
     public function config(): Config
@@ -151,7 +160,35 @@ final class Plugin
             new InventoryController($this->logger(), $this->inventoryService()),
             new OrderController($this->logger(), $this->orderService()),
             new CustomerController($this->logger(), $this->customerService()),
+            new LocationController($this->logger(), $this->geoService()),
         ]);
+    }
+
+    public function geoRepository(): GeoRepository
+    {
+        global $wpdb;
+
+        return $this->geoRepository ??= new GeoRepository($wpdb);
+    }
+
+    public function geoService(): GeoService
+    {
+        return $this->geoService ??= new GeoService($this->geoRepository());
+    }
+
+    /**
+     * The datasets ship inside the plugin, not at the repository root: the
+     * plugin is what gets cloned per client and deployed, and an importer that
+     * reaches outside its own directory has nothing to read on a real install.
+     */
+    public function geoImporter(): GeoImporter
+    {
+        return $this->geoImporter ??= new GeoImporter(
+            $this->geoRepository(),
+            $this->logger(),
+            $this->auditLogger(),
+            AC_CORE_PATH . 'data/algeria'
+        );
     }
 
     public function customerRepository(): CustomerRepository

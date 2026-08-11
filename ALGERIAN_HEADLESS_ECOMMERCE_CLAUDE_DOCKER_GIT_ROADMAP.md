@@ -2409,6 +2409,79 @@ provider destination ID
 
 Keep the dataset updateable.
 
+## Status
+
+**Done, data included.**
+
+``` text
+data/algeria/wilayas.json                 69 wilayas + Arabic names
+data/algeria/communes.json                1,541 communes + Arabic names,
+                                          daira, national code, coordinates
+data/algeria/sources/                     the CSV they are generated from
+data/algeria/provider-destinations.json   empty until §53
+
+scripts/build-algeria-dataset.php         source CSV -> the two JSON files
+wp algerian-commerce import-algeria [--dry-run]
+
+GET /locations/wilayas
+GET /locations/wilayas/{id}
+GET /locations/wilayas/{id}/communes
+GET /locations/communes/{id}
+GET /locations/coverage
+```
+
+Algeria has **69 wilayas**: the 58 of the 2019 reform plus the eleven former
+circonscriptions administratives — Aflou, Barika, El Kantara, Bir El Ater,
+El Aricha, Ksar Chellala, Ain Oussera, Messaad, Ksar El Boukhari, Boussaâda
+and El Abiodh Sidi Cheikh — since promoted in full.
+
+Nothing was written from memory. Codes 01-58 come from WooCommerce's own
+`i18n/states.php` `DZ` block; codes 59-69 and every Arabic name from a supplied
+CSV, converted by a committed build script so the dataset is a diff rather than
+an origin story.
+
+Two corrections, printed with their evidence on every build:
+
+``` text
+11 rows carry Ouargla's code 30 while being named Touggourt (55)
+    the 2019 split was half-applied; the name is followed
+    Touggourt ends with its 13 communes instead of 2
+
+daira Bousaada was still filed under M'Sila (28)
+    a wilaya is named after its chef-lieu, and 10 of the 11 new
+    wilayas contain their namesake commune — Boussaâda (68) was
+    the only one that did not
+    Bou Saada, El Hamel and Oulteme move to 68
+```
+
+A chef-lieu check now runs on every build and prints any wilaya holding no
+commune of its own name, so that class of misfiling is caught rather than
+noticed. Seven wilayas stay on the list permanently (Algiers/Alger Centre,
+Tipasa/Tipaza, In Salah/Ain Salah …) — spelling, not misfiling — which is why
+it reports and never enforces.
+
+Result: 69 wilayas, 1,541 communes — Algeria's exact count — every wilaya
+non-empty, no slug collisions.
+
+**Postal codes are still absent**, because the source has none. `code_commune`
+is the national commune code (3-4 digits) and not a postal code (5), so it is
+stored as `national_code` and `postal_code` stays empty. Mapping one onto the
+other would have put a wrong postal code on every address in the country. If
+postal codes matter to a client, they are a second dataset merged into
+`communes.json` and re-imported.
+
+Decisions worth keeping:
+
+``` text
+wilaya PK  = the official code 1-69, a real natural key
+commune PK = auto-increment, natural key (wilaya_id, slug)
+slugs      = accent-folded, so Bejaia and Béjaïa are one commune
+import     = all-or-nothing, idempotent, never deletes
+provider   = its own table; ids are opaque strings, never parsed
+/locations = the only public routes in the plugin
+coordinates = carried for §53, not used yet
+```
+
 ------------------------------------------------------------------------
 
 # 52. COD
