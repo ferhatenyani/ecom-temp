@@ -15,8 +15,8 @@ PSR-4 autoloading, configuration and feature flags, logging with secret redactio
 the migration runner, roles and capabilities, and audit recording.
 
 Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (authentication), §50
-(orders and customers) and §51 (Algerian geography) are in, along with rate limiting. Not implemented
-yet: 2FA, customer sessions, COD, shipping, payments, analytics, CMS.
+(orders and customers), §51 (Algerian geography) and §52 (COD) are in, along with rate limiting. Not
+implemented yet: 2FA, customer sessions, shipping, payments, analytics, CMS.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -38,6 +38,8 @@ src/Orders/                  OrderController, OrderService, OrderStatus, OrderIn
                              OrderRepository, OrderPresenter, OrderStockSubscriber
 src/Customers/               CustomerController, CustomerService, CustomerInput,
                              CustomerStatistics, CustomerRepository, CustomerPresenter
+src/COD/                     CodController, CodService, CodStatus, CodState, CodAttemptInput,
+                             CodSettingsInput, CodStatistics, CodRepository, CodSubscriber
 src/Geography/               LocationController, GeoService, GeoDataset, GeoSlug,
                              GeoRepository, GeoImporter
 data/algeria/                wilayas.json, communes.json, provider-destinations.json,
@@ -77,6 +79,10 @@ tests/Unit/                  unit tests — no WordPress required
 | GET | `/orders/{id}/notes` | `ac_manage_orders` | notes, newest first (`limit`) |
 | POST | `/orders/{id}/notes` | `ac_manage_orders` | add a note → 201 |
 | GET | `/orders/{id}/timeline` | `ac_manage_orders` | notes, audit events and stock movements, merged (`limit`) |
+| GET | `/orders/{id}/cod` | `ac_manage_orders` | the order's COD state |
+| PATCH | `/orders/{id}/cod` | `ac_manage_orders` | turn COD on or off for that order (`enabled`) |
+| POST | `/orders/{id}/cod/attempts` | `ac_manage_orders` | record a confirmation call → 201 (`outcome`, `reason`) |
+| GET | `/cod/statistics` | `ac_view_analytics` | the COD funnel (`customer_id`, `date_from`, `date_to`) |
 | GET | `/customers` | `ac_manage_customers` | list (paginated; `search`, `orderby`, `order`) |
 | GET | `/customers/{id}` | `ac_manage_customers` | profile **and** lifetime statistics |
 | PATCH | `/customers/{id}` | `ac_manage_customers` | name, email and addresses — never roles or credentials |
@@ -745,8 +751,9 @@ formatted back at the end — with `round()` before the cast, because `(int)` tr
 100` is `1229.999…`.
 
 PLAN.md §9 lists "returned orders"; WooCommerce has no `returned` status, so it maps to `refunded`,
-the state where the money went back. COD history is §52's, and customer-level notes and an account
-status flag are recorded in the roadmap rather than invented here.
+the state where the money went back. COD history is answered by `GET /cod/statistics?customer_id=`
+(below), and customer-level notes and an account status flag are recorded in the roadmap rather than
+invented here.
 
 ### Stock movements reach the ledger through hooks
 
@@ -776,6 +783,127 @@ Three things cost real debugging time here:
   the guard above as dead code that always passed.
 - **`wc_get_orders()` returns refunds by default.** `shop_order_refund` is in the default `type`, and
   `WC_Order_Refund` does not extend `WC_Order`. Ask for `'type' => 'shop_order'` explicitly.
+
+## Cash on delivery
+
+Roadmap §52, docs/PLAN.md §12. COD is how most Algerian orders are actually paid, so the shop phones
+the customer before it ships anything, and this module is the record of those calls.
+
+```bash
+curl -u "$CRED" .../orders/268/cod
+# {"enabled":true,"status":"pending","attempts":0,"confirmed_at":null,"cancelled_at":null,
+#  "last_attempt_at":null,"reason":"","allowed_outcomes":["confirmed","rejected","unreachable"]}
+
+curl -u "$CRED" -X POST .../orders/268/cod/attempts -d '{"outcome":"unreachable","reason":"phone off"}'
+# 201 → status "unreachable", attempts 1, last_attempt_at stamped
+```
+
+### These are not order statuses
+
+`pending → confirmed | rejected | unreachable | cancelled` is a second state machine that runs
+*alongside* WooCommerce's, never inside it. PLAN.md §8 lists "COD Pending Confirmation" and "COD
+Confirmed" among the operational states and then says not to create redundant statuses when metadata
+will do. The two answer different questions — *where is this order in the shop's workflow* versus
+*has the customer said yes on the phone* — and a COD shop needs both at once.
+
+So **a COD outcome never changes the order's status.** Confirming records that the customer agreed
+and stops there; whether the order then moves to `processing` is a decision made through
+`PATCH /orders/{id}`, and preparing a shipment is §53's. A confirmation that quietly advanced the
+order would also quietly move stock.
+
+The reverse direction *is* wired up, because it has to be: `CodSubscriber` listens to
+`woocommerce_order_status_cancelled` and closes the COD state whatever cancelled the order — this
+API, wp-admin, WP-CLI, cron, a gateway. A confirmation queue still calling customers about cancelled
+orders is the most visible way a COD workflow embarrasses a shop. It writes no audit row, for the
+same reason order-driven stock movements do not: `order.cancelled` is already in the trail, with its
+actor and its reason, and this is the consequence of that event rather than a second one.
+
+It also keeps the dependency running one way (ARCHITECTURE §3): `COD/` reads orders, `Orders/` has
+never heard of COD. That is why `OrderPresenter` emits no `cod` block — an order list that wants COD
+status per row is a real need, but inverting the dependency to serve it is not the way to meet it,
+and there is no admin UI asking yet.
+
+### Every legal move is listed, including the ones that stay put
+
+There is no blanket "a state may be re-set to itself" rule as there is for order statuses, because
+recording an outcome is an *event*: it increments the attempt counter. `unreachable → unreachable` is
+a second failed phone call and has to be legal; `rejected → rejected` would be a call to a customer
+this shop has already stopped calling. `confirmed → rejected` is absent while `confirmed → cancelled`
+is present — a customer who says yes and later changes their mind has cancelled, and folding the two
+together would make the confirmation rate count one event two different ways.
+
+A refused outcome is a **409 naming what is reachable**, so a client renders the buttons that will
+work instead of guessing:
+
+```json
+{"success":false,"error":{"code":"conflict",
+ "message":"A COD order cannot move from \"confirmed\" to \"rejected\".",
+ "details":{"from":"confirmed","to":"rejected","allowed":["confirmed"]}}}
+```
+
+`GET /orders/{id}/cod` carries the same list as `allowed_outcomes`, so the 409 should be rare.
+
+### Stored as order meta, with the audit trail as its history
+
+The `_ac_cod_*` keys hold the *current* state of one order, which is what order meta is for, reached
+through `WC_Order`'s CRUD so the HPOS declaration stays true here too. There is **no migration and no
+new table** — `Schema::VERSION` is still 3. The history of who called and what was said is already
+append-only in `ac_audit_logs` (`cod.attempt_recorded`, `cod.settings_changed`) and already merged
+into `GET /orders/{id}/timeline`, so a `ac_cod_attempts` table would be a third copy of what two
+stores hold between them:
+
+```
+2026-08-11T22:59:11+00:00 audit  Order cancelled — customer unreachable for three days
+2026-08-11T22:59:11+00:00 audit  COD confirmation attempt 2 — confirmed
+2026-08-11T22:58:32+00:00 audit  COD confirmation attempt 1 — unreachable — phone off
+2026-08-11T22:58:32+00:00 audit  Order created
+```
+
+`reason` is the reason given with the **most recent outcome**, and a cancellation does not overwrite
+it — the hook carries no reason, and the one an operator typed is already on the `order.cancelled`
+audit row with its actor and timestamp. §52 lists "cancellation reason" among the COD fields; it is
+recorded, in the store that keeps history, rather than copied into a field that only ever holds the
+latest value.
+
+Nothing is written until something happens. An order paid `cod` that no one has touched reads as
+`enabled: true, status: pending` — derived from the payment method — so orders that predate this
+module behave correctly and no meta row exists for an order nobody has worked on yet. Once the flag
+is written explicitly it wins, which is how COD is turned off for a single order without rewriting
+how it was paid. `attempts` is stored as a string like all meta, and `'0'` is truthy in PHP: reading
+the flag with a plain cast would silently re-enable COD on every order it had been turned off for.
+
+### The funnel
+
+`GET /cod/statistics` costs a fixed number of `COUNT(*)`s no matter how large the order book is —
+counts, never loaded orders. **Every rate shares one denominator: every COD order in scope.** Rates
+with different denominators cannot be compared, and the tempting alternative — dividing by "orders
+that reached a decision" — changes meaning as the pending queue drains. The consequence is worth
+stating: a window that includes today is depressed by the orders nobody has called yet, and the
+honest way to read it is next to `by_status.pending`.
+
+Confirmation counts orders that were **ever** confirmed, from the `confirmed_at` stamp rather than
+the current status, so an order confirmed and later cancelled appears in both the confirmation and
+cancellation rates. Both things happened; a shop that counted only the cancellation would conclude
+its confirmation process was failing when what failed came after it.
+
+Counting matches what `GET /orders/{id}/cod` reports, deliberately — the funnel runs a second pass
+for orders paid `cod` that carry no COD meta, because an order the API calls COD must not be missing
+from the statistics that describe COD orders.
+
+`delivery` and `return` are read from the *order* status (`completed`, `refunded`), which is the only
+record of an outcome that exists today. The courier's own verdict arrives with §53 and both rates
+should be re-derived from it then.
+
+`?customer_id=` is the same funnel scoped to one buyer, which is how PLAN.md §9's "COD history" is
+answered. It is a risk **signal**: §52 says not to automatically ban a customer on a single weak
+signal, so nothing here blocks, flags or bans anybody. It reports, and a person decides.
+
+### `ENABLE_COD` is deliberately not consulted
+
+The flag decides whether checkout *offers* cash on delivery, which is the payment abstraction in §58.
+These endpoints are the operational handling of orders that already exist. A shop that stops taking
+new COD orders still has hundreds in flight, and a flag that froze their confirmation queue would
+strand exactly the orders that most need finishing.
 
 ## Algerian geography
 
