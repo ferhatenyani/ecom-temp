@@ -47,8 +47,10 @@ final class MovementReason
      *
      * `product_edit` covers a quantity changed through the product or
      * variation write endpoints — without it the ledger would have gaps it
-     * could not explain. The two order reasons are reserved for roadmap §50;
-     * nothing writes them yet.
+     * could not explain. The two order reasons are written by
+     * Orders\OrderStockSubscriber, from WooCommerce's own stock hooks, so they
+     * cover every order-driven movement rather than only the ones this API
+     * caused.
      *
      * @var list<string>
      */

@@ -111,6 +111,47 @@ final class StockLedger
     }
 
     /**
+     * Record stock that moved because an order changed status.
+     *
+     * `$before` and `$after` are WooCommerce's own figures, read from the hook
+     * that fires immediately after it wrote the new quantity, so they describe
+     * the row as it actually stands rather than what the caller expected.
+     *
+     * Deliberately without the `get_manage_stock() !== true` guard that
+     * recordProductEdit() carries. WooCommerce only reaches these hooks for a
+     * product whose `managing_stock()` is true, and for a variation inheriting
+     * its parent's stock that is true while `get_manage_stock()` returns
+     * 'parent' — the same case the other guard exists to *exclude*. Here the
+     * stock genuinely moved, on the parent, and stockManagedId() names it.
+     *
+     * Writes no audit row: order-driven movements are the shop working, not a
+     * person changing a quantity, and the status change that caused them is
+     * already audited (roadmap §49).
+     */
+    public function recordOrderMovement(
+        WC_Product $product,
+        int $before,
+        int $after,
+        string $reason,
+        int $orderId
+    ): ?int {
+        if ($before === $after) {
+            return null;
+        }
+
+        return $this->record(new InventoryMovement(
+            $this->stockManagedId($product),
+            $after - $before,
+            $before,
+            $after,
+            $reason,
+            '',
+            $orderId,
+            $this->currentUserId()
+        ));
+    }
+
+    /**
      * The id whose stock actually moved.
      *
      * A variation that inherits stock management from its parent has no stock
