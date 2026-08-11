@@ -66,6 +66,7 @@ src/
   API/           REST bootstrap, response envelope, error mapping, pagination, CORS
   Auth/          authentication strategies, session/token handling
   Permissions/   roles, capabilities, permission_callback helpers
+  Commerce/      value objects shared across commerce domains (addresses)
   Products/      Customers/  Orders/  Inventory/   commerce domains
   COD/           cash-on-delivery state machine and risk signals
   Shipping/      ShippingService + ShippingProviderInterface
@@ -82,6 +83,13 @@ tests/
 
 **Dependency direction:** `API → Services → Domain → Adapters → WooCommerce`. Domain modules never
 depend on `API/`; `integrations/` never depend on each other; `Core/` depends on nothing above it.
+
+A commerce domain may depend on another, but only in one direction and only where the business
+genuinely nests: `Customers/` reads `Orders/` because a customer's history and lifetime value *are*
+orders, while an order holds a `customer_id` — an integer — and never a customer object. When two
+domains need the same value object rather than one needing the other, it belongs in `Commerce/`;
+`AddressInput` lives there because orders and customers store the identical field set and duplicating
+the validation would let the two drift.
 
 ## 4. Provider abstraction
 
@@ -180,6 +188,13 @@ Planned surface: `/products`, `/orders`, `/customers`, `/inventory`, `/analytics
 
 WooCommerce owns products, orders, customers, and coupons — use its supported APIs and data models
 (HPOS-compatible), and do **not** build parallel copies of them.
+
+HPOS is **enabled** on this install and the plugin declares `custom_order_tables` compatibility. That
+declaration is a promise with a concrete meaning: orders are reached only through `wc_get_order()`,
+`wc_get_orders()` and the `WC_Order` CRUD — never `get_post()`, `get_post_meta()` or `$wpdb` against
+`wp_posts`. Code that reads order rows directly keeps working on a legacy install and silently
+returns nothing on an HPOS one, which is the worst possible failure shape. `Orders/OrderRepository`
+is the only file allowed to touch an order object at all.
 
 Custom tables (prefix `{$wpdb->prefix}ac_`) only for genuinely custom, high-volume domains:
 

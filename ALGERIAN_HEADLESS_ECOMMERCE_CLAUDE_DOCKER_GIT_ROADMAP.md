@@ -2314,6 +2314,68 @@ statistics
 
 Use WooCommerce's native commerce model where appropriate.
 
+## Status
+
+**Done.**
+
+``` text
+GET   /orders                  search, status/customer/date filters, sorting
+POST  /orders                  catalogue-priced lines; no caller-set totals
+GET   /orders/{id}
+PATCH /orders/{id}             fields and status, through a transition matrix
+POST  /orders/{id}/cancel      with a reason, recorded in the audit trail
+GET   /orders/{id}/notes
+POST  /orders/{id}/notes       customer_note defaults to false and is not coerced
+GET   /orders/{id}/timeline    notes + audit + ledger, merged newest-first
+GET   /customers               role-scoped; guests are not customer records
+GET   /customers/{id}          profile and lifetime statistics
+PATCH /customers/{id}          name, email, addresses — never roles or credentials
+GET   /customers/{id}/orders
+```
+
+Order-driven stock movements reach the §49 ledger through WooCommerce's own
+hooks, so they are recorded no matter what moved them — this API, wp-admin,
+WP-CLI, cron or a payment gateway.
+
+Amending the lines of an order that already holds stock is **implemented**, not
+refused: the units are returned, the lines replaced, and the units re-taken, so
+the ledger records all three moves and nets to what is actually held. Skipping
+that reconciliation destroys WooCommerce's `_reduced_stock` markers and strands
+the units silently.
+
+There is deliberately **no `DELETE /orders/{id}`** — an order is cancelled, never
+removed — and no `POST`/`DELETE` on customers, since account creation and
+erasure belong to `ac_manage_users`.
+
+The operational states PLAN §8 lists — COD Pending Confirmation, Shipping
+Prepared, Shipped, Delivered, Returned — were **not** added as statuses. They
+arrive as metadata and events in §52 and §53, which is what "avoid creating
+redundant statuses when metadata/events are sufficient" asks for.
+
+### Deferred, with their reasons
+
+``` text
+refunds
+    — PATCH to status "refunded" works. Creating an actual
+      WC_Order_Refund with amounts, and verifying it against the
+      provider, is §57 payments.
+
+COD history on a customer
+    — §52 defines the confirmation states this would summarise.
+      Nothing to count yet.
+
+customer notes, account status / banning
+    — PLAN §9 lists both; §50's endpoint list does not, and §52 says
+      not to ban on a single weak signal, so the flag belongs with
+      the risk signals rather than ahead of them. Needs storage
+      (a table or user meta) — a decision, not an oversight.
+
+customer-facing order access
+    — a shopper reading their own order needs the session strategy
+      deferred in §44. Permissions::assertOwnsOr() is already there
+      for it. Every route here is administrative today.
+```
+
 ------------------------------------------------------------------------
 
 # 51. Algerian Geographic Data

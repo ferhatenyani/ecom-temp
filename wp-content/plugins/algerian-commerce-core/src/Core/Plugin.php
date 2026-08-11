@@ -22,6 +22,13 @@ use AlgerianCommerce\Inventory\InventoryRepository;
 use AlgerianCommerce\Inventory\InventoryService;
 use AlgerianCommerce\Inventory\MovementRepository;
 use AlgerianCommerce\Inventory\StockLedger;
+use AlgerianCommerce\Customers\CustomerController;
+use AlgerianCommerce\Customers\CustomerRepository;
+use AlgerianCommerce\Customers\CustomerService;
+use AlgerianCommerce\Orders\OrderController;
+use AlgerianCommerce\Orders\OrderRepository;
+use AlgerianCommerce\Orders\OrderService;
+use AlgerianCommerce\Orders\OrderStockSubscriber;
 use AlgerianCommerce\Permissions\Roles;
 use AlgerianCommerce\Security\RateLimiter;
 use AlgerianCommerce\Security\RateLimitGuard;
@@ -69,6 +76,11 @@ final class Plugin
     private ?MovementRepository $movementRepository = null;
     private ?StockLedger $stockLedger = null;
     private ?InventoryService $inventoryService = null;
+    private ?OrderRepository $orderRepository = null;
+    private ?OrderService $orderService = null;
+    private ?OrderStockSubscriber $orderStockSubscriber = null;
+    private ?CustomerRepository $customerRepository = null;
+    private ?CustomerService $customerService = null;
     private bool $booted = false;
 
     private function __construct()
@@ -92,6 +104,12 @@ final class Plugin
         $this->cors()->register();
         // Before the routes run, and scoped to our namespace only.
         $this->rateLimitGuard()->register();
+        /*
+         * Not tied to the REST API: WooCommerce moves order stock from
+         * wp-admin, WP-CLI, cron and payment gateways too, and the ledger has
+         * to see all of it — see OrderStockSubscriber.
+         */
+        $this->orderStockSubscriber()->register();
         $this->registerCliCommands();
 
         $this->logger()->debug('Plugin booted', ['version' => VERSION]);
@@ -131,7 +149,53 @@ final class Plugin
             new VariationController($this->logger(), $this->variationService()),
             new ProductCategoryController($this->logger()),
             new InventoryController($this->logger(), $this->inventoryService()),
+            new OrderController($this->logger(), $this->orderService()),
+            new CustomerController($this->logger(), $this->customerService()),
         ]);
+    }
+
+    public function customerRepository(): CustomerRepository
+    {
+        return $this->customerRepository ??= new CustomerRepository();
+    }
+
+    /**
+     * Takes the order repository: a customer's history and lifetime statistics
+     * are made of orders. The dependency runs one way — nothing in Orders/
+     * reaches back for a customer object.
+     */
+    public function customerService(): CustomerService
+    {
+        return $this->customerService ??= new CustomerService(
+            $this->customerRepository(),
+            $this->orderRepository(),
+            $this->auditLogger()
+        );
+    }
+
+    public function orderRepository(): OrderRepository
+    {
+        return $this->orderRepository ??= new OrderRepository();
+    }
+
+    public function orderService(): OrderService
+    {
+        return $this->orderService ??= new OrderService(
+            $this->orderRepository(),
+            $this->auditLogger(),
+            $this->auditRepository(),
+            $this->movementRepository()
+        );
+    }
+
+    /**
+     * Shares the one StockLedger with the inventory and product services, so
+     * an order-driven movement and a manual adjustment land in the same
+     * history in the same shape.
+     */
+    public function orderStockSubscriber(): OrderStockSubscriber
+    {
+        return $this->orderStockSubscriber ??= new OrderStockSubscriber($this->stockLedger());
     }
 
     public function inventoryRepository(): InventoryRepository
