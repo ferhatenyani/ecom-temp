@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\Core\Migrations\MigrationPlan;
+use AlgerianCommerce\Core\Schema;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 
@@ -93,14 +94,25 @@ final class MigrationPlanTest extends TestCase
 
     public function testRealMigrationsDirectoryMatchesTheDeclaredSchemaVersion(): void
     {
-        // Guards the mistake that ships a migration without bumping DB_VERSION,
-        // leaving installs that never run it.
+        // Guards the mistake that ships a migration without bumping the schema
+        // version, leaving installs that never run it.
+        //
+        // Asserted against Schema::VERSION, which is what the plugin itself
+        // derives DB_VERSION from. Asserting the constant instead would test
+        // the test bootstrap's own copy of the number, which is how this guard
+        // used to pass while the shipped value was wrong.
         $files = glob(dirname(__DIR__, 2) . '/migrations/*.php') ?: [];
 
         self::assertSame(
-            constant('AlgerianCommerce\DB_VERSION'),
+            Schema::VERSION,
             MigrationPlan::latestVersion($files),
-            'DB_VERSION must equal the highest migration on disk'
+            'Schema::VERSION must equal the highest migration on disk'
         );
+    }
+
+    /** The runtime constant must not drift from the class it is derived from. */
+    public function testDeclaredConstantMatchesTheSchemaClass(): void
+    {
+        self::assertSame(Schema::VERSION, constant('AlgerianCommerce\DB_VERSION'));
     }
 }
