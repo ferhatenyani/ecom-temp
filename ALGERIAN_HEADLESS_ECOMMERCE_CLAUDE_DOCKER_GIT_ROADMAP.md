@@ -2409,6 +2409,50 @@ provider destination ID
 
 Keep the dataset updateable.
 
+## Status
+
+**The mechanism is complete. The commune data is not, and that is a real gap.**
+
+``` text
+data/algeria/wilayas.json                 58 wilayas — DONE
+data/algeria/communes.json                EMPTY — needs a real dataset
+data/algeria/provider-destinations.json   empty until §53
+
+wp algerian-commerce import-algeria [--dry-run]
+GET /locations/wilayas
+GET /locations/wilayas/{id}
+GET /locations/wilayas/{id}/communes
+GET /locations/communes/{id}
+GET /locations/coverage
+```
+
+The ~1,500 communes were **not** written from memory. A wrong commune name is
+a rejected valid address and a failed delivery, and a list that is 95% right is
+worse than an empty one because nothing about a working checkout says which 5%
+is missing. Source the real dataset — ONS, a courier's published destination
+export, or the client's own — drop it into `communes.json` and run the import.
+The importer warns when no communes load, and `/locations/coverage` reports it,
+so the gap is visible rather than silent.
+
+The wilayas were not written from memory either: they are generated from
+WooCommerce's own `i18n/states.php` `DZ` block, which carries all 58 post-2019
+wilayas.
+
+Decisions worth keeping:
+
+``` text
+wilaya PK  = the official code 1-58, a real natural key
+commune PK = auto-increment, natural key (wilaya_id, slug)
+slugs      = accent-folded, so Bejaia and Béjaïa are one commune
+import     = all-or-nothing, idempotent, never deletes
+provider   = its own table; ids are opaque strings, never parsed
+/locations = the only public routes in the plugin
+```
+
+Until the communes are loaded, anything that needs a delivery destination —
+COD confirmation (§52) and the shipping adapters (§53) — can address a wilaya
+but not a commune.
+
 ------------------------------------------------------------------------
 
 # 52. COD

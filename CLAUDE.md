@@ -14,8 +14,13 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50 is done** — orders, notes, timeline and customers.
-**Next up is §51, Algerian geographic data.**
+milestones, and section 29 the per-feature loop. **§50 and §51 are done** — orders, notes, timeline, customers,
+and the Algerian geography mechanism. **Next up is §52, COD.**
+
+One open gap: `data/algeria/communes.json` ships **empty**. The importer, schema and endpoints are complete and all
+58 wilayas are loaded, but the ~1,500 communes must be sourced from real data — never written from memory, because a
+wrong commune name is a rejected valid address. `wp algerian-commerce import-algeria` loads it; `/locations/coverage`
+reports the gap. §52 and §53 can address a wilaya but not a commune until it is filled.
 
 [docs/PLAN.md](docs/PLAN.md) — the functional specification — answers *what* we build.
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (layering, module map, provider abstraction, data/schema design) and
@@ -42,8 +47,11 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `CLI/`, alongside `migrations/` and `tests/`. Still to come: `Shipping/`, `Payments/`, `COD/`,
-`Analytics/`, `CMS/`, … and `integrations/{Yalidine,Zedair,Chargily}/`.
+`Customers/`, `Geography/`, `CLI/`, alongside `data/`, `migrations/` and `tests/`. Still to come: `Shipping/`,
+`Payments/`, `COD/`, `Analytics/`, `CMS/`, … and `integrations/{Yalidine,Zedair,Chargily}/`.
+
+Bulk reference data lives in `data/` as JSON and is loaded by a WP-CLI importer — never inlined into PHP files
+(roadmap §51). Datasets ship inside the plugin, because the plugin is what gets cloned and deployed per client.
 
 A commerce domain may depend on another in one direction only, where the business genuinely nests — `Customers/`
 reads `Orders/` because a customer's history *is* orders. A value object two domains both need goes in `Commerce/`

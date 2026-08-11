@@ -14,9 +14,12 @@ PSR-4 autoloading, configuration and feature flags, logging with secret redactio
 `algerian-commerce/v1` namespace, the shared response envelope, error handling, the health endpoint,
 the migration runner, roles and capabilities, and audit recording.
 
-Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (authentication) and §50
-(orders and customers) are in, along with rate limiting. Not implemented yet: 2FA, customer sessions,
-Algerian geography, COD, shipping, payments, analytics, CMS.
+Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (authentication), §50
+(orders and customers) and §51 (Algerian geography) are in, along with rate limiting. Not implemented
+yet: 2FA, customer sessions, COD, shipping, payments, analytics, CMS.
+
+**The commune dataset ships empty.** See [Algerian geography](#algerian-geography) — the mechanism is
+complete and the 58 wilayas are loaded, but the ~1,500 communes have to be sourced.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -38,6 +41,9 @@ src/Orders/                  OrderController, OrderService, OrderStatus, OrderIn
                              OrderRepository, OrderPresenter, OrderStockSubscriber
 src/Customers/               CustomerController, CustomerService, CustomerInput,
                              CustomerStatistics, CustomerRepository, CustomerPresenter
+src/Geography/               LocationController, GeoService, GeoDataset, GeoSlug,
+                             GeoRepository, GeoImporter
+data/algeria/                wilayas.json, communes.json, provider-destinations.json
 src/API/                     Response envelope, ApiException, ErrorNormalizer, Cors, OriginPolicy,
                              AbstractController, RestApi, HealthController, AuditLogController
 src/CLI/                     WP-CLI commands
@@ -77,6 +83,11 @@ tests/Unit/                  unit tests — no WordPress required
 | GET | `/customers/{id}` | `ac_manage_customers` | profile **and** lifetime statistics |
 | PATCH | `/customers/{id}` | `ac_manage_customers` | name, email and addresses — never roles or credentials |
 | GET | `/customers/{id}/orders` | `ac_manage_customers` | order history (paginated; `status`, `orderby`, `order`) |
+| GET | `/locations/wilayas` | **public** | all 58 wilayas (`search`, `active_only`) |
+| GET | `/locations/wilayas/{id}` | **public** | one wilaya, by its official code |
+| GET | `/locations/wilayas/{id}/communes` | **public** | its communes (`search`, `postal_code`, `active_only`) |
+| GET | `/locations/communes/{id}` | **public** | one commune |
+| GET | `/locations/coverage` | **public** | how much of the dataset is loaded |
 
 ```bash
 curl http://localhost:8090/wp-json/algerian-commerce/v1/health
@@ -767,6 +778,96 @@ Three things cost real debugging time here:
   the guard above as dead code that always passed.
 - **`wc_get_orders()` returns refunds by default.** `shop_order_refund` is in the default `type`, and
   `WC_Order_Refund` does not extend `WC_Order`. Ask for `'type' => 'shop_order'` explicitly.
+
+## Algerian geography
+
+Roadmap §51, docs/PLAN.md §10. Wilayas, communes, postal codes, and the shipping providers'
+destination ids kept separate from all of it.
+
+```
+data/algeria/wilayas.json               58 wilayas — complete
+data/algeria/communes.json              EMPTY — see below
+data/algeria/provider-destinations.json empty until §53
+```
+
+```bash
+docker compose run --rm wpcli wp algerian-commerce import-algeria --dry-run
+docker compose run --rm wpcli wp algerian-commerce import-algeria
+```
+
+### The communes are not shipped, on purpose
+
+Algeria has roughly 1,500 communes and this repository does not contain them. They were **not**
+written from memory: a wrong commune name is a rejected valid address and a failed delivery, and a
+list that is 95% right is worse than an empty one, because nothing about a working checkout tells you
+which 5% is missing.
+
+So `communes.json` ships empty, with its field documentation inside it. Source a real dataset — the
+ONS commune list, a courier's published destination export, or the client's own — drop it in, and run
+the import. `GET /locations/coverage` and the importer's own warning both report the gap, so an
+install that never loaded them is visible rather than silently answering every commune lookup with an
+empty list.
+
+The wilayas *are* complete, and they were not written from memory either: they are generated from
+WooCommerce's own `i18n/states.php` `DZ` block, which carries all 58 post-2019 wilayas.
+
+### Why custom tables
+
+WooCommerce stores a flat `state` string per address and has no concept below it. Communes are the
+level Algerian couriers actually deliver to, there are ~1,500 of them, and shipping rates and
+destination ids hang off them — the test docs/ARCHITECTURE.md §7 sets for a table of our own.
+
+**The wilaya primary key is the official code, 1–58, not an auto-increment.** It is a real natural
+key: every Algerian knows Alger is 16, it is on number plates and identity documents, and the 2019
+reform that took the count from 48 to 58 *added* codes 49–58 rather than renumbering. So
+`/locations/wilayas/16` is Alger, which is what anyone would guess.
+
+Communes have no numbering anyone agrees on across sources, so they get an auto-increment id and a
+natural unique key of `(wilaya_id, slug)`.
+
+### Slugs are accent-folded, and that is the point
+
+Algerian place names arrive spelled both ways — Béjaïa and Bejaia, M'Sila with a straight or a curly
+apostrophe, Aïn Témouchent and Ain Temouchent. The slug folds all of it, so a dataset that corrects
+its spelling next year **updates** the row instead of inserting a second commune beside the first.
+
+`GeoSlug` uses a fixed replacement table rather than `iconv()//TRANSLIT`, whose output varies with the
+C library and locale, and rather than `sanitize_title()`, which is filterable. A natural key that can
+differ between two servers is not a key.
+
+### Import is all-or-nothing, and never deletes
+
+One bad row imports nothing. A half-loaded geography is the worst state available here: addresses
+would validate in some wilayas and be rejected in others with no sign which. `GeoDataset` collects
+every problem in the file and the command reports them together, because fixing 1,500 rows one run at
+a time is not a workflow.
+
+Re-importing is an upsert on the natural keys, so it is idempotent — the REST suite runs it twice and
+asserts the second pass inserts nothing. Nothing is ever deleted: a commune dropped from a newer
+dataset is deactivated, because a delivered order may still point at it.
+
+### Provider ids live in their own table
+
+Roadmap §51 asks for them to be stored separately, and the reason is churn. Yalidine and Zedair
+renumber their destinations on their own schedule; holding their ids in a column on `ac_geo_communes`
+would make a provider's housekeeping a migration of the canonical Algerian data, and adding a third
+provider a schema change. `ac_geo_provider_destinations` carries one row per `(provider, wilaya,
+commune)`, with `commune_id` 0 meaning a wilaya-level destination — how stopdesk services are
+addressed. `destination_id` is a varchar because it is the provider's identifier and ours to store,
+not to parse.
+
+It stays empty until §53, when the adapters are written from each provider's current official docs.
+
+### These are the only public endpoints
+
+`/locations/*` is the one place in this plugin a `permission_callback` returns true. The payload is
+Algeria's administrative divisions — public information with no customer, order or shop data in it,
+and the same list every delivery site in the country shows. Guarding it would force the Next.js
+server to proxy every commune autocomplete keystroke to fetch something that is on Wikipedia. Rate
+limiting still applies; the guard is registered across the whole namespace.
+
+There is no write surface: the dataset changes through WP-CLI, which is a deployment step, not a
+request.
 
 ## Response contract
 
