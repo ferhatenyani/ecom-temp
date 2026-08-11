@@ -1,0 +1,13 @@
+{
+    "version": "",
+    "source": "",
+    "note": "EMPTY ON PURPOSE. Algeria has roughly 1,500 communes and this file ships without them rather than with invented ones: a wrong commune name is a rejected valid address and a failed delivery. Drop a real dataset in here and run `wp algerian-commerce import-algeria`. See the plugin README, section Algerian geography, for where to source one.",
+    "fields": {
+        "wilaya_code": "required — 1 to 58, as a number or a zero-padded string (\"16\", \"06\")",
+        "name": "required — the Latin name; it is the natural key, accent-folded",
+        "name_ar": "optional — Arabic label, never used as a key",
+        "postal_code": "optional — digits only, kept as a string so leading zeros survive",
+        "is_active": "optional — false hides the commune from delivery without deleting it"
+    },
+    "communes": []
+}
