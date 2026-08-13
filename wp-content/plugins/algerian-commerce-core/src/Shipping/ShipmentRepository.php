@@ -111,6 +111,56 @@ final class ShipmentRepository
     }
 
     /**
+     * Parcels still in the air, least recently checked first — the queue the
+     * status poller works through (roadmap §56).
+     *
+     * Ordered by `updated_at` rather than by id so that a run capped at 50
+     * moves on through the backlog instead of asking about the same fifty
+     * parcels every hour. A shipment that a poll updates goes to the back of
+     * the queue by that alone.
+     *
+     * `$staleBefore` is how "do not ask about a parcel we asked about ten
+     * minutes ago" is expressed, which matters against an API whose rate limit
+     * is not published.
+     *
+     * @return list<Shipment>
+     */
+    public function live(string $provider = '', int $limit = 50, string $staleBefore = ''): array
+    {
+        $placeholders = implode(', ', array_fill(0, count(ShipmentStatus::TERMINAL), '%s'));
+        $params = ShipmentStatus::TERMINAL;
+        $clauses = ["status NOT IN ({$placeholders})"];
+
+        if (trim($provider) !== '') {
+            $clauses[] = 'provider = %s';
+            $params[] = trim($provider);
+        }
+
+        // A shipment the provider never accepted has no id to ask about, and
+        // asking anyway is a guaranteed 404 against a quota.
+        $clauses[] = "provider_shipment_id <> ''";
+
+        if (trim($staleBefore) !== '') {
+            $clauses[] = 'updated_at <= %s';
+            $params[] = trim($staleBefore);
+        }
+
+        $params[] = max(1, $limit);
+
+        $rows = $this->wpdb->get_results(
+            $this->wpdb->prepare(
+                "SELECT * FROM {$this->table()}
+                 WHERE " . implode(' AND ', $clauses) . '
+                 ORDER BY updated_at ASC, id ASC LIMIT %d',
+                $params
+            ),
+            ARRAY_A
+        );
+
+        return array_map([Shipment::class, 'fromRow'], is_array($rows) ? $rows : []);
+    }
+
+    /**
      * @param array<string, mixed> $filters
      * @return list<Shipment>
      */

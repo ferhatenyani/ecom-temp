@@ -699,8 +699,35 @@ final class ShippingService
             $address,
             $order->get_payment_method() === PaymentMethod::COD ? (string) $order->get_total() : '0',
             $input->note,
-            sprintf('%d-%d', $order->get_id(), $attempt)
+            sprintf('%d-%d', $order->get_id(), $attempt),
+            self::contentsOf($order)
         );
+    }
+
+    /**
+     * The order's line items as one line of text, for a courier's label.
+     *
+     * Names and quantities only. A parcel manifest is what a driver reads out
+     * on the phone and what a customer sees on the label, so prices and SKUs
+     * are deliberately left off it — and the string is bounded, because an
+     * order with thirty lines still has to fit in one field.
+     */
+    private static function contentsOf(WC_Order $order): string
+    {
+        $parts = [];
+
+        foreach ($order->get_items() as $item) {
+            $name = trim((string) $item->get_name());
+
+            if ($name === '') {
+                continue;
+            }
+
+            $quantity = (int) $item->get_quantity();
+            $parts[] = $quantity > 1 ? sprintf('%s x%d', $name, $quantity) : $name;
+        }
+
+        return mb_substr(implode(', ', $parts), 0, 255);
     }
 
     /** UTC, in the format every other table in this plugin stores a time in. */

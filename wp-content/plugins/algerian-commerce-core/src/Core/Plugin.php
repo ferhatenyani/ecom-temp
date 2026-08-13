@@ -16,6 +16,9 @@ use AlgerianCommerce\Auth\AuthService;
 use AlgerianCommerce\CLI\ImportAlgeriaCommand;
 use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
+use AlgerianCommerce\CLI\ShippingCheckCommand;
+use AlgerianCommerce\CLI\SyncDestinationsCommand;
+use AlgerianCommerce\CLI\SyncShipmentsCommand;
 use AlgerianCommerce\CLI\UnlockCommand;
 use AlgerianCommerce\COD\CodController;
 use AlgerianCommerce\COD\CodRepository;
@@ -42,8 +45,16 @@ use AlgerianCommerce\Permissions\Roles;
 use AlgerianCommerce\Security\RateLimiter;
 use AlgerianCommerce\Security\RateLimitGuard;
 use AlgerianCommerce\Security\RateLimitStore;
+use AlgerianCommerce\Http\WpHttpClient;
+use AlgerianCommerce\Integrations\Yalidine\YalidineClient;
+use AlgerianCommerce\Integrations\Yalidine\YalidineCredentials;
+use AlgerianCommerce\Integrations\Yalidine\YalidineProvider;
+use AlgerianCommerce\Integrations\Yalidine\YalidineSettings;
+use AlgerianCommerce\Shipping\DestinationSyncService;
+use AlgerianCommerce\Shipping\GeoDestinationDirectory;
 use AlgerianCommerce\Shipping\ManualProvider;
 use AlgerianCommerce\Shipping\ProviderRegistry;
+use AlgerianCommerce\Shipping\ShipmentPoller;
 use AlgerianCommerce\Shipping\ShipmentRepository;
 use AlgerianCommerce\Shipping\ShippingController;
 use AlgerianCommerce\Shipping\ShippingRuleRepository;
@@ -69,6 +80,12 @@ use const AlgerianCommerce\VERSION;
 final class Plugin
 {
     public const VERSION_OPTION = 'ac_core_version';
+
+    /** Per-client Yalidine configuration — roadmap §56, never credentials. */
+    public const YALIDINE_SETTINGS_OPTION = 'ac_yalidine_settings';
+
+    /** The hourly "where are my parcels" event. */
+    public const POLL_EVENT = 'ac_poll_shipments';
 
     private static ?self $instance = null;
 
@@ -100,6 +117,10 @@ final class Plugin
     private ?ShippingRuleRepository $shippingRuleRepository = null;
     private ?ProviderRegistry $shippingProviders = null;
     private ?ShippingService $shippingService = null;
+    private ?YalidineSettings $yalidineSettings = null;
+    private ?GeoDestinationDirectory $destinationDirectory = null;
+    private ?DestinationSyncService $destinationSync = null;
+    private ?ShipmentPoller $shipmentPoller = null;
     private ?CodRepository $codRepository = null;
     private ?CodService $codService = null;
     private ?CodSubscriber $codSubscriber = null;
@@ -141,9 +162,43 @@ final class Plugin
          * calling customers about cancelled orders is the failure this stops.
          */
         $this->codSubscriber()->register();
+        $this->registerShipmentPolling();
         $this->registerCliCommands();
 
         $this->logger()->debug('Plugin booted', ['version' => VERSION]);
+    }
+
+    /**
+     * The hourly parcel poll — roadmap §56.
+     *
+     * The listener is registered on every request; the schedule is created at
+     * activation. Both halves are needed and they fail differently: a scheduled
+     * event with no listener runs nothing forever, and a listener with no
+     * schedule never runs at all.
+     *
+     * WP-Cron only fires when somebody visits the site, which is exactly the
+     * wrong property for a shop that is quiet overnight while parcels keep
+     * moving. That is a reason to prefer a real scheduler calling
+     * `wp algerian-commerce sync-shipments`, not a reason to leave a shop with
+     * no polling at all — so this is the floor, and DEPLOYMENT will say so.
+     */
+    private function registerShipmentPolling(): void
+    {
+        add_action(self::POLL_EVENT, function (): void {
+            $this->shipmentPoller()->run();
+        });
+
+        /*
+         * Scheduled here as well as at activation, because activation only
+         * fires when somebody activates the plugin: an install that was
+         * already running when this event was added would never schedule it,
+         * and the failure looks exactly like a shop where no parcel ever
+         * moves. `wp_next_scheduled()` reads the autoloaded `cron` option, so
+         * the check costs nothing and the write happens once.
+         */
+        if (!wp_next_scheduled(self::POLL_EVENT)) {
+            wp_schedule_event(time() + HOUR_IN_SECONDS, 'hourly', self::POLL_EVENT);
+        }
     }
 
     private function registerCliCommands(): void
@@ -156,6 +211,13 @@ final class Plugin
         WP_CLI::add_command('algerian-commerce roles', new RolesCommand($this->roles()));
         WP_CLI::add_command('algerian-commerce unlock', new UnlockCommand($this->rateLimiter(), $this->rateLimitStore()));
         WP_CLI::add_command('algerian-commerce import-algeria', new ImportAlgeriaCommand($this->geoImporter()));
+        WP_CLI::add_command('algerian-commerce sync-destinations', new SyncDestinationsCommand($this->destinationSync()));
+        WP_CLI::add_command('algerian-commerce sync-shipments', new SyncShipmentsCommand($this->shipmentPoller()));
+        WP_CLI::add_command('algerian-commerce shipping-check', new ShippingCheckCommand(
+            $this->shippingProviders(),
+            $this->geoRepository(),
+            $this->yalidineSettings()
+        ));
     }
 
     public function config(): Config
@@ -209,9 +271,19 @@ final class Plugin
      *
      * This is where a provider is switched on for a client, and the only place
      * that reads its credentials and feature flag (docs/ARCHITECTURE.md §4).
-     * Yalidine and Zedair join this list in §56 and §57, each behind
-     * `ENABLE_YALIDINE` / `ENABLE_ZEDAIR`, and nothing above this line changes
-     * when they do.
+     * Zedair joins this list in §57, and nothing above this line changes when
+     * it does.
+     *
+     * **Yalidine is registered first when it is on**, which makes it the
+     * default for a shop that has it: a client who has gone to the trouble of
+     * putting API credentials in `.env` ships with that courier and hands the
+     * near ones to their own driver, not the other way round.
+     *
+     * Three conditions, all required: the feature flag, an API id and an API
+     * token. A courier registered without credentials would appear in
+     * `GET /shipping/providers`, be pickable in an admin UI, and fail at the
+     * moment a parcel is created — which is the worst of the three places to
+     * find out.
      *
      * In-house delivery is always registered: it needs no credentials, it is
      * what a shop falls back to when a courier is unreachable, and a store with
@@ -219,9 +291,88 @@ final class Plugin
      */
     public function shippingProviders(): ProviderRegistry
     {
-        return $this->shippingProviders ??= new ProviderRegistry([
-            new ManualProvider(),
-        ]);
+        if ($this->shippingProviders !== null) {
+            return $this->shippingProviders;
+        }
+
+        $providers = [];
+        $credentials = new YalidineCredentials(
+            (string) $this->config()->secret('YALIDINE_API_ID'),
+            (string) $this->config()->secret('YALIDINE_API_TOKEN'),
+            (string) $this->config()->secret('YALIDINE_WEBHOOK_SECRET')
+        );
+
+        if ($this->config()->isEnabled('ENABLE_YALIDINE') && $credentials->isComplete()) {
+            $settings = $this->yalidineSettings();
+
+            $providers[] = new YalidineProvider(
+                new YalidineClient(
+                    new WpHttpClient($settings->timeout),
+                    $credentials,
+                    $settings,
+                    $this->logger()
+                ),
+                $this->destinationDirectory(),
+                $settings,
+                $this->logger()
+            );
+        }
+
+        $providers[] = new ManualProvider();
+
+        return $this->shippingProviders = new ProviderRegistry($providers);
+    }
+
+    /**
+     * Everything about a Yalidine account that is not a secret.
+     *
+     * An option rather than `.env`, because roadmap §56 draws that line and it
+     * is the right one: a warehouse's wilaya and a shop's default parcel weight
+     * are configuration a client changes, not credentials. A bad value here
+     * falls back to the default and is reported by
+     * `wp algerian-commerce shipping-check` — an option must not be able to
+     * fatal the plugin on boot.
+     */
+    public function yalidineSettings(): YalidineSettings
+    {
+        if ($this->yalidineSettings !== null) {
+            return $this->yalidineSettings;
+        }
+
+        $stored = get_option(self::YALIDINE_SETTINGS_OPTION, []);
+
+        return $this->yalidineSettings = YalidineSettings::fromArray(is_array($stored) ? $stored : []);
+    }
+
+    /**
+     * What each courier calls the places in the §51 dataset.
+     *
+     * Shared by every adapter, and cached per request: a create call asks for
+     * three destinations and a rates call for three more.
+     */
+    public function destinationDirectory(): GeoDestinationDirectory
+    {
+        return $this->destinationDirectory ??= new GeoDestinationDirectory($this->geoRepository());
+    }
+
+    public function destinationSync(): DestinationSyncService
+    {
+        return $this->destinationSync ??= new DestinationSyncService(
+            $this->shippingProviders(),
+            $this->geoRepository(),
+            $this->auditLogger(),
+            $this->logger()
+        );
+    }
+
+    public function shipmentPoller(): ShipmentPoller
+    {
+        return $this->shipmentPoller ??= new ShipmentPoller(
+            $this->shipmentRepository(),
+            $this->shippingProviders(),
+            $this->auditLogger(),
+            $this->logger()
+        );
     }
 
     /**
@@ -479,11 +630,21 @@ final class Plugin
 
         update_option(self::VERSION_OPTION, VERSION);
 
+        // Guarded rather than unconditional: reactivating a plugin must not
+        // leave two events polling the same parcels twice an hour.
+        if (!wp_next_scheduled(self::POLL_EVENT)) {
+            wp_schedule_event(time() + HOUR_IN_SECONDS, 'hourly', self::POLL_EVENT);
+        }
+
         flush_rewrite_rules(false);
     }
 
     public static function deactivate(): void
     {
+        // A deactivated plugin leaves no timer behind asking couriers about
+        // parcels for a shop that has stopped listening.
+        wp_clear_scheduled_hook(self::POLL_EVENT);
+
         flush_rewrite_rules(false);
     }
 }

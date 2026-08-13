@@ -24,11 +24,12 @@ namespace AlgerianCommerce\Shipping;
  * customer. It is a decimal string like every other amount in this codebase,
  * and '0' means there is nothing to collect because the order was already paid.
  *
- * Weight, dimensions and parcel contents are absent on purpose. Every courier
- * wants them in a different shape and with different rules, and inventing a
- * field now — from memory, with no provider documentation in front of us —
- * is precisely what roadmap §54 forbids. They arrive with the first adapter
- * whose official docs say what it actually requires.
+ * Weight and dimensions are still absent, and still on purpose: every courier
+ * wants them in a different shape, and a per-client default parcel size is
+ * configuration rather than a fact about an order — Yalidine's lives in
+ * `YalidineSettings`. **Contents arrived with §56**, which is exactly the rule
+ * §53 set: a field appears when a provider's own documentation says it is
+ * required, not before.
  */
 final class ShipmentRequest
 {
@@ -52,7 +53,20 @@ final class ShipmentRequest
          * a retried create then returns the existing parcel instead of putting
          * a second one on a van.
          */
-        public readonly string $reference = ''
+        public readonly string $reference = '',
+        /**
+         * What is in the parcel, in words — "Chemise bleue x2, Ceinture".
+         *
+         * Built from the order's line items. Couriers print it on the label and
+         * read it out when a customer asks what has arrived; Yalidine requires
+         * it as `product_list` (roadmap §56), which is what brought the field
+         * here rather than guesswork.
+         *
+         * Not the line items themselves, and not prices: an adapter has no
+         * business knowing what an order line is, and a driver holding the label
+         * has no business knowing what each item cost.
+         */
+        public readonly string $contents = ''
     ) {
     }
 
@@ -73,6 +87,7 @@ final class ShipmentRequest
             'cod_amount' => $this->codAmount,
             'note' => $this->note,
             'reference' => $this->reference,
+            'contents' => $this->contents,
         ];
     }
 }

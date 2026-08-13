@@ -281,6 +281,33 @@ final class GeoRepository
     }
 
     /**
+     * Every destination one provider has mapped — roadmap §56's sync writes
+     * these, and its adapter reads them back to address a parcel.
+     *
+     * The whole provider at once, not one row per lookup: a shop creating a
+     * parcel needs the wilaya row and the commune row together, a rates call
+     * needs both again, and a courier's map is a few thousand short rows. One
+     * query beats a lookup per field.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function destinations(string $provider): array
+    {
+        $rows = $this->wpdb->get_results(
+            $this->wpdb->prepare(
+                'SELECT provider, wilaya_id, commune_id, destination_id, metadata
+                 FROM ' . $this->destinationTable() . '
+                 WHERE provider = %s
+                 ORDER BY wilaya_id ASC, commune_id ASC',
+                $provider
+            ),
+            ARRAY_A
+        );
+
+        return is_array($rows) ? array_values($rows) : [];
+    }
+
+    /**
      * @param list<array<string, mixed>> $rows
      * @return array{inserted: int, updated: int}
      */

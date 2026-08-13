@@ -15,10 +15,10 @@ PSR-4 autoloading, configuration and feature flags, logging with secret redactio
 the migration runner, roles and capabilities, and audit recording.
 
 Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (authentication), §50
-(orders and customers), §51 (Algerian geography), §52 (COD), §53 (the shipping abstraction) and §4
-step 28b (shipping rules and pricing, PLAN §14) are in, along with rate limiting. Not implemented
-yet: 2FA, customer sessions, the Yalidine and Zedair adapters (§56, §57 — they need each provider's
-current official docs), payments, analytics, CMS.
+(orders and customers), §51 (Algerian geography), §52 (COD), §53 (the shipping abstraction), §4
+step 28b (shipping rules and pricing, PLAN §14) and §56 (the Yalidine adapter) are in, along with rate
+limiting. Not implemented yet: 2FA, customer sessions, Yalidine's webhook (it needs §55's security
+review first — the adapter polls), the ZR Express adapter (§57), payments, analytics, CMS.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -47,7 +47,17 @@ src/Shipping/                ShippingProviderInterface, ShippingController, Ship
                              StatusReport, RateQuote, Shipment, ShipmentInput,
                              ProviderRegistry, ManualProvider, ShipmentRepository,
                              ShippingRule, ShippingRuleInput, RateResolver,
-                             ShippingRuleRepository
+                             ShippingRuleRepository, ShipmentPoller,
+                             DestinationCatalogueInterface, ProviderPlace,
+                             DestinationMatcher, DestinationSyncPlan,
+                             DestinationSyncService, ProviderDestination,
+                             DestinationDirectoryInterface, GeoDestinationDirectory
+src/Http/                    HttpClientInterface, HttpResponse, WpHttpClient,
+                             HttpTransportException — the seam that makes an
+                             adapter testable without a network
+integrations/Yalidine/       YalidineProvider, YalidineClient, YalidineParcel,
+                             YalidineStatusMap, YalidineDestinations,
+                             YalidineSettings, YalidineCredentials
 src/Geography/               LocationController, GeoService, GeoDataset, GeoSlug,
                              GeoRepository, GeoImporter
 data/algeria/                wilayas.json, communes.json, provider-destinations.json,
@@ -929,10 +939,9 @@ strand exactly the orders that most need finishing.
 
 ## Shipping
 
-Roadmap §53, docs/PLAN.md §13. The abstraction, and one courier that uses it. **No Yalidine and no
-Zedair**: roadmap §54 forbids writing an adapter from memory, so those arrive in §56 and §57 with the
-providers' current official documentation in hand. Nothing above `ShippingProviderInterface` changes
-when they do — that is the property this phase exists to establish.
+Roadmap §53, docs/PLAN.md §13. The abstraction, in-house delivery, and **Yalidine** (§56). ZR Express
+is still to come in §57, and nothing above `ShippingProviderInterface` changed when Yalidine arrived —
+which is the property §53 existed to establish, now demonstrated rather than asserted.
 
 ```php
 interface ShippingProviderInterface
@@ -984,12 +993,19 @@ reopen it (docs/SECURITY.md — duplicate delivery must never duplicate a shipme
 transition).
 
 The vocabulary is ours, and short: `pending`, `created`, `picked_up`, `in_transit`,
-`out_for_delivery`, `delivered`, `returned`, `cancelled`, `failed`. Each adapter maps its provider's
+`out_for_delivery`, `delivered`, `returning`, `returned`, `cancelled`, `failed`. Each adapter maps its provider's
 states onto these **and keeps the provider's own spelling** in `metadata.provider_status`. That
 second value is there because a status mapping is the part of a courier integration most likely to be
 quietly wrong — a provider adds a state, the adapter's `match` falls through to a default, and every
 parcel in that state reads as `in_transit` for a month. With the raw value stored next to the mapped
 one that is a query; without it, an outage nobody can explain.
+
+**`returning` was added by §56**, and it is not a Yalidine detail: every Algerian courier carries an
+undelivered parcel back through its own network, and that trip takes days. Yalidine spends seven of
+its thirty-six states there. `returned` is terminal, so using it would stop tracking a parcel that is
+still moving and would leave a COD shop unable to tell *on its way back to me* from *back in my
+hands*; `in_transit` reads to an operator as heading to the customer. It is live, not terminal, so no
+migration — the column is `varchar(30)`.
 
 ### The rules the service enforces
 
@@ -1095,19 +1111,153 @@ because a tariff row is configuration rather than the record of something that
 happened — and the audit trail keeps what it said, which is what anyone asking
 "why was this customer charged that" actually needs.
 
-### What §56 plugs into
+## Yalidine
 
-Three seams are already there and empty on purpose. `Plugin::shippingProviders()` is the one place a
-courier is switched on for a client, behind its feature flag and credentials. `ShipmentRequest`
-carries a `reference` (`"42-2"`) that couriers accept as a merchant reference and most treat as an
-idempotency key — a retried create then returns the existing parcel instead of putting a second one
-on a van. And `ac_geo_provider_destinations` (§51) is where each provider's destination codes are
-mapped against our commune ids, populated from that provider's own docs rather than from memory.
+Roadmap §56. The adapter lives in [`integrations/Yalidine/`](integrations/Yalidine/) — outside `src/`,
+because "which of this code is ours and which is shaped by somebody else's API" is worth being a
+directory rather than a convention.
 
-One thing that should be revisited then, not now: §52's COD delivery and return rates still read the
-*order* status, because with only in-house delivery a shipment status is hand-entered and no more
-authoritative than the order is. Once a real courier reports statuses of its own, those two rates
-should be re-derived from `ac_shipments`.
+### It was written without an account, and says so everywhere
+
+There is **no merchant account and no sandbox**, so nothing here has been confirmed against the live
+API. Roadmap §54 forbids writing an adapter from memory; it does not forbid writing one from working
+code, and three independent implementations agree on every endpoint and field name used — chiefly a
+Spring Boot service running in production against the live API. Everywhere they are silent, the
+guess is marked in the code:
+
+```bash
+grep -rn 'ASSUMPTION' integrations/Yalidine
+```
+
+Each one is phrased so the first live call proves or disproves it visibly. The current list is the
+`page` parameter on list endpoints, the shape of the wilaya and commune rows, `Retry-After` being a
+number of seconds, the single-parcel endpoint returning a bare object, a repeated `order_id` being
+idempotent, and `freeshipping: true` meaning "collect exactly `price`".
+
+### Getting a store ready, in order
+
+```bash
+wp algerian-commerce import-algeria                                # §51, once
+wp algerian-commerce shipping-check                                # are the keys good?
+wp algerian-commerce sync-destinations --provider=yalidine --dry-run
+wp algerian-commerce sync-destinations --provider=yalidine
+wp option update ac_yalidine_settings --format=json '{"origin_wilaya_id":16}'
+wp algerian-commerce shipping-check                                # ready?
+```
+
+Four things have to line up before a parcel can exist, and each fails differently: credentials in
+`.env`, the geography imported, the destinations synced, an origin wilaya set. `shipping-check` is
+there so nobody discovers them one 409 at a time while a customer waits.
+
+### Credentials are `.env`; everything else is a setting
+
+`YALIDINE_API_ID`, `YALIDINE_API_TOKEN` and `YALIDINE_WEBHOOK_SECRET` are read **only** in
+`Plugin::shippingProviders()`, along with `ENABLE_YALIDINE`. The flag alone is not enough: a courier
+registered without keys would show up in `GET /shipping/providers`, be pickable in an admin UI, and
+fail at the one moment that costs an order.
+
+Everything a client configures is the `ac_yalidine_settings` option, because this plugin is cloned per
+client and a warehouse's wilaya is not a secret:
+
+| key | default | what it is |
+| --- | --- | --- |
+| `origin_wilaya_id` | `0` | the wilaya this shop ships **from**, by §51 id. Unset refuses to create a parcel |
+| `do_insurance` | `false` | whether Yalidine insures the declared value |
+| `has_exchange` | `false` | whether the driver takes something back |
+| `freeshipping` | `true` | delivery is already inside the order total, so the driver must not charge it again |
+| `length` `width` `height` `weight` | `0` | omitted from the payload when zero, rather than sent as a parcel of no size |
+| `base_url` | `https://api.yalidine.app/v1/` | https only |
+| `timeout` | `15` | seconds |
+
+The reference implementation compiles one client's origin into a 58-case `switch` with a default of
+"Béjaïa", and keeps a hard-coded set of unsupported wilayas beside it. Both are per-account facts
+pretending to be constants, and this section exists to not do that.
+
+### Destinations are data the courier gives us
+
+`wp algerian-commerce sync-destinations` reads Yalidine's own `wilayas/`, `communes/` and `centers/`
+lists into `ac_geo_provider_destinations`: our wilaya or commune id, their id, and **their spelling of
+the name**. That last field is the point. Yalidine addresses a parcel by `to_wilaya_name` and
+`to_commune_name`, matched exactly, and answers a name it does not recognise with an empty array and
+no message at all — which is why "Bouzaréah" works and "Bouzzerea" does not.
+
+Matching is on the accent-folded name (`GeoSlug`, the same natural key the geography importer uses),
+never on the id: Yalidine's wilaya ids look like the official Algerian codes right up until they do
+not. A commune only ever matches inside its own wilaya, because Algeria has several communes of the
+same name in different ones.
+
+**Gaps are reported, never guessed at.** The reference implementation falls back to substring matching
+at parcel-creation time, which is how a parcel ends up addressed to a place nobody chose. Here a place
+that will not match stays unmatched and is named in the report — in both directions, plus the wilayas
+this account cannot reach, which is Yalidine's own `is_deliverable` rather than a list in our code:
+
+```
+Published by the courier, not in this store's geography (2):
+  commune  Ouled Fayet (no_commune_of_that_name)
+In this store's geography, not published by the courier (37):
+  commune  Tamalous
+Published, and this account cannot deliver there (1):
+  wilaya   Illizi
+```
+
+Stop desks are folded into their commune's row rather than given rows of their own — the table is one
+row per (provider, wilaya, commune), and a desk is a property of delivering there.
+
+### The 36 statuses, and the two traps in them
+
+`YalidineStatusMap` maps the complete `last_status` vocabulary onto ours, matched **by whole label,
+folded for accents and case** — the dashboard's spelling and the API's may differ, and nobody can
+check which without an account.
+
+Two labels are traps that a keyword match walks into, and the reference implementation does:
+*Tentative échouée* is a delivery attempt that failed and will be retried — the parcel is with a
+driver, not lost — and *Bloqué* is a hold, not an ending. Neither is terminal.
+
+An unrecognised label **throws**, and does not default to anything. A `match` that falls through is
+how every parcel in a newly added state reads as normal for a month.
+
+### Polling now, webhooks later
+
+`wp algerian-commerce sync-shipments` — and an hourly WP-Cron event — asks each courier where its live
+parcels are, oldest check first, in batches, skipping parcels checked in the last half hour. A quota
+or an authentication failure ends the run rather than spending 49 more requests learning the same
+thing.
+
+Webhooks are deliberately not here yet. A webhook is an unauthenticated request from the internet that
+moves data in this shop; it needs §55's security review, replay protection and idempotency first, and
+Yalidine's "signature" is a shared secret in the request *body* (`security_token`) rather than a
+signature over it. §56 also requires the payload to be treated as a hint and the parcel re-fetched
+anyway — which is exactly this code path, so it is what the webhook will be checked against.
+
+WP-Cron only fires when someone visits the site, which is the wrong property for a shop that is quiet
+overnight while parcels move. It is the floor, not the plan: a real deployment points a scheduler at
+the command.
+
+### What Yalidine will not do
+
+**Cancellation.** None of the three sources documents a cancel or delete endpoint, and §56's list of
+what they agree on does not contain one. `cancelShipment()` refuses with a 409 telling the operator to
+cancel in the Yalidine dashboard and then mark the shipment cancelled here — rather than returning
+`false`, which would be this adapter putting words in Yalidine's mouth about a call nobody made.
+Inventing a `DELETE parcels/{tracking}` is a guess whose failure mode is a destroyed parcel record.
+
+**Choosing a specific stop desk.** A collected parcel goes to the first desk the sync recorded in that
+commune, and a commune with no desk is refused rather than quietly delivered to the door. Letting a
+*customer* pick a desk needs a stop-desk id on the shipment request and a way for a storefront to list
+them, which is a checkout question (§58) rather than an adapter one.
+
+**Rates.** `GET fees/` prices a whole wilaya per commune, and all four services — express and
+economic, each to the door or to a desk — are returned. An unconfigured or unmapped store quotes
+nothing instead of throwing, because `GET /shipping/rates` asks every courier in one call and one
+unfinished setup must not take the price list down.
+
+### Still to revisit
+
+§52's COD delivery and return rates still read the *order* status, because with only in-house delivery
+a shipment status was hand-entered and no more authoritative than the order. Now that a real courier
+reports its own, both should be re-derived from `ac_shipments`. Whether a delivered parcel completes
+the order is still deferred: that is an automatic order transition triggered by a third party, and it
+wants the replay design the webhook slice brings.
 
 ## Algerian geography
 
@@ -1283,7 +1433,22 @@ as this plugin's audit action names.
 ## Development
 
 Composer is optional at runtime: without `vendor/`, the bundled PSR-4 autoloader in
-`src/Core/Autoloader.php` covers `src/`. It is required to run the tests.
+`src/Core/Autoloader.php` covers `src/`. It is required to run the tests. `integrations/` gets that
+autoloader **either way** — a Composer map is a snapshot, and a site that pulls a release adding an
+adapter without re-running `composer dump-autoload` would otherwise fatal on every request rather
+than merely lack a courier.
+
+WP-CLI is the administration interface:
+
+```bash
+wp algerian-commerce migrate [--dry-run]        # apply pending migrations
+wp algerian-commerce roles [--list]             # install / re-sync capabilities
+wp algerian-commerce unlock <ip|login>          # lift a brute-force lockout
+wp algerian-commerce import-algeria [--dry-run] # §51 geography
+wp algerian-commerce shipping-check             # can this store ship anything?
+wp algerian-commerce sync-destinations --provider=yalidine [--dry-run] [--gaps=<n>]
+wp algerian-commerce sync-shipments [--provider=] [--limit=] [--min-age=]
+```
 
 ```bash
 # install dev dependencies (from this directory)
@@ -1326,3 +1491,8 @@ Secrets come from environment variables only — never the options table, never 
 (`ENABLE_COD`, `ENABLE_CHARGILY`, `ENABLE_YALIDINE`, `ENABLE_ZEDAIR`, …) all default to off so one
 codebase can serve multiple clients. `AC_LOG_LEVEL` sets the log floor (`debug`, `info`, `warning`,
 `error`); it defaults to `debug` when `WP_DEBUG` is on, otherwise `info`.
+
+The line between the two is per-client, not per-secret: a credential is an environment variable, and
+anything a shop owner would reasonably change — the wilaya they ship from, whether they insure a
+parcel — is a setting (`ac_yalidine_settings`). This plugin is cloned per client, so a value that
+belongs to *one* client must never end up in code.

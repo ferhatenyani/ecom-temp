@@ -106,4 +106,41 @@ final class ShipmentStatusTest extends TestCase
     {
         self::assertTrue(ShipmentStatus::accepts('something_odd', 'in_transit'));
     }
+
+    /**
+     * A parcel coming back is still moving — roadmap §56.
+     *
+     * If `returning` were terminal, tracking would stop while the parcel was
+     * still in the courier's network, and the shipment would say "returned"
+     * about something nobody has received.
+     */
+    public function testReturningIsLiveRatherThanFinished(): void
+    {
+        self::assertTrue(ShipmentStatus::isKnown('returning'));
+        self::assertTrue(ShipmentStatus::isLive('returning'));
+        self::assertFalse(ShipmentStatus::isTerminal('returning'));
+        self::assertNotContains(ShipmentStatus::RETURNING, ShipmentStatus::TERMINAL);
+    }
+
+    /**
+     * Both endings a parcel on its way back can have: it arrives, or it does
+     * not. Neither is reachable from `returned`, which is where it stops.
+     */
+    public function testAReturningParcelCanFinishOrBeLost(): void
+    {
+        self::assertTrue(ShipmentStatus::accepts(ShipmentStatus::RETURNING, ShipmentStatus::RETURNED));
+        self::assertTrue(ShipmentStatus::accepts(ShipmentStatus::RETURNING, ShipmentStatus::FAILED));
+        self::assertFalse(ShipmentStatus::accepts(ShipmentStatus::RETURNED, ShipmentStatus::RETURNING));
+    }
+
+    /**
+     * The distinction the state exists for: a delivery that failed sends the
+     * parcel back through the network, and that is not the same fact as the
+     * parcel being on the shop's own shelf again.
+     */
+    public function testAFailedDeliveryStartsTheJourneyBack(): void
+    {
+        self::assertTrue(ShipmentStatus::accepts(ShipmentStatus::OUT_FOR_DELIVERY, ShipmentStatus::RETURNING));
+        self::assertNotSame(ShipmentStatus::RETURNING, ShipmentStatus::RETURNED);
+    }
 }

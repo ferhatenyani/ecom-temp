@@ -44,6 +44,29 @@ final class ShipmentStatus
 
     public const DELIVERED = 'delivered';
 
+    /**
+     * On its way back, but not back yet.
+     *
+     * Added for Yalidine (roadmap §56), whose vocabulary spends seven states
+     * here — *Retour vers centre*, *Retourné au centre*, *Retour transfert*,
+     * *Retour groupé*, *Retour à retirer*, *Retour non retiré*, *Echèc
+     * livraison* — and it is not a Yalidine detail: every Algerian courier
+     * carries an undelivered parcel back through its own network, and that trip
+     * takes days.
+     *
+     * Neither existing value can hold it. `returned` is terminal, so a parcel
+     * still moving would stop being tracked, and a COD shop could not tell *on
+     * its way back to me* from *back in my hands* — which is the difference
+     * between waiting and re-listing the stock. `in_transit` reads to an
+     * operator as heading to the customer, which is the opposite of what is
+     * happening.
+     *
+     * Live, not terminal: `returning → returned` is the ordinary ending and
+     * `returning → failed` is the parcel that never arrives. The column is
+     * varchar(30) and TERMINAL is unchanged, so nothing migrates.
+     */
+    public const RETURNING = 'returning';
+
     /** Came back to the shop — the outcome COD shops watch most closely. */
     public const RETURNED = 'returned';
 
@@ -60,6 +83,7 @@ final class ShipmentStatus
         self::IN_TRANSIT,
         self::OUT_FOR_DELIVERY,
         self::DELIVERED,
+        self::RETURNING,
         self::RETURNED,
         self::CANCELLED,
         self::FAILED,

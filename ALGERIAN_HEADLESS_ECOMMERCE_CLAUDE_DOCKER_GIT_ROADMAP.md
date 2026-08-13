@@ -3023,6 +3023,92 @@ authentication failure
 provider API failure
 ```
 
+## What was built
+
+Five slices, in this order, each one usable before the next began.
+
+``` text
+1  Shipping\ShipmentStatus gains `returning`  — live, not terminal, no
+   migration. Seven of Yalidine's states say a parcel is on its way back and
+   has not arrived
+2  wp algerian-commerce sync-destinations     — the courier's own wilaya,
+   commune and centre lists into ac_geo_provider_destinations, with the gaps
+   reported in both directions
+3  integrations/Yalidine/                     — the adapter, behind
+   ShippingProviderInterface, tested against recorded responses
+4  wp algerian-commerce sync-shipments        — poll-based status sync, plus
+   an hourly cron event
+5  docs                                       — README, ARCHITECTURE §3/§4,
+   CLAUDE.md, this section
+```
+
+Decisions worth keeping:
+
+``` text
+ASSUMPTION markers   every point the three sources are silent on is marked
+                 `ASSUMPTION (unverified)` where it is assumed, and listed
+                 in the README: the `page` parameter, the wilaya/commune row
+                 shapes, Retry-After being seconds, the single-parcel
+                 endpoint returning a bare object, order_id being
+                 idempotent, and freeshipping meaning "collect exactly
+                 price". grep -rn ASSUMPTION integrations/Yalidine
+coverage is data the sync stores Yalidine's *own spelling* of every wilaya
+                 and commune, and the adapter quotes it back to them. That
+                 is what removes the reference implementation's 58-case
+                 name switch and its UNSUPPORTED_WILAYAS set — both
+                 per-account facts pretending to be constants
+gaps, not guesses  a name that will not match stays unmatched and is named
+                 in the report. The reference implementation falls back to
+                 substring matching at creation time, which is how a parcel
+                 gets addressed to a place nobody chose
+whole labels     the 36 statuses are matched entire, accent- and
+                 case-folded through GeoSlug, never by substring: Tentative
+                 échouée is a retry and Bloqué is a hold. An unmapped label
+                 throws rather than defaulting
+cancellation refused  no source documents a cancel endpoint, so there is
+                 none. cancelShipment() answers 409 with "cancel it in the
+                 dashboard, then mark this shipment cancelled" rather than
+                 returning false, which would put words in Yalidine's mouth
+                 about a call nobody made
+Http\HttpClientInterface  the transport is injected, so authentication, the
+                 429/Retry-After path, timeouts and every payload field are
+                 unit-tested against fixtures. With no sandbox, that is the
+                 only evidence that exists before the first live call
+settings vs .env  credentials in .env, read only in
+                 Plugin::shippingProviders(); origin wilaya, insurance,
+                 exchange, freeshipping and parcel defaults in the
+                 ac_yalidine_settings option. A bad option value falls back
+                 and is reported, never fatal
+shipping-check   one command answering "can this store ship anything" —
+                 credentials, geography, destinations, origin — because
+                 those four otherwise fail one 409 at a time, in front of a
+                 customer
+poll before webhook  §55's review comes first, and the poll is what a
+                 webhook payload will be verified against anyway
+```
+
+### Deferred, with their reasons
+
+``` text
+the webhook
+    — §55's security review first. `security_token` is a shared secret in
+      the body, not a signature, so verification is a constant-time compare
+      plus a re-fetch of the parcel; replay protection is the rest of it
+a delivered parcel completing the order
+    — still an automatic order transition driven by a third party. It wants
+      the replay design the webhook slice brings
+COD delivery and return rates from ac_shipments
+    — now possible, since a real courier reports its own statuses. §52
+      still derives both from the order status
+choosing a specific stop desk
+    — a collected parcel goes to the first desk the sync found in that
+      commune. Letting a customer pick one needs a stopdesk id on
+      ShipmentRequest and a storefront that can list desks, which is §58
+parcel weight and dimensions per order
+    — per-client settings for now, which is what Yalidine's payload
+      actually needs. A per-order weight is a product-data question
+```
+
 ------------------------------------------------------------------------
 
 # 57. ZR Express (was "Zedair")
