@@ -58,10 +58,16 @@ fi
 
 if run_stage rest; then
   banner "rest (in-process)"
+  # Rate limiting off for this stage, and only this stage. The counters live in
+  # the database, so every suite shares one per-minute window: the sixth suite
+  # to run was collecting 429s for requests that were nothing to do with it,
+  # which turns an unrelated failure into a mystery. Rate limiting is the
+  # `http` stage's subject, over real HTTP, where it can actually be observed —
+  # rest_do_request() cannot see an Authorization header at all.
   for suite in wp-content/plugins/algerian-commerce-core/tests/Api/*.php; do
     [[ -e "$suite" ]] || continue
     name=$(basename "$suite" .php)
-    docker compose run --rm -T wpcli wp eval-file - < "$suite" 2>&1 | grep -vE '^ Container|^\s*$'
+    docker compose run --rm -T -e AC_RATE_LIMIT_DISABLED=1 wpcli wp eval-file - < "$suite" 2>&1 | grep -vE '^ Container|^\s*$'
     record "rest:${name}" "${PIPESTATUS[0]}"
   done
 fi

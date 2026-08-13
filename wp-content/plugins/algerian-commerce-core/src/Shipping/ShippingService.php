@@ -1,0 +1,488 @@
+<?php
+
+declare(strict_types=1);
+
+namespace AlgerianCommerce\Shipping;
+
+use AlgerianCommerce\API\ApiException;
+use AlgerianCommerce\Audit\AuditLogger;
+use AlgerianCommerce\Commerce\PaymentMethod;
+use AlgerianCommerce\Geography\GeoRepository;
+use AlgerianCommerce\Orders\OrderRepository;
+use AlgerianCommerce\Orders\OrderStatus;
+use AlgerianCommerce\Permissions\Capabilities;
+use AlgerianCommerce\Permissions\Permissions;
+use WC_Order;
+
+/**
+ * Shipping business rules — roadmap §53, docs/PLAN.md §13.
+ *
+ * This service says *create shipment*. It never says *call the Yalidine
+ * endpoint*, and it cannot: it only holds a ProviderRegistry of things that
+ * implement ShippingProviderInterface, and everything it hands them is a value
+ * object of ours (docs/ARCHITECTURE.md §4). That is what lets one codebase
+ * serve clients on different couriers.
+ *
+ * Four rules shape it:
+ *
+ *  - **A shipment never changes the order's status.** Same reasoning as COD:
+ *    PLAN.md §8 lists "Shipping Prepared", "Shipped" and "Delivered" among the
+ *    operational states and then says not to create redundant statuses when
+ *    metadata will do. A parcel's progress is a fact about the parcel; whether
+ *    the order is then completed is the shop's decision, and one taken with
+ *    money in mind on a COD order.
+ *  - **One live shipment per order.** Two parcels for one order is two vans and
+ *    one of them delivering to a customer who has already been served
+ *    (docs/SECURITY.md: duplicate delivery must never duplicate a shipment). A
+ *    *finished* shipment does not block a new one, so a re-send after a failed
+ *    delivery works without deleting history.
+ *  - **The destination is validated against the §51 dataset** before a provider
+ *    ever sees it, so an adapter can assume the commune exists and belongs to
+ *    the wilaya it was sent with.
+ *  - Every write is audited, and a status that a provider reports is written
+ *    only when ShipmentStatus::accepts() allows it — a replayed webhook must
+ *    not walk a delivered parcel backwards.
+ *
+ * Authorization is asserted here as well as on the route, for callers that
+ * arrive from WP-CLI or another service rather than through REST. The
+ * capability is `ac_manage_shipping` throughout: Admin, Manager and Order
+ * Manager hold it, Support Agent does not.
+ */
+final class ShippingService
+{
+    public function __construct(
+        private readonly ShipmentRepository $repository,
+        private readonly ProviderRegistry $providers,
+        private readonly OrderRepository $orders,
+        private readonly GeoRepository $geography,
+        private readonly AuditLogger $audit
+    ) {
+    }
+
+    /** @return list<array{name: string, label: string, is_default: bool}> */
+    public function availableProviders(): array
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        return $this->providers->describe();
+    }
+
+    /**
+     * @param array<string, mixed> $criteria
+     * @return array{items: list<Shipment>, total: int}
+     */
+    public function list(array $criteria, int $page, int $perPage): array
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        return [
+            'items' => $this->repository->paginate($criteria, $page, $perPage),
+            'total' => $this->repository->count($criteria),
+        ];
+    }
+
+    public function get(int $id): Shipment
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        return $this->requireShipment($id);
+    }
+
+    /** @return list<Shipment> newest first */
+    public function forOrder(int $orderId): array
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        $this->requireOrder($orderId);
+
+        return $this->repository->forOrder($orderId);
+    }
+
+    /**
+     * Hand an order's parcel to a courier.
+     *
+     * @param array<string, mixed> $payload
+     */
+    public function create(int $orderId, array $payload): Shipment
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        $order = $this->requireOrder($orderId);
+        $input = ShipmentInput::fromPayload($payload);
+        $provider = $this->providers->get($input->provider);
+
+        $this->guardOrderIsShippable($order);
+        $this->guardNoLiveShipment($orderId);
+
+        $destination = $this->validatedDestination($input->destination);
+
+        // The provider is called last, after everything that can be refused has
+        // been refused. A 400 that arrives *after* a courier has accepted a
+        // parcel leaves a real van carrying an order this system has no record
+        // of.
+        $result = $provider->createShipment($this->buildRequest($order, $input, $destination, $this->nextAttempt($orderId)));
+
+        $now = self::now();
+
+        $id = $this->repository->insert(new Shipment(
+            $orderId,
+            $provider->name(),
+            $result->providerShipmentId,
+            $result->trackingNumber,
+            $result->status,
+            $result->metadata,
+            $now,
+            $now
+        ));
+
+        if ($id === null) {
+            /*
+             * The parcel exists at the courier and we could not write it down.
+             * The audit trail is a different table with a different failure
+             * mode, so it is the one place this can still be recorded — losing
+             * the tracking number silently is how a shop discovers a shipment
+             * only when the customer calls.
+             */
+            $this->audit->record('shipment.record_failed', 'order', $orderId, [
+                'provider' => $provider->name(),
+                'provider_shipment_id' => $result->providerShipmentId,
+                'tracking_number' => $result->trackingNumber,
+            ]);
+
+            throw ApiException::internal('The shipment was created at the provider but could not be saved.');
+        }
+
+        $this->audit->record('shipment.created', 'order', $orderId, [
+            'shipment_id' => $id,
+            'provider' => $provider->name(),
+            'tracking_number' => $result->trackingNumber,
+            'status' => $result->status,
+            'destination' => $destination->toArray(),
+        ]);
+
+        return $this->repository->find($id) ?? throw ApiException::internal('The shipment could not be read back.');
+    }
+
+    /**
+     * Call a parcel off at the courier.
+     *
+     * The provider is asked first and the row is only written if it agrees: a
+     * shipment marked cancelled here while a van still carries the parcel is
+     * worse than a refusal, because nobody goes looking for it.
+     */
+    public function cancel(int $id): Shipment
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        $shipment = $this->requireShipment($id);
+
+        if (!$shipment->isLive()) {
+            throw ApiException::conflict('This shipment has already finished.', [
+                'status' => $shipment->status,
+            ]);
+        }
+
+        $provider = $this->providerFor($shipment);
+
+        if (!$provider->cancelShipment($shipment->providerShipmentId)) {
+            throw ApiException::conflict('The provider will not cancel this shipment.', [
+                'provider' => $shipment->provider,
+                'status' => $shipment->status,
+            ]);
+        }
+
+        return $this->store(
+            $shipment->withStatus(ShipmentStatus::CANCELLED, self::now()),
+            'shipment.cancelled',
+            ['from' => $shipment->status]
+        );
+    }
+
+    /**
+     * Ask the courier where the parcel is.
+     *
+     * A finished shipment is returned untouched without calling anyone: there
+     * is nothing left to learn, and polling a courier about a parcel it
+     * delivered last month is how rate limits get spent.
+     */
+    public function sync(int $id): Shipment
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        $shipment = $this->requireShipment($id);
+
+        if (!$shipment->isLive()) {
+            return $shipment;
+        }
+
+        $report = $this->providerFor($shipment)->getShipmentStatus($shipment->providerShipmentId);
+
+        if (!ShipmentStatus::accepts($shipment->status, $report->status)) {
+            // Not an error, and deliberately not a write: most polls find a
+            // parcel exactly where it was.
+            return $shipment;
+        }
+
+        return $this->store(
+            $shipment->withReport($report, self::now()),
+            'shipment.status_changed',
+            ['from' => $shipment->status, 'to' => $report->status, 'source' => 'provider']
+        );
+    }
+
+    /**
+     * Move a shipment on by hand.
+     *
+     * This is how in-house delivery works — there is no API to poll, only the
+     * person who drove the van — and it is also the escape hatch for a courier
+     * whose webhook was missed.
+     *
+     * @param array<string, mixed> $payload
+     */
+    public function updateStatus(int $id, array $payload): Shipment
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        $shipment = $this->requireShipment($id);
+        $status = $this->validatedStatus($payload);
+
+        if (!ShipmentStatus::accepts($shipment->status, $status)) {
+            throw ApiException::conflict("This shipment cannot move from \"{$shipment->status}\" to \"{$status}\".", [
+                'from' => $shipment->status,
+                'to' => $status,
+                'is_live' => $shipment->isLive(),
+            ]);
+        }
+
+        return $this->store(
+            $shipment->withStatus($status, self::now()),
+            'shipment.status_changed',
+            ['from' => $shipment->status, 'to' => $status, 'source' => 'manual']
+        );
+    }
+
+    /**
+     * What a courier charges to reach a destination.
+     *
+     * @param array<string, mixed> $criteria
+     * @return list<array<string, mixed>>
+     */
+    public function rates(array $criteria): array
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        $provider = $this->providers->get((string) ($criteria['provider'] ?? ''));
+
+        $destination = $this->validatedDestination(new Destination(
+            (int) ($criteria['wilaya_id'] ?? 0),
+            (int) ($criteria['commune_id'] ?? 0),
+            (string) ($criteria['delivery_type'] ?? Destination::HOME)
+        ));
+
+        return array_values(array_map(
+            static fn (RateQuote $quote): array => $quote->toArray(),
+            $provider->getShippingRates($destination)
+        ));
+    }
+
+    /** @param array<string, mixed> $metadata */
+    private function store(Shipment $shipment, string $action, array $metadata): Shipment
+    {
+        if (!$this->repository->update($shipment)) {
+            throw ApiException::internal('The shipment could not be updated.');
+        }
+
+        $this->audit->record($action, 'order', $shipment->orderId, [
+            'shipment_id' => $shipment->id,
+            'provider' => $shipment->provider,
+            ...$metadata,
+        ]);
+
+        return $this->repository->find($shipment->id) ?? $shipment;
+    }
+
+    private function requireShipment(int $id): Shipment
+    {
+        $shipment = $this->repository->find($id);
+
+        if ($shipment === null) {
+            throw ApiException::notFound('No shipment with that id.');
+        }
+
+        return $shipment;
+    }
+
+    private function requireOrder(int $orderId): WC_Order
+    {
+        $order = $this->orders->find($orderId);
+
+        if ($order === null) {
+            throw ApiException::notFound('No order with that id.');
+        }
+
+        return $order;
+    }
+
+    /**
+     * The provider that created this shipment, not the current default.
+     *
+     * A shop that switches couriers still has parcels in the air with the old
+     * one, and cancelling or tracking those has to go back to whoever is
+     * actually carrying them. When that adapter is no longer configured this is
+     * a 409 rather than a 400: the request is fine, the store's configuration
+     * is what cannot answer it.
+     */
+    private function providerFor(Shipment $shipment): ShippingProviderInterface
+    {
+        if (!$this->providers->has($shipment->provider)) {
+            throw ApiException::conflict('The provider that created this shipment is not configured.', [
+                'provider' => $shipment->provider,
+                'available' => $this->providers->names(),
+            ]);
+        }
+
+        return $this->providers->get($shipment->provider);
+    }
+
+    /** Nobody ships a cancelled or refunded order. */
+    private function guardOrderIsShippable(WC_Order $order): void
+    {
+        if (!OrderStatus::isTerminal($order->get_status())) {
+            return;
+        }
+
+        throw ApiException::conflict('An order in this status cannot be shipped.', [
+            'order_status' => $order->get_status(),
+        ]);
+    }
+
+    private function guardNoLiveShipment(int $orderId): void
+    {
+        $live = $this->repository->liveForOrder($orderId);
+
+        if ($live === null) {
+            return;
+        }
+
+        throw ApiException::conflict('This order already has a shipment in progress.', [
+            'shipment_id' => $live->id,
+            'provider' => $live->provider,
+            'status' => $live->status,
+        ]);
+    }
+
+    /**
+     * The commune must exist and must belong to the wilaya it arrived with.
+     *
+     * The pair is checked rather than each half: a commune id from the right
+     * dropdown and a wilaya id left over from the previous selection is the
+     * mistake an address form actually makes, and it routes a parcel to a
+     * commune of the same name in another wilaya — of which Algeria has
+     * several.
+     */
+    private function validatedDestination(Destination $destination): Destination
+    {
+        $commune = $this->geography->findCommune($destination->communeId);
+
+        if ($commune === null) {
+            throw ApiException::invalidRequest('The shipment data is invalid.', [
+                'fields' => ['commune_id' => "No commune with id {$destination->communeId}."],
+            ]);
+        }
+
+        if ((int) $commune['wilaya_id'] !== $destination->wilayaId) {
+            throw ApiException::invalidRequest('The shipment data is invalid.', [
+                'fields' => ['wilaya_id' => 'That commune belongs to a different wilaya.'],
+                'commune_wilaya_id' => (int) $commune['wilaya_id'],
+            ]);
+        }
+
+        return $destination;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function validatedStatus(array $payload): string
+    {
+        foreach (array_diff(array_keys($payload), ['status']) as $field) {
+            throw ApiException::invalidRequest('The shipment data is invalid.', [
+                'fields' => [(string) $field => 'Unknown field.'],
+            ]);
+        }
+
+        $status = is_scalar($payload['status'] ?? null) ? (string) $payload['status'] : '';
+
+        if (!ShipmentStatus::isKnown($status)) {
+            throw ApiException::invalidRequest('The shipment data is invalid.', [
+                'fields' => ['status' => 'Must be one of: ' . implode(', ', ShipmentStatus::ALL) . '.'],
+            ]);
+        }
+
+        return ShipmentStatus::normalize($status);
+    }
+
+    /**
+     * Fill the request from the order where the caller left a field blank.
+     *
+     * The recipient, phone and street come off the shipping address — which is
+     * what that address is good at — while the destination came from the
+     * dataset, which is what routing needs. `codAmount` is the order total when
+     * the order was placed cash on delivery, and '0' otherwise: it is what the
+     * driver must collect at the door, and the one number on this request a
+     * mistake in is felt by a customer.
+     */
+    /**
+     * Which attempt this is at delivering the order — 1 for the first parcel.
+     *
+     * Counted from the shipments already on record rather than kept as a
+     * column: a cancelled or returned parcel is still an attempt that happened,
+     * and the count is the number of rows that exist.
+     */
+    private function nextAttempt(int $orderId): int
+    {
+        return count($this->repository->forOrder($orderId)) + 1;
+    }
+
+    private function buildRequest(
+        WC_Order $order,
+        ShipmentInput $input,
+        Destination $destination,
+        int $attempt
+    ): ShipmentRequest {
+        $recipient = $input->recipient !== ''
+            ? $input->recipient
+            : trim($order->get_shipping_first_name() . ' ' . $order->get_shipping_last_name());
+
+        if ($recipient === '') {
+            $recipient = trim($order->get_billing_first_name() . ' ' . $order->get_billing_last_name());
+        }
+
+        $phone = $input->phone !== ''
+            ? $input->phone
+            : ($order->get_shipping_phone() ?: $order->get_billing_phone());
+
+        $address = $input->address !== ''
+            ? $input->address
+            : trim($order->get_shipping_address_1() . ' ' . $order->get_shipping_address_2());
+
+        if ($address === '') {
+            $address = trim($order->get_billing_address_1() . ' ' . $order->get_billing_address_2());
+        }
+
+        return new ShipmentRequest(
+            $order->get_id(),
+            $destination,
+            $recipient,
+            (string) $phone,
+            $address,
+            $order->get_payment_method() === PaymentMethod::COD ? (string) $order->get_total() : '0',
+            $input->note,
+            sprintf('%d-%d', $order->get_id(), $attempt)
+        );
+    }
+
+    /** UTC, in the format every other table in this plugin stores a time in. */
+    private static function now(): string
+    {
+        return gmdate('Y-m-d H:i:s');
+    }
+}

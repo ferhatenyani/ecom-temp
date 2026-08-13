@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AlgerianCommerce\COD;
 
+use AlgerianCommerce\Commerce\PaymentMethod;
 use AlgerianCommerce\Orders\OrderRepository;
 use AlgerianCommerce\Orders\OrderStatus;
 use WC_Order;
@@ -39,11 +40,11 @@ final class CodRepository
     /**
      * WooCommerce's built-in cash-on-delivery gateway id.
      *
-     * A literal rather than a lookup: `WC_Gateway_COD::$id` requires the
-     * gateways to be loaded, which they are not during every REST request, and
-     * this string is also what is already stored on every existing order.
+     * Defined in `Commerce/` because Shipping needs the same value to work out
+     * what a driver must collect at the door, and one string with two owners
+     * eventually becomes two strings.
      */
-    public const PAYMENT_METHOD = 'cod';
+    public const PAYMENT_METHOD = PaymentMethod::COD;
 
     /** @var list<string> */
     private const META_KEYS = [

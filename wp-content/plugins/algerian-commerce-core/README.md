@@ -15,8 +15,10 @@ PSR-4 autoloading, configuration and feature flags, logging with secret redactio
 the migration runner, roles and capabilities, and audit recording.
 
 Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (authentication), §50
-(orders and customers), §51 (Algerian geography) and §52 (COD) are in, along with rate limiting. Not
-implemented yet: 2FA, customer sessions, shipping, payments, analytics, CMS.
+(orders and customers), §51 (Algerian geography), §52 (COD) and §53 (the shipping abstraction) are
+in, along with rate limiting. Not implemented yet: 2FA, customer sessions, the Yalidine and Zedair
+adapters (§56, §57 — they need each provider's current official docs), shipping rules and pricing
+(§14), payments, analytics, CMS.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -40,6 +42,10 @@ src/Customers/               CustomerController, CustomerService, CustomerInput,
                              CustomerStatistics, CustomerRepository, CustomerPresenter
 src/COD/                     CodController, CodService, CodStatus, CodState, CodAttemptInput,
                              CodSettingsInput, CodStatistics, CodRepository, CodSubscriber
+src/Shipping/                ShippingProviderInterface, ShippingController, ShippingService,
+                             ShipmentStatus, Destination, ShipmentRequest, ShipmentResult,
+                             StatusReport, RateQuote, Shipment, ShipmentInput,
+                             ProviderRegistry, ManualProvider, ShipmentRepository
 src/Geography/               LocationController, GeoService, GeoDataset, GeoSlug,
                              GeoRepository, GeoImporter
 data/algeria/                wilayas.json, communes.json, provider-destinations.json,
@@ -83,6 +89,15 @@ tests/Unit/                  unit tests — no WordPress required
 | PATCH | `/orders/{id}/cod` | `ac_manage_orders` | turn COD on or off for that order (`enabled`) |
 | POST | `/orders/{id}/cod/attempts` | `ac_manage_orders` | record a confirmation call → 201 (`outcome`, `reason`) |
 | GET | `/cod/statistics` | `ac_view_analytics` | the COD funnel (`customer_id`, `date_from`, `date_to`) |
+| GET | `/shipping/providers` | `ac_manage_shipping` | the couriers this shop has, and which is default |
+| GET | `/shipping/rates` | `ac_manage_shipping` | quotes for a destination (`wilaya_id`, `commune_id`, `delivery_type`, `provider`) |
+| GET | `/orders/{id}/shipments` | `ac_manage_shipping` | the order's parcels, newest first |
+| POST | `/orders/{id}/shipments` | `ac_manage_shipping` | hand a parcel to a courier → 201 |
+| GET | `/shipments` | `ac_manage_shipping` | list (paginated; `order_id`, `provider`, `status`, `tracking_number`, `date_from`, `date_to`) |
+| GET | `/shipments/{id}` | `ac_manage_shipping` | read |
+| PATCH | `/shipments/{id}` | `ac_manage_shipping` | move it on by hand (`status`) |
+| POST | `/shipments/{id}/cancel` | `ac_manage_shipping` | call it off at the provider |
+| POST | `/shipments/{id}/sync` | `ac_manage_shipping` | ask the courier where it is |
 | GET | `/customers` | `ac_manage_customers` | list (paginated; `search`, `orderby`, `order`) |
 | GET | `/customers/{id}` | `ac_manage_customers` | profile **and** lifetime statistics |
 | PATCH | `/customers/{id}` | `ac_manage_customers` | name, email and addresses — never roles or credentials |
@@ -904,6 +919,133 @@ The flag decides whether checkout *offers* cash on delivery, which is the paymen
 These endpoints are the operational handling of orders that already exist. A shop that stops taking
 new COD orders still has hundreds in flight, and a flag that froze their confirmation queue would
 strand exactly the orders that most need finishing.
+
+## Shipping
+
+Roadmap §53, docs/PLAN.md §13. The abstraction, and one courier that uses it. **No Yalidine and no
+Zedair**: roadmap §54 forbids writing an adapter from memory, so those arrive in §56 and §57 with the
+providers' current official documentation in hand. Nothing above `ShippingProviderInterface` changes
+when they do — that is the property this phase exists to establish.
+
+```php
+interface ShippingProviderInterface
+{
+    public function name(): string;
+    public function label(): string;
+    public function createShipment(ShipmentRequest $request): ShipmentResult;
+    public function cancelShipment(string $providerShipmentId): bool;
+    public function getShipmentStatus(string $providerShipmentId): StatusReport;
+    /** @return list<RateQuote> */
+    public function getShippingRates(Destination $destination): array;
+}
+```
+
+Everything crossing that boundary is a value object of ours. An adapter never sees a `WC_Order`, so
+it cannot reach into an order, read a meta key, or depend on how this shop stores things — and it can
+be tested without a database. `ProviderRegistryTest` fakes a whole courier in ten lines, which is the
+real measure of whether the seam works: if a second provider were hard to fake, Yalidine would be
+hard to add.
+
+The roadmap sketches `createShipment(array $order)`. Typed objects are used instead, because with a
+bare array every adapter re-derives what a valid request looks like and the third one gets it subtly
+wrong. A provider is also addressed by its **own shipment id**, not by the tracking number: at some
+couriers those are the same string and at others they are not, and assuming they are the same is a
+bug that only appears at the one that disagrees.
+
+### In-house delivery is a real provider, not a stub
+
+`ManualProvider` is the shop's own driver. A large share of Algerian shops deliver inside their own
+wilaya and hand only the distant orders to a courier, so this is something a client actually uses —
+and it means the abstraction ships with a working implementation rather than none. Its tracking
+number is ours (`MAN-42-2` — the second parcel for order 42), prefixed so nobody mistakes it for a
+Yalidine code in a list of both.
+
+It refuses `getShipmentStatus()` with a 409 rather than answering, and the distinction matters:
+returning `created` would look like a successful sync, and since a person may already have advanced
+the parcel to `in_transit`, the next poll would quietly walk it *backwards*. It quotes no rates
+either — not "free", but unpriced, because what a shop charges for its own delivery is §14's zone and
+wilaya pricing and a `0.00` here would settle that question on §14's behalf.
+
+### A parcel's status is what the courier says it is
+
+There is no transition matrix, unlike orders and COD, and that is deliberate. We do not control a
+parcel — a courier does, and it reports late and out of order. Refusing a status because it did not
+follow the sequence we expected would mean our record disagreeing with the physical world to defend a
+diagram. One rule *is* enforced: **a finished shipment stays finished.** Once a parcel is delivered,
+returned, cancelled or failed, a replayed webhook or a poll that crossed a delivery in flight cannot
+reopen it (docs/SECURITY.md — duplicate delivery must never duplicate a shipment or an order
+transition).
+
+The vocabulary is ours, and short: `pending`, `created`, `picked_up`, `in_transit`,
+`out_for_delivery`, `delivered`, `returned`, `cancelled`, `failed`. Each adapter maps its provider's
+states onto these **and keeps the provider's own spelling** in `metadata.provider_status`. That
+second value is there because a status mapping is the part of a courier integration most likely to be
+quietly wrong — a provider adds a state, the adapter's `match` falls through to a default, and every
+parcel in that state reads as `in_transit` for a month. With the raw value stored next to the mapped
+one that is a query; without it, an outage nobody can explain.
+
+### The rules the service enforces
+
+**A shipment never changes the order's status.** Same reasoning as COD: PLAN.md §8 lists "Shipping
+Prepared", "Shipped" and "Delivered" among the operational states and then says not to create
+redundant statuses when metadata will do. A parcel's progress is a fact about the parcel; whether the
+order is then completed is the shop's decision, and on a COD order one taken with money in mind.
+
+**One live shipment per order.** Two parcels for one order is two vans, one of them delivering to a
+customer who has already been served. A *finished* shipment does not block a new one, so a re-send
+after a failed delivery works without deleting history — and the attempt number is what keeps the two
+parcels' tracking numbers apart.
+
+**The destination is validated against the §51 dataset before a provider sees it**, by wilaya and
+commune id, and the pair is checked together. A commune id from the new dropdown with a wilaya left
+over from the previous selection is the mistake an address form actually makes, and Algeria has
+several communes of the same name in different wilayas. This is also why the destination is not
+derived from the order's shipping address: `city` and `state` are free text there, and fuzzy-matching
+a name spelled several ways in two languages sends parcels to the wrong daira.
+
+**The provider is called last**, after everything that can be refused has been refused. A 400 that
+arrives *after* a courier has accepted a parcel leaves a real van carrying an order this system has
+no record of. If the row cannot be written even so, `shipment.record_failed` goes to the audit trail
+with the tracking number on it — that table has a different failure mode, and it is the last place
+the number can still be saved.
+
+### Storage
+
+`ac_shipments` (migration 004, `Schema::VERSION` 4) holds PLAN.md §15's field list and nothing more.
+What is particular to one courier — pickup desks, label URLs, parcel dimensions — goes in `metadata`
+as JSON, so a third provider is a data change rather than a migration. Nothing in the core may read a
+key out of that JSON, or the abstraction has leaked.
+
+Unlike the stock ledger these rows are **updated**: a shipment is one parcel whose status changes, not
+a history of events. The history is in the audit trail (`shipment.created`, `shipment.status_changed`,
+`shipment.cancelled`), which is the store that is append-only by design, and it is recorded against
+the *order* — so a parcel's progress lands in the timeline a shop already reads, tracking number
+included:
+
+```
+2026-08-12T00:17:35+00:00 audit  Shipment created with manual — MAN-400-2
+2026-08-12T00:11:05+00:00 audit  Shipment picked_up → delivered (manual)
+```
+
+There is deliberately **no unique key** on `(provider, provider_shipment_id)`. It looks like the
+idempotency guard, but a shipment created locally and not yet accepted has an empty id and MySQL
+treats `''` as a value rather than as absent, so the second such row would be refused. "One live
+shipment per order" is a business rule with a reason to give the caller, so the service enforces it
+and answers 409.
+
+### What §56 plugs into
+
+Three seams are already there and empty on purpose. `Plugin::shippingProviders()` is the one place a
+courier is switched on for a client, behind its feature flag and credentials. `ShipmentRequest`
+carries a `reference` (`"42-2"`) that couriers accept as a merchant reference and most treat as an
+idempotency key — a retried create then returns the existing parcel instead of putting a second one
+on a van. And `ac_geo_provider_destinations` (§51) is where each provider's destination codes are
+mapped against our commune ids, populated from that provider's own docs rather than from memory.
+
+One thing that should be revisited then, not now: §52's COD delivery and return rates still read the
+*order* status, because with only in-house delivery a shipment status is hand-entered and no more
+authoritative than the order is. Once a real courier reports statuses of its own, those two rates
+should be re-derived from `ac_shipments`.
 
 ## Algerian geography
 

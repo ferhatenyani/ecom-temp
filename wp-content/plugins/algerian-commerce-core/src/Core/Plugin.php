@@ -42,6 +42,11 @@ use AlgerianCommerce\Permissions\Roles;
 use AlgerianCommerce\Security\RateLimiter;
 use AlgerianCommerce\Security\RateLimitGuard;
 use AlgerianCommerce\Security\RateLimitStore;
+use AlgerianCommerce\Shipping\ManualProvider;
+use AlgerianCommerce\Shipping\ProviderRegistry;
+use AlgerianCommerce\Shipping\ShipmentRepository;
+use AlgerianCommerce\Shipping\ShippingController;
+use AlgerianCommerce\Shipping\ShippingService;
 use AlgerianCommerce\Products\ProductCategoryController;
 use AlgerianCommerce\Products\ProductController;
 use AlgerianCommerce\Products\ProductRepository;
@@ -90,6 +95,9 @@ final class Plugin
     private ?OrderStockSubscriber $orderStockSubscriber = null;
     private ?CustomerRepository $customerRepository = null;
     private ?CustomerService $customerService = null;
+    private ?ShipmentRepository $shipmentRepository = null;
+    private ?ProviderRegistry $shippingProviders = null;
+    private ?ShippingService $shippingService = null;
     private ?CodRepository $codRepository = null;
     private ?CodService $codService = null;
     private ?CodSubscriber $codSubscriber = null;
@@ -175,7 +183,52 @@ final class Plugin
             new CustomerController($this->logger(), $this->customerService()),
             new LocationController($this->logger(), $this->geoService()),
             new CodController($this->logger(), $this->codService()),
+            new ShippingController($this->logger(), $this->shippingService()),
         ]);
+    }
+
+    public function shipmentRepository(): ShipmentRepository
+    {
+        global $wpdb;
+
+        return $this->shipmentRepository ??= new ShipmentRepository($wpdb);
+    }
+
+    /**
+     * The couriers this shop has, in preference order — the first is the
+     * default.
+     *
+     * This is where a provider is switched on for a client, and the only place
+     * that reads its credentials and feature flag (docs/ARCHITECTURE.md §4).
+     * Yalidine and Zedair join this list in §56 and §57, each behind
+     * `ENABLE_YALIDINE` / `ENABLE_ZEDAIR`, and nothing above this line changes
+     * when they do.
+     *
+     * In-house delivery is always registered: it needs no credentials, it is
+     * what a shop falls back to when a courier is unreachable, and a store with
+     * an empty registry could not create a shipment at all.
+     */
+    public function shippingProviders(): ProviderRegistry
+    {
+        return $this->shippingProviders ??= new ProviderRegistry([
+            new ManualProvider(),
+        ]);
+    }
+
+    /**
+     * Takes the order and geography repositories: a shipment is *of* an order,
+     * to a commune in the §51 dataset. Both dependencies run one way — nothing
+     * in Orders/ or Geography/ knows shipping exists.
+     */
+    public function shippingService(): ShippingService
+    {
+        return $this->shippingService ??= new ShippingService(
+            $this->shipmentRepository(),
+            $this->shippingProviders(),
+            $this->orderRepository(),
+            $this->geoRepository(),
+            $this->auditLogger()
+        );
     }
 
     /**

@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§52 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
-REST foundation, migrations, RBAC, audit trail, products, inventory, orders and COD — and its
+REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD and shipping — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -14,14 +14,21 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50, §51 and §52 are done** — orders, notes, timeline,
-customers, the Algerian geography mechanism, and cash on delivery. **Next up is §53, the shipping
-abstraction.**
+milestones, and section 29 the per-feature loop. **§50–§53 are done** — orders, notes, timeline, customers,
+the Algerian geography mechanism, cash on delivery, and the shipping abstraction. **Next up is §56, Yalidine —
+which cannot start until that provider's current official API documentation is supplied in the prompt (§54).**
+§14 (shipping rules: zones, wilaya pricing, free-shipping thresholds) is also still open.
 
-COD state is order meta plus audit events, never new order statuses (PLAN §8) and never a table of its own:
-`Schema::VERSION` is still 3. A COD outcome does not change the order's status; the order's cancellation
-closes the COD state through `CodSubscriber`, which is the direction that keeps `Orders/` unaware of `COD/`.
-`ENABLE_COD` is not read by that module — it gates what checkout offers, which is §58.
+COD state is order meta plus audit events, never new order statuses (PLAN §8) and never a table of its own.
+A COD outcome does not change the order's status; the order's cancellation closes the COD state through
+`CodSubscriber`, which is the direction that keeps `Orders/` unaware of `COD/`. `ENABLE_COD` is not read by
+that module — it gates what checkout offers, which is §58.
+
+Shipping follows the same rule: a parcel's status never moves the order. `ac_shipments` is migration 004 and
+`Schema::VERSION` is 4. Providers implement `Shipping\ShippingProviderInterface` and are registered in
+`Plugin::shippingProviders()`, which is the only place a courier's credentials and feature flag are read;
+`ManualProvider` (in-house delivery) is the working implementation that ships today. Everything crossing the
+provider boundary is one of our value objects — an adapter never sees a `WC_Order`.
 
 Geographic data is complete: **69 wilayas** (the 2019 reform's 58 plus the eleven former circonscriptions
 administratives, since promoted) and 1,541 communes, with Arabic names, daira and coordinates. Both files are
@@ -55,8 +62,8 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `COD/`, `Geography/`, `CLI/`, alongside `data/`, `migrations/` and `tests/`. Still to come:
-`Shipping/`, `Payments/`, `Analytics/`, `CMS/`, … and `integrations/{Yalidine,Zedair,Chargily}/`.
+`Customers/`, `COD/`, `Shipping/`, `Geography/`, `CLI/`, alongside `data/`, `migrations/` and `tests/`. Still to
+come: `Payments/`, `Analytics/`, `CMS/`, … and `integrations/{Yalidine,Zedair,Chargily}/`.
 
 Bulk reference data lives in `data/` as JSON and is loaded by a WP-CLI importer — never inlined into PHP files
 (roadmap §51). Datasets ship inside the plugin, because the plugin is what gets cloned and deployed per client.

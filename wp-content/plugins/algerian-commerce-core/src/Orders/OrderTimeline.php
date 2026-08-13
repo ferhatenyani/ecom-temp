@@ -179,6 +179,42 @@ final class OrderTimeline
             case 'cod.settings_changed':
                 return ($metadata['enabled'] ?? false) ? 'COD enabled' : 'COD disabled';
 
+            /*
+             * Shipping records its events against the *order*, so a parcel's
+             * progress lands in the feed a shop already reads to see what
+             * happened to it — the tracking number included, because that is
+             * the thing an operator is looking for when a customer calls.
+             */
+            case 'shipment.created':
+                return sprintf(
+                    'Shipment created with %s — %s',
+                    (string) ($metadata['provider'] ?? '?'),
+                    (string) ($metadata['tracking_number'] ?? '')
+                );
+
+            case 'shipment.status_changed':
+                return sprintf(
+                    'Shipment %s → %s (%s)',
+                    (string) ($metadata['from'] ?? '?'),
+                    (string) ($metadata['to'] ?? '?'),
+                    (string) ($metadata['source'] ?? 'provider')
+                );
+
+            case 'shipment.cancelled':
+                return 'Shipment cancelled at ' . (string) ($metadata['provider'] ?? 'the provider');
+
+            /*
+             * The parcel exists at the courier and could not be written down.
+             * It reads as an alarm because that is what it is — this line is
+             * the only place the tracking number survives.
+             */
+            case 'shipment.record_failed':
+                return sprintf(
+                    'Shipment created at %s but NOT SAVED — tracking %s',
+                    (string) ($metadata['provider'] ?? '?'),
+                    (string) ($metadata['tracking_number'] ?? '')
+                );
+
             case 'order.updated':
                 $fields = is_array($metadata['fields'] ?? null) ? $metadata['fields'] : [];
 

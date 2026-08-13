@@ -104,12 +104,20 @@ ShippingService                       PaymentService
 ```
 
 ```php
+// As built in §53. The shapes are value objects rather than the bare arrays
+// this sketch first carried: with an array, every adapter re-derives what a
+// valid request looks like and the third one gets it subtly wrong. A provider
+// is addressed by its own shipment id, not by the tracking number — the two
+// are the same string at some couriers and not at others.
 interface ShippingProviderInterface
 {
-    public function createShipment(array $order): ShipmentResult;
-    public function cancelShipment(string $trackingId): bool;
-    public function getShipmentStatus(string $trackingId): ShipmentStatus;
-    public function getShippingRates(array $destination): array;
+    public function name(): string;
+    public function label(): string;
+    public function createShipment(ShipmentRequest $request): ShipmentResult;
+    public function cancelShipment(string $providerShipmentId): bool;
+    public function getShipmentStatus(string $providerShipmentId): StatusReport;
+    /** @return list<RateQuote> */
+    public function getShippingRates(Destination $destination): array;
 }
 
 interface PaymentProviderInterface

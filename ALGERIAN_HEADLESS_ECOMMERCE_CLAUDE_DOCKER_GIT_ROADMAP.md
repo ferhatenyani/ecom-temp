@@ -396,7 +396,17 @@ document is now ordered to match it.** Sections 5 onward follow these
 steps, so working top to bottom through the document works through this
 list.
 
-Use this as the master sequence:
+Use this as the master sequence.
+
+**28b was added during §53 and is numbered rather than renumbering the list**,
+which the rest of this document — and the plugin README, which cites "§4 items
+17–21" — is ordered to match. It is a step the original list missed: PLAN.md §14
+requires shipping zones, wilaya and commune pricing and free-shipping
+thresholds, and none of it belongs to a provider. §53 built the abstraction and
+§56/§57 map couriers onto it, but nothing in either decides *what the shop
+charges a customer for delivery*, which is a thing a store cannot open without.
+It needs no provider documentation, so it can be built at any point after §53
+and before a storefront quotes a price.
 
 ``` text
 01. WSL 2
@@ -427,6 +437,8 @@ Use this as the master sequence:
 26. Algeria geographic data
 27. COD
 28. Shipping abstraction
+28b. Shipping rules — zones, wilaya and commune pricing,
+     free-shipping thresholds, provider selection (PLAN §14)
 29. Yalidine
 30. Zedair
 31. Payment abstraction
@@ -2519,6 +2531,65 @@ return rate
 
 Do not automatically ban customers based on a single weak signal.
 
+## What was built
+
+Order meta plus audit events — **no new order statuses and no table of its
+own**, which is what PLAN.md §8's "avoid creating redundant statuses when
+metadata/events are sufficient" asks for. `Schema::VERSION` was unchanged.
+
+``` text
+GET   /orders/{id}/cod            the state
+PATCH /orders/{id}/cod            enable or disable COD for that order
+POST  /orders/{id}/cod/attempts   record a confirmation call → 201
+GET   /cod/statistics             the funnel (customer_id, date_from, date_to)
+```
+
+One endpoint records a call, carrying its outcome, rather than three verb
+endpoints: one state machine, one audit path, and a new outcome later is an enum
+value rather than a fourth endpoint and a fourth set of tests.
+
+Decisions worth keeping:
+
+``` text
+history      = ac_audit_logs, already append-only and already merged
+               into the order timeline; a cod_attempts table would be a
+               third copy of what two stores hold
+state machine = pending → confirmed | rejected | unreachable | cancelled,
+               every legal move listed including unreachable → unreachable
+               (a second failed call). No blanket self-transition rule:
+               recording an outcome is an event, not an idempotent PATCH
+confirmed → rejected is absent; confirmed → cancelled is present.
+               A customer who says yes and later changes their mind has
+               cancelled, and folding the two together makes the
+               confirmation rate count one event two ways
+no auto-transition = a COD outcome never changes the order's status
+CodSubscriber = woocommerce_order_status_cancelled closes the COD state
+               whatever cancelled the order — wp-admin, WP-CLI, cron, a
+               gateway. This direction is what keeps Orders/ unaware of COD/
+untouched orders = an order paid `cod` with no COD meta reads as enabled
+               and pending, and the funnel counts it, so the state
+               endpoint and the statistics cannot disagree
+rates        = one denominator, every COD order in scope. Confirmation
+               counts orders *ever* confirmed, from the confirmed_at
+               stamp, so one confirmed then cancelled is in both rates
+ENABLE_COD   = deliberately not read. It gates what checkout offers,
+               which is §58; freezing these endpoints when a shop stops
+               taking new COD would strand every order already in flight
+```
+
+### Deferred, with their reasons
+
+``` text
+cancellation reason on the COD state
+    — the WooCommerce hook carries none, and the reason an operator
+      typed is already on the order.cancelled audit row with its actor.
+      `reason` holds the most recent *outcome's* reason instead
+
+delivery and return rates from a courier
+    — derived from order status (completed / refunded) because that
+      was the only outcome record that existed. See §56
+```
+
 ------------------------------------------------------------------------
 
 # 53. Shipping Abstraction
@@ -2561,6 +2632,102 @@ call Yalidine endpoint
 ```
 
 This keeps the core reusable.
+
+## What was built
+
+The abstraction, the shipment records, and **one working provider** — an
+abstraction with no implementation cannot be exercised, and `ac_shipments` is
+what §56 writes into anyway.
+
+``` php
+interface ShippingProviderInterface
+{
+    public function name(): string;
+    public function label(): string;
+    public function createShipment(ShipmentRequest $request): ShipmentResult;
+    public function cancelShipment(string $providerShipmentId): bool;
+    public function getShipmentStatus(string $providerShipmentId): StatusReport;
+    /** @return list<RateQuote> */
+    public function getShippingRates(Destination $destination): array;
+}
+```
+
+**Two deliberate deviations from the sketch above.** The shapes are value
+objects rather than bare arrays: with an array every adapter re-derives what a
+valid request looks like and the third gets it subtly wrong. And a provider is
+addressed by its own shipment id rather than the tracking number — at some
+couriers those are the same string and at others they are not, and assuming they
+are is a bug that only appears at the one that disagrees. ARCHITECTURE.md §4 was
+updated to match the code.
+
+``` text
+GET   /shipping/providers        the couriers this shop has
+GET   /shipping/rates            quotes for a destination
+GET   /orders/{id}/shipments     the order's parcels
+POST  /orders/{id}/shipments     hand a parcel to a courier → 201
+GET   /shipments                 list, filterable by tracking number
+GET   /shipments/{id}            read
+PATCH /shipments/{id}            move it on by hand
+POST  /shipments/{id}/cancel     call it off at the provider
+POST  /shipments/{id}/sync       ask the courier where it is
+```
+
+Decisions worth keeping:
+
+``` text
+ManualProvider = in-house delivery, and not a stub: many Algerian shops
+               deliver inside their own wilaya and hand only the distant
+               orders to a courier. It refuses getShipmentStatus() with a
+               409 rather than answering, because inventing "created"
+               would look like a successful sync and would walk a parcel
+               a person had already advanced back to the beginning
+no transition matrix = a courier owns reality and reports late and out of
+               order. Refusing a status for not following our sequence
+               would mean the record disagreeing with the parcel. The one
+               rule enforced: a finished shipment stays finished
+provider_status = each adapter maps a courier's states onto ours AND
+               stores the courier's own spelling. A mapping that silently
+               falls through to a default is the most likely defect in a
+               courier integration, and this makes it a query
+no auto-transition = a parcel's status never moves the order (PLAN §8)
+one live shipment per order = enforced in the service, not by a unique
+               key: an unaccepted shipment has an empty provider id and
+               MySQL treats '' as a value. A finished shipment does not
+               block a re-send
+destination  = wilaya + commune ids from §51, validated as a pair before
+               a provider sees them. Never derived from the order's
+               free-text city — Algeria has same-named communes in
+               different wilayas
+provider called last = after everything refusable has been refused, so a
+               400 never arrives once a van already has the parcel. If
+               the row still fails to write, shipment.record_failed goes
+               to the audit trail with the tracking number on it
+reference    = "42-2", the second parcel for order 42. Couriers accept a
+               merchant reference and most treat it as an idempotency
+               key, so a retried create returns the existing parcel
+```
+
+### Deferred, with their reasons
+
+``` text
+Yalidine and Zedair adapters
+    — §54: an adapter is never written from memory. §56 and §57, with
+      each provider's current official documentation
+
+shipping rules and pricing
+    — PLAN §14, and a step the build sequence was missing entirely.
+      Added as §4 step 28b. Needs no provider documentation
+
+a delivered shipment completing the order
+    — an automatic order transition driven by a third party's webhook
+      needs the idempotency and replay design §55 exists for. See §56
+
+parcel weight, dimensions and contents on ShipmentRequest
+    — every courier wants them in a different shape. Inventing the
+      fields now, with no provider documentation in front of us, is
+      exactly what §54 forbids. They arrive with the first adapter whose
+      docs say what it actually requires
+```
 
 ------------------------------------------------------------------------
 
@@ -2637,6 +2804,46 @@ documentation** at the time of implementation.
 
 Do not invent endpoints or payloads.
 
+## Before starting
+
+This section cannot begin without the material §54 lists — current official API
+documentation, authentication requirements, request/response examples, webhook
+documentation, sandbox credentials. Everything else is already waiting:
+
+``` text
+ShippingProviderInterface   implement it; nothing above it changes
+Plugin::shippingProviders() the one place a courier is switched on,
+                            behind ENABLE_YALIDINE and its credentials
+ShipmentRequest::$reference "42-2" — send as the merchant reference,
+                            which most couriers treat as an idempotency
+                            key, so a retried create returns the parcel
+                            it already made instead of a second one
+ac_geo_provider_destinations  §51's table, still empty. Populate it from
+                            Yalidine's own destination list — never from
+                            memory, and never by parsing their ids
+StatusReport::$providerStatus  store their word next to our mapped one
+```
+
+Three things this section should also settle, each recorded here when it was
+deferred rather than discovered later:
+
+``` text
+webhooks
+    — §55's security review comes first: signature verification and
+      idempotency, since replaying an event must not re-apply it
+
+should a delivered parcel complete the order?
+    — deferred from §53 deliberately. It is an automatic order
+      transition triggered by a third party, so it needs the replay and
+      idempotency design of §55 before it is wired to anything
+
+COD delivery and return rates
+    — §52 derives them from order status because, with only in-house
+      delivery, a shipment status is hand-entered and no more
+      authoritative. Once a real courier reports its own, re-derive both
+      from ac_shipments
+```
+
 Cover as applicable:
 
 ``` text
@@ -2671,7 +2878,15 @@ provider API failure
 
 Use exactly the same provider abstraction.
 
-Implement from Zedair's current official documentation.
+Implement from Zedair's current official documentation. The same prerequisites
+as §56 apply — documentation, credentials, webhook docs — and the same seams are
+waiting: register it in `Plugin::shippingProviders()` behind `ENABLE_ZEDAIR`, and
+give it its own rows in `ac_geo_provider_destinations`, which is keyed by
+provider precisely so two couriers can number the same commune differently.
+
+If adding this adapter requires a change *above* `ShippingProviderInterface`,
+that is a defect in the abstraction and should be fixed there rather than worked
+around here — §53 exists to make this section additive.
 
 The core application should not need to know whether the shipment is
 handled by:
