@@ -105,7 +105,7 @@ the third-party integration rules before the first provider adapter.
 - [54. Third-Party Integration Rule](#54-third-party-integration-rule)
 - [55. Security Review Before Each Integration](#55-security-review-before-each-integration)
 - [56. Yalidine](#56-yalidine)
-- [57. Zedair](#57-zedair)
+- [57. ZR Express (was "Zedair")](#57-zr-express-was-zedair)
 
 **Part X — Payments (Milestone 9)**
 
@@ -440,7 +440,7 @@ and before a storefront quotes a price.
 28b. Shipping rules — zones, wilaya and commune pricing,
      free-shipping thresholds, provider selection (PLAN §14)  [built]
 29. Yalidine
-30. Zedair
+30. ZR Express (was "Zedair")
 31. Payment abstraction
 32. Chargily
 33. Coupons
@@ -2808,11 +2808,159 @@ documentation** at the time of implementation.
 
 Do not invent endpoints or payloads.
 
-## Before starting
+## Sources — read these before writing anything
 
-This section cannot begin without the material §54 lists — current official API
-documentation, authentication requirements, request/response examples, webhook
-documentation, sandbox credentials. Everything else is already waiting:
+There is **no merchant account and no sandbox**, so nothing here can be
+confirmed against the live API. §54 forbids writing an adapter from memory; it
+does not forbid writing one from working code. Three independent implementations
+agree on everything below, which is stronger evidence than a single document:
+
+``` text
+1. /mnt/c/Users/MyHomehP/Desktop/work/EL/api        (primary)
+   Spring Boot, in production against the live API.
+   service/shipping/YalidineService.java            42 KB, the whole flow
+   service/dto/shipping/Yalidine*.java              request/response shapes
+   web/rest/ShippingWebhookResource.java            the webhook endpoint
+   Its admin client is at ../el-admin-app (5 order statuses, provider
+   enum YALIDINE|ZR) — useful for the operator's view, not the API.
+
+2. Createk Delivery for Yalidine 1.2.2              (GPL, WordPress.org)
+   https://fr.wordpress.org/plugins/createk-delivery-for-yalidine/
+   includes/class-yalidine-api.php is a clean 211-line client.
+   READ FOR FACTS ONLY — it is GPL and this plugin is proprietary.
+   Endpoints, field names and HTTP behaviour are facts; its code is not.
+
+3. CourierDZ (MIT) and dzship docs/statuses.md      (cross-check)
+   https://github.com/PiteurStudio/CourierDZ
+   https://github.com/DZBuild-com/dzship
+```
+
+## The API, as all three sources agree
+
+``` text
+base     https://api.yalidine.app/v1/
+auth     X-API-ID, X-API-TOKEN            (headers, both required)
+quota    429 + Retry-After header         (obey the header; the limit
+                                           itself is not published)
+paging   ?page_size=1000                  on list endpoints
+verify   GET wilayas/                     cheap credential test — this is
+                                           what a client's setup screen calls
+                                           to prove their keys work
+
+GET  wilayas/                             destination sync source
+GET  communes/                            destination sync source
+GET  centers/                             stop desks
+GET  fees/?from_wilaya_id=&to_wilaya_id=  rates
+POST parcels/                             array in; object out, keyed by
+                                           OUR order_id
+GET  parcels/{tracking}                   status poll
+```
+
+**`POST parcels/` takes an array and returns an object keyed by `order_id`.**
+Send `ShipmentRequest::$reference` as `order_id` and the response can be found
+by it. An empty array `[]` in response means **rejected**, almost always because
+`to_commune_name` did not match a Yalidine commune exactly — which is precisely
+what the destination sync exists to prevent. Map it to a named error, never to
+"unexpected response".
+
+Parcel payload, exact field names (sources 1 and 2 agree):
+
+``` text
+order_id  from_wilaya_name  firstname  familyname  contact_phone
+address   to_commune_name   to_wilaya_name  product_list  price
+do_insurance  declared_value  length  width  height  weight
+freeshipping  is_stopdesk  stopdesk_id  has_exchange
+```
+
+`from_wilaya_name` and the insurance/dimension defaults are **per-client
+settings**, not template constants — see the settings note below.
+
+`GET fees/` returns per-commune `express_home`, `express_desk`,
+`economic_home`, `economic_desk`, plus `zone`, `return_fee`, `cod_percentage`,
+`insurance_percentage`, `oversize_fee`. Four RateQuote services per commune.
+
+Webhook payload, from `YalidineWebhookPayload.java` (source 1):
+
+``` text
+event  tracking_number  order_id  status_code  status  sub_status
+date   updated_at  comment  wilaya  commune  attempts
+amount_collected  amount_due  receiver_name  phone
+signature_url  fail_cause  security_token
+```
+
+`security_token` is a **shared secret in the body** — not a signature. Compare
+it in constant time, and treat the payload as a *hint*: re-fetch
+`GET parcels/{tracking}` and trust that, the same way CLAUDE.md requires payment
+status to be verified server-side rather than believed from a callback.
+`amount_collected` / `amount_due` are what COD reconciliation will need later.
+
+## The 36 statuses, and the one gap they exposed
+
+The complete `last_status` vocabulary, from the merchant dashboard's filter:
+
+``` text
+created     Pas encore expédié · A vérifier · En préparation ·
+            Pas encore ramassé · Prêt à expédier · En passation
+picked_up   Ramassé
+in_transit  Transfert · Expédié · Centre · En localisation ·
+            Vers Wilaya · En transit · Reçu à Wilaya ·
+            Prêt pour livreur · En attente · En attente du client ·
+            Bloqué · Débloqué · En alerte · Alerte résolue
+out_for_delivery  Sorti en livraison · Tentative échouée
+returning   Retour vers centre · Retourné au centre ·
+            Retour transfert · Retour groupé · Retour à retirer ·
+            Retour non retiré · Echèc livraison
+delivered   Livré
+returned    Retourné au vendeur
+cancelled   Annulé
+failed      Colis abandonné · Echange échoué
+```
+
+**`returning` does not exist yet and must be added to
+`Shipping\ShipmentStatus`** — a non-terminal state, with
+`returning → returned | failed` legal. Seven statuses say the parcel is coming
+back but has not arrived, and neither existing value can carry them: `returned`
+is terminal, so tracking would stop while the parcel is still moving and a COD
+shop could not tell *on its way back* from *back in my hands*; `in_transit`
+reads to an operator as heading to the customer. The column is `varchar(30)`
+and `TERMINAL` is unchanged, so this is additive — no migration.
+
+Two traps in the same table, both of which the reference implementation falls
+into by matching substrings: **Tentative échouée** is a retried attempt and
+**Bloqué** is a hold. Neither is terminal, and both contain words that a naive
+keyword match reads as failure.
+
+Match accent- and case-insensitively — these are dashboard labels and the API
+may differ in accent or case (note *Echèc livraison* as the dashboard spells
+it) — and always store the raw word in `StatusReport::$providerStatus`.
+
+## Per-client settings versus template constants
+
+This plugin is cloned per client, so **nothing courier-specific may be
+hard-coded**. Credentials come from `.env` (`YALIDINE_API_ID`,
+`YALIDINE_API_TOKEN`, `YALIDINE_WEBHOOK_SECRET`, `ENABLE_YALIDINE`), read only
+in `Plugin::shippingProviders()`. Everything else a client configures — origin
+wilaya, whether they have stop desk / exchange / insurance, default parcel
+dimensions and weight — belongs in settings, not in code and not in `.env`.
+
+The reference implementation hard-codes a 58-case wilaya-name→id `switch` and an
+`UNSUPPORTED_WILAYAS` set in Java. **Do neither.** Coverage is data: the
+destination sync writes it, and the sync report names the wilayas this client's
+account cannot reach.
+
+## What is still unconfirmed
+
+``` text
+the published quota numbers   handled by obeying Retry-After
+the create error catalogue    passed through raw; grows with real failures
+API vs dashboard spelling     mitigated by accent-insensitive matching
+                              plus the stored raw value
+```
+
+Mark each of these in the adapter where it is assumed, so the first live call
+proves or disproves it visibly.
+
+## Everything else is already waiting
 
 ``` text
 ShippingProviderInterface   implement it; nothing above it changes
@@ -2877,20 +3025,114 @@ provider API failure
 
 ------------------------------------------------------------------------
 
-# 57. Zedair
+# 57. ZR Express (was "Zedair")
 
 
-Use exactly the same provider abstraction.
+**The section title was wrong.** No Algerian courier called "Zedair" exists —
+repeated searches find nothing, and the provider actually integrated everywhere
+in this market is **ZR Express**. Treat every earlier mention of Zedair,
+including `ENABLE_ZEDAIR` and `ZEDAIR_*` in `.env.example`, as meaning ZR
+Express, and rename them when this section is built.
 
-Implement from Zedair's current official documentation. The same prerequisites
-as §56 apply — documentation, credentials, webhook docs — and the same seams are
-waiting: register it in `Plugin::shippingProviders()` behind `ENABLE_ZEDAIR`, and
-give it its own rows in `ac_geo_provider_destinations`, which is keyed by
-provider precisely so two couriers can number the same commune differently.
+Use exactly the same provider abstraction. If adding this adapter requires a
+change *above* `ShippingProviderInterface`, that is a defect in the abstraction
+and should be fixed there rather than worked around here — §53 exists to make
+this section additive.
 
-If adding this adapter requires a change *above* `ShippingProviderInterface`,
-that is a defect in the abstraction and should be fixed there rather than worked
-around here — §53 exists to make this section additive.
+## Sources
+
+``` text
+1. /mnt/c/Users/MyHomehP/Desktop/work/EL/api        (primary)
+   service/shipping/ZrExpressService.java           64 KB, in production
+   service/dto/shipping/ZrExpress*.java             request/response shapes
+
+2. https://docs.zrexpress.app/llms.txt              (official endpoint index)
+   The docs site is an SPA; llms.txt is the only crawlable artefact and it
+   lists endpoints without schemas.
+
+3. https://api.zrexpress.app/swagger/index.html     (the real specification)
+   The UI is public; the spec at /swagger/docs/v1.0 returns 401, so it needs
+   an authenticated session. If an account ever exists, fetch it — it would
+   close both gaps below at once.
+```
+
+## The API
+
+``` text
+base     https://api.zrexpress.app/api/v1.0
+auth     X-Tenant, X-Api-Key              (headers; Bearer JWT also accepted)
+errors   RFC 7231 problem+json — {type,title,status,detail,traceId}
+
+GET  territories/search                   destination sync source
+GET  hubs/search                          stop desks / pickup points
+GET  rates                                all territories
+GET  rates/{territory}                    one territory
+POST customers  ·  GET customers/search   see the customer step below
+POST parcels    ·  POST parcels/bulk      (bulk max 100)
+GET  parcels/{id}  ·  GET parcels/tracking/{trackingNumber}
+GET  parcels/search  ·  GET parcels/{id}/state-history
+PUT  parcels/{id}/state  ·  DELETE parcels/{id}
+POST parcels/labels/generate-multiple     (max 250, HTML)
+GET  webhooks/endpoints/{id}/secret       signing secret — see gaps
+```
+
+**Destinations are GUIDs, not names.** A parcel needs a `cityTerritoryId`
+(wilaya level) and a `districtTerritoryId` (commune level), both UUIDs from
+`territories/search`. The reference implementation resolves them from names at
+request time through in-memory caches with partial-match fallbacks; that is what
+`ac_geo_provider_destinations` replaces. Store the district UUID as
+`destination_id` and the city UUID in `metadata` — never parse either.
+
+**A parcel needs a customer first.** `customers/search` by phone, then
+`customers/individual` to create if absent, then the parcel carries the customer
+UUID. Two API calls before the parcel exists; both must be idempotent on retry.
+
+Parcel payload, from `ZrExpressParcelRequest.java`:
+
+``` text
+customer{customerId|name,phone{number1,number2,number3}}
+deliveryAddress{cityTerritoryId, districtTerritoryId, street}
+hubId  deliveryType("home"|"pickup-point")  amount  weight{weight}
+externalId  description
+orderedProducts[{productName, quantity, unitPrice, stockType}]
+```
+
+`externalId` is where `ShipmentRequest::$reference` goes — ZR's merchant
+reference, and the idempotency key.
+
+`GET rates/{territory}` returns `toTerritoryId`, `toTerritoryName`,
+`toTerritoryLevel` and `deliveryPrices[{deliveryType, price, discountedPrice}]`.
+**Rates are restricted by the supplier's origin wilaya**: a real 400 from
+production reads *"Suppliers can only request rates for all wilayas or communes
+of their origin wilaya"*. Model that as coverage rather than rediscovering it —
+quote what the account may quote, and say so plainly when it may not.
+
+## Two gaps, and how to work without them
+
+``` text
+the parcel state enumeration
+    Not in llms.txt, and the reference implementation guesses it with
+    substring matching on state.name — contains("livre"), contains("retour")
+    — falling through to "Unknown ZR Express status". That is the same trap
+    §56 documents: "échoué" appears in states that are not failures.
+    Until the list is known: map only what is certain, treat everything
+    else as unmapped rather than guessing, and always store the raw
+    state.name in StatusReport::$providerStatus. An unmapped status must be
+    visible, never silently wrong.
+
+the webhook signature scheme
+    docs confirm GET webhooks/endpoints/{id}/secret exists but not the
+    header name, the algorithm, or what is signed. Do not invent an HMAC.
+    Ship status sync by POLLING parcels/tracking/{trackingNumber}, which
+    needs no signature; add webhooks when the scheme is known.
+    The reference implementation has no ZR webhook handling at all — its
+    validateWebhook() takes a *Yalidine* payload type, which is the
+    abstraction leaking. Do not copy that shape.
+```
+
+`UNSUPPORTED_WILAYAS` is hard-coded in the reference as Illizi, Tindouf, Djanet
+and Bordj Badji Mokhtar. **Do not hard-code it** — the destination sync finds
+which territories exist for this client's account and records the gaps as data.
 
 The core application should not need to know whether the shipment is
 handled by:
