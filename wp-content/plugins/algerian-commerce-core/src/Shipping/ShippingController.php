@@ -49,6 +49,41 @@ final class ShippingController extends AbstractController
             'args' => $this->rateArgs(),
         ]);
 
+        register_rest_route($this->restNamespace(), '/shipping/rules', [
+            [
+                'methods' => 'GET',
+                'callback' => $this->handle([$this, 'indexRules']),
+                'permission_callback' => $guard,
+                'args' => $this->ruleFilterArgs(),
+            ],
+            [
+                'methods' => 'POST',
+                'callback' => $this->handle([$this, 'storeRule']),
+                'permission_callback' => $guard,
+            ],
+        ]);
+
+        register_rest_route($this->restNamespace(), '/shipping/rules/(?P<id>\d+)', [
+            [
+                'methods' => 'GET',
+                'callback' => $this->handle([$this, 'showRule']),
+                'permission_callback' => $guard,
+                'args' => $this->idArg(),
+            ],
+            [
+                'methods' => 'PATCH',
+                'callback' => $this->handle([$this, 'updateRule']),
+                'permission_callback' => $guard,
+                'args' => $this->idArg(),
+            ],
+            [
+                'methods' => 'DELETE',
+                'callback' => $this->handle([$this, 'destroyRule']),
+                'permission_callback' => $guard,
+                'args' => $this->idArg(),
+            ],
+        ]);
+
         register_rest_route($this->restNamespace(), '/orders/(?P<id>\d+)/shipments', [
             [
                 'methods' => 'GET',
@@ -149,6 +184,38 @@ final class ShippingController extends AbstractController
                 'enum' => Destination::DELIVERY_TYPES,
                 'validate_callback' => 'rest_validate_request_arg',
             ],
+            'subtotal' => [
+                'type' => 'string',
+                // A decimal string, like every other amount this API carries.
+                // Without it no free-shipping threshold is applied, because
+                // "what does delivery here cost" and "what does delivering
+                // this basket here cost" are different questions.
+                'pattern' => '^\d+(\.\d{1,4})?$',
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'sanitize_text_field',
+                'description' => 'Goods total, for free-shipping thresholds.',
+            ],
+        ];
+    }
+
+    /** @return array<string, array<string, mixed>> */
+    private function ruleFilterArgs(): array
+    {
+        return $this->idArg('wilaya_id', false) + $this->idArg('commune_id', false) + [
+            'provider' => [
+                'type' => 'string',
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'sanitize_key',
+            ],
+            'delivery_type' => [
+                'type' => 'string',
+                'enum' => Destination::DELIVERY_TYPES,
+                'validate_callback' => 'rest_validate_request_arg',
+            ],
+            'is_active' => [
+                'type' => 'boolean',
+                'validate_callback' => 'rest_validate_request_arg',
+            ],
         ];
     }
 
@@ -176,7 +243,48 @@ final class ShippingController extends AbstractController
             'wilaya_id' => (int) $request->get_param('wilaya_id'),
             'commune_id' => (int) $request->get_param('commune_id'),
             'delivery_type' => (string) $request->get_param('delivery_type'),
+            'subtotal' => (string) $request->get_param('subtotal'),
         ]));
+    }
+
+    public function indexRules(WP_REST_Request $request): WP_REST_Response
+    {
+        $active = $request->get_param('is_active');
+
+        return Response::success(array_values(array_map(
+            static fn (ShippingRule $rule): array => $rule->toArray(),
+            $this->service->listRules([
+                'wilaya_id' => (int) $request->get_param('wilaya_id'),
+                'commune_id' => (int) $request->get_param('commune_id'),
+                'provider' => (string) $request->get_param('provider'),
+                'delivery_type' => (string) $request->get_param('delivery_type'),
+                'is_active' => $active === null ? null : (bool) $active,
+            ])
+        )));
+    }
+
+    public function showRule(WP_REST_Request $request): WP_REST_Response
+    {
+        return Response::success($this->service->getRule((int) $request->get_param('id'))->toArray());
+    }
+
+    public function storeRule(WP_REST_Request $request): WP_REST_Response
+    {
+        return Response::success($this->service->createRule($this->payload($request))->toArray(), 201);
+    }
+
+    public function updateRule(WP_REST_Request $request): WP_REST_Response
+    {
+        return Response::success(
+            $this->service->updateRule((int) $request->get_param('id'), $this->payload($request))->toArray()
+        );
+    }
+
+    public function destroyRule(WP_REST_Request $request): WP_REST_Response
+    {
+        $this->service->deleteRule((int) $request->get_param('id'));
+
+        return Response::success(['deleted' => true, 'id' => (int) $request->get_param('id')]);
     }
 
     public function index(WP_REST_Request $request): WP_REST_Response

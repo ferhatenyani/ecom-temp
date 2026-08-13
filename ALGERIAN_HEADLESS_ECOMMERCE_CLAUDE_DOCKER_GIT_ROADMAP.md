@@ -438,7 +438,7 @@ and before a storefront quotes a price.
 27. COD
 28. Shipping abstraction
 28b. Shipping rules — zones, wilaya and commune pricing,
-     free-shipping thresholds, provider selection (PLAN §14)
+     free-shipping thresholds, provider selection (PLAN §14)  [built]
 29. Yalidine
 30. Zedair
 31. Payment abstraction
@@ -2716,7 +2716,11 @@ Yalidine and Zedair adapters
 
 shipping rules and pricing
     — PLAN §14, and a step the build sequence was missing entirely.
-      Added as §4 step 28b. Needs no provider documentation
+      Added as §4 step 28b and built straight after this section:
+      ac_shipping_rates (migration 005), /shipping/rules CRUD, and
+      RateResolver picking the narrowest matching rule. Deliberately
+      not WooCommerce shipping zones — they key on postcodes, which
+      §51's dataset does not have, and pricing here is per commune
 
 a delivered shipment completing the order
     — an automatic order transition driven by a third party's webhook
