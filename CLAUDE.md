@@ -24,11 +24,17 @@ A COD outcome does not change the order's status; the order's cancellation close
 `CodSubscriber`, which is the direction that keeps `Orders/` unaware of `COD/`. `ENABLE_COD` is not read by
 that module — it gates what checkout offers, which is §58.
 
-Shipping follows the same rule: a parcel's status never moves the order. `ac_shipments` is migration 004 and
-`Schema::VERSION` is 4. Providers implement `Shipping\ShippingProviderInterface` and are registered in
+Shipping follows the same rule: a parcel's status never moves the order. `ac_shipments` is migration 004.
+Providers implement `Shipping\ShippingProviderInterface` and are registered in
 `Plugin::shippingProviders()`, which is the only place a courier's credentials and feature flag are read;
 `ManualProvider` (in-house delivery) is the working implementation that ships today. Everything crossing the
 provider boundary is one of our value objects — an adapter never sees a `WC_Order`.
+
+What the shop *charges* is separate from what a courier quotes: `ac_shipping_rates` (migration 005,
+`Schema::VERSION` is 5) holds the tariff, and `RateResolver` picks the narrowest matching rule — commune beats
+wilaya beats the national fallback, and rules are never added together. `GET /shipping/rates` returns both
+sources, each labelled. Deliberately not WooCommerce shipping zones: those key on postcodes, which the commune
+dataset does not have.
 
 Geographic data is complete: **69 wilayas** (the 2019 reform's 58 plus the eleven former circonscriptions
 administratives, since promoted) and 1,541 communes, with Arabic names, daira and coordinates. Both files are

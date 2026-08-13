@@ -232,13 +232,21 @@ ac_check('an invented delivery type is refused', ac_req('GET', '/shipping/rates'
     'delivery_type' => 'locker',
 ]), 400);
 
-// Empty, and that is the honest answer: an in-house courier publishes no rate
-// API, and what a shop charges for its own delivery is §14's pricing.
+// An in-house courier publishes no rate API, so it contributes no quote of its
+// own. Asserted on the provider's contribution rather than on an empty list,
+// because the shop's own tariff (§14) answers here too and this is a statement
+// about ManualProvider, not about whether a tariff happens to be configured.
 ac_check('in-house delivery quotes nothing', ac_req('GET', '/shipping/rates', null, [
     'wilaya_id' => $wilayaId,
     'commune_id' => $communeId,
 ]), 200, function ($d) {
-    return $d['data'] === [] ?: 'expected no quotes';
+    foreach ($d['data'] as $quote) {
+        if (($quote['source'] ?? '') === 'provider') {
+            return 'in-house delivery quoted ' . wp_json_encode($quote);
+        }
+    }
+
+    return true;
 });
 
 echo PHP_EOL, "=== creating a shipment: validation ===", PHP_EOL;

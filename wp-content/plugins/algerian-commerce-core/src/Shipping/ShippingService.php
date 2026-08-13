@@ -55,7 +55,8 @@ final class ShippingService
         private readonly ProviderRegistry $providers,
         private readonly OrderRepository $orders,
         private readonly GeoRepository $geography,
-        private readonly AuditLogger $audit
+        private readonly AuditLogger $audit,
+        private readonly ShippingRuleRepository $rules
     ) {
     }
 
@@ -262,7 +263,17 @@ final class ShippingService
     }
 
     /**
-     * What a courier charges to reach a destination.
+     * What it costs to deliver to a destination.
+     *
+     * Two sources, both real and routinely in disagreement: this shop's own
+     * tariff (roadmap §4 step 28b) and whatever the courier's rate API says.
+     * The shop is charging the customer; the courier is charging the shop. Both
+     * are returned, each labelled with its `source`, rather than one silently
+     * winning — a client pricing a checkout wants the first, and a manager
+     * deciding which courier to use wants to see both.
+     *
+     * With no `provider`, every configured courier is quoted, which is what
+     * PLAN.md §14's "provider selection" needs to be possible at all.
      *
      * @param array<string, mixed> $criteria
      * @return list<array<string, mixed>>
@@ -271,18 +282,230 @@ final class ShippingService
     {
         Permissions::assert(Capabilities::MANAGE_SHIPPING);
 
-        $provider = $this->providers->get((string) ($criteria['provider'] ?? ''));
-
         $destination = $this->validatedDestination(new Destination(
             (int) ($criteria['wilaya_id'] ?? 0),
             (int) ($criteria['commune_id'] ?? 0),
             (string) ($criteria['delivery_type'] ?? Destination::HOME)
         ));
 
-        return array_values(array_map(
-            static fn (RateQuote $quote): array => $quote->toArray(),
-            $provider->getShippingRates($destination)
-        ));
+        $requested = (string) ($criteria['provider'] ?? '');
+        $subtotal = (string) ($criteria['subtotal'] ?? '');
+
+        // Resolved once for every courier: a shop's tariff rarely depends on
+        // which van carries the parcel, and reading the table per provider
+        // would make the answer depend on how many are configured.
+        $rules = $this->rules->active();
+        $decimals = self::priceDecimals();
+        $currency = self::currency();
+
+        $names = $requested === ''
+            ? $this->providers->names()
+            : [$this->providers->get($requested)->name()];
+
+        $quotes = [];
+
+        foreach ($names as $name) {
+            $rule = RateResolver::resolve($rules, $destination, $name);
+
+            if ($rule !== null) {
+                $quotes[] = ['provider' => $name]
+                    + RateResolver::quote($rule, $subtotal, $decimals, $currency)->toArray();
+            }
+
+            foreach ($this->providers->get($name)->getShippingRates($destination) as $quote) {
+                $quotes[] = ['provider' => $name] + $quote->toArray();
+            }
+        }
+
+        return $quotes;
+    }
+
+    /**
+     * The shop's tariff, narrowest rule first.
+     *
+     * @param array<string, mixed> $filters
+     * @return list<ShippingRule>
+     */
+    public function listRules(array $filters): array
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        return $this->rules->all($filters);
+    }
+
+    public function getRule(int $id): ShippingRule
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        return $this->requireRule($id);
+    }
+
+    /** @param array<string, mixed> $payload */
+    public function createRule(array $payload): ShippingRule
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        $rule = ShippingRuleInput::forCreate($payload)->toRule(self::now());
+
+        $this->guardRulePlaces($rule);
+        $this->guardRuleProvider($rule);
+        $this->guardNoDuplicateScope($rule);
+
+        $id = $this->rules->insert($rule);
+
+        if ($id === null) {
+            throw ApiException::internal('The shipping rule could not be saved.');
+        }
+
+        $this->audit->record('shipping.rule_created', 'shipping_rule', $id, $rule->toArray());
+
+        return $this->rules->find($id) ?? throw ApiException::internal('The rule could not be read back.');
+    }
+
+    /** @param array<string, mixed> $payload */
+    public function updateRule(int $id, array $payload): ShippingRule
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        $existing = $this->requireRule($id);
+        $input = ShippingRuleInput::forUpdate($payload);
+
+        if ($input->isEmpty()) {
+            throw ApiException::invalidRequest('No supported fields were provided.');
+        }
+
+        $updated = $input->applyTo($existing, self::now());
+
+        $this->guardRulePlaces($updated);
+        $this->guardRuleProvider($updated);
+        $this->guardNoDuplicateScope($updated);
+
+        if (!$this->rules->update($updated)) {
+            throw ApiException::internal('The shipping rule could not be updated.');
+        }
+
+        $this->audit->record('shipping.rule_updated', 'shipping_rule', $id, [
+            'fields' => array_keys($input->fields),
+            'before' => $existing->toArray(),
+            'after' => $updated->toArray(),
+        ]);
+
+        return $this->rules->find($id) ?? $updated;
+    }
+
+    /**
+     * Delete a rule.
+     *
+     * Genuinely deleted, unlike an order or a shipment: a tariff row is
+     * configuration, not the record of something that happened, and a shop
+     * changing its prices is not rewriting history. The audit row keeps what
+     * the rule said, which is what anyone asking "why was this customer charged
+     * that" actually needs.
+     */
+    public function deleteRule(int $id): void
+    {
+        Permissions::assert(Capabilities::MANAGE_SHIPPING);
+
+        $rule = $this->requireRule($id);
+
+        if (!$this->rules->delete($id)) {
+            throw ApiException::internal('The shipping rule could not be deleted.');
+        }
+
+        $this->audit->record('shipping.rule_deleted', 'shipping_rule', $id, $rule->toArray());
+    }
+
+    private function requireRule(int $id): ShippingRule
+    {
+        $rule = $this->rules->find($id);
+
+        if ($rule === null) {
+            throw ApiException::notFound('No shipping rule with that id.');
+        }
+
+        return $rule;
+    }
+
+    /**
+     * A rule may only name places that exist.
+     *
+     * Zero is not checked, because zero is how a rule says "anywhere" — that is
+     * the national fallback, not a missing id.
+     */
+    private function guardRulePlaces(ShippingRule $rule): void
+    {
+        if ($rule->wilayaId !== 0 && $this->geography->findWilaya($rule->wilayaId) === null) {
+            throw ApiException::invalidRequest('The shipping rule is invalid.', [
+                'fields' => ['wilaya_id' => "No wilaya with id {$rule->wilayaId}."],
+            ]);
+        }
+
+        if ($rule->communeId === 0) {
+            return;
+        }
+
+        $commune = $this->geography->findCommune($rule->communeId);
+
+        if ($commune === null) {
+            throw ApiException::invalidRequest('The shipping rule is invalid.', [
+                'fields' => ['commune_id' => "No commune with id {$rule->communeId}."],
+            ]);
+        }
+
+        if ((int) $commune['wilaya_id'] !== $rule->wilayaId) {
+            throw ApiException::invalidRequest('The shipping rule is invalid.', [
+                'fields' => ['wilaya_id' => 'That commune belongs to a different wilaya.'],
+                'commune_wilaya_id' => (int) $commune['wilaya_id'],
+            ]);
+        }
+    }
+
+    /**
+     * A rule naming a courier must name one this shop has.
+     *
+     * Otherwise the rule is dead on arrival — it can never match — and it looks
+     * exactly like a rule that works.
+     */
+    private function guardRuleProvider(ShippingRule $rule): void
+    {
+        if ($rule->provider === '' || $this->providers->has($rule->provider)) {
+            return;
+        }
+
+        throw ApiException::invalidRequest('The shipping rule is invalid.', [
+            'fields' => ['provider' => "Unknown provider \"{$rule->provider}\"."],
+            'available' => $this->providers->names(),
+        ]);
+    }
+
+    /**
+     * Two prices for the same destination is a question with two answers.
+     *
+     * The table's unique key would refuse it anyway; this exists so the caller
+     * is told which rule collides instead of being handed a database error.
+     */
+    private function guardNoDuplicateScope(ShippingRule $rule): void
+    {
+        $conflict = $this->rules->findConflict($rule);
+
+        if ($conflict === null) {
+            return;
+        }
+
+        throw ApiException::conflict('Another rule already covers exactly that destination.', [
+            'rule_id' => $conflict->id,
+            'amount' => $conflict->amount,
+        ]);
+    }
+
+    private static function priceDecimals(): int
+    {
+        return function_exists('wc_get_price_decimals') ? (int) wc_get_price_decimals() : 2;
+    }
+
+    private static function currency(): string
+    {
+        return function_exists('get_woocommerce_currency') ? (string) get_woocommerce_currency() : 'DZD';
     }
 
     /** @param array<string, mixed> $metadata */

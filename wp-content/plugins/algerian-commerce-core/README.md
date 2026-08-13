@@ -15,10 +15,10 @@ PSR-4 autoloading, configuration and feature flags, logging with secret redactio
 the migration runner, roles and capabilities, and audit recording.
 
 Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (authentication), §50
-(orders and customers), §51 (Algerian geography), §52 (COD) and §53 (the shipping abstraction) are
-in, along with rate limiting. Not implemented yet: 2FA, customer sessions, the Yalidine and Zedair
-adapters (§56, §57 — they need each provider's current official docs), shipping rules and pricing
-(§14), payments, analytics, CMS.
+(orders and customers), §51 (Algerian geography), §52 (COD), §53 (the shipping abstraction) and §4
+step 28b (shipping rules and pricing, PLAN §14) are in, along with rate limiting. Not implemented
+yet: 2FA, customer sessions, the Yalidine and Zedair adapters (§56, §57 — they need each provider's
+current official docs), payments, analytics, CMS.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -45,7 +45,9 @@ src/COD/                     CodController, CodService, CodStatus, CodState, Cod
 src/Shipping/                ShippingProviderInterface, ShippingController, ShippingService,
                              ShipmentStatus, Destination, ShipmentRequest, ShipmentResult,
                              StatusReport, RateQuote, Shipment, ShipmentInput,
-                             ProviderRegistry, ManualProvider, ShipmentRepository
+                             ProviderRegistry, ManualProvider, ShipmentRepository,
+                             ShippingRule, ShippingRuleInput, RateResolver,
+                             ShippingRuleRepository
 src/Geography/               LocationController, GeoService, GeoDataset, GeoSlug,
                              GeoRepository, GeoImporter
 data/algeria/                wilayas.json, communes.json, provider-destinations.json,
@@ -90,7 +92,12 @@ tests/Unit/                  unit tests — no WordPress required
 | POST | `/orders/{id}/cod/attempts` | `ac_manage_orders` | record a confirmation call → 201 (`outcome`, `reason`) |
 | GET | `/cod/statistics` | `ac_view_analytics` | the COD funnel (`customer_id`, `date_from`, `date_to`) |
 | GET | `/shipping/providers` | `ac_manage_shipping` | the couriers this shop has, and which is default |
-| GET | `/shipping/rates` | `ac_manage_shipping` | quotes for a destination (`wilaya_id`, `commune_id`, `delivery_type`, `provider`) |
+| GET | `/shipping/rates` | `ac_manage_shipping` | quotes for a destination (`wilaya_id`, `commune_id`, `delivery_type`, `provider`, `subtotal`) |
+| GET | `/shipping/rules` | `ac_manage_shipping` | the shop's tariff, narrowest first (`wilaya_id`, `commune_id`, `provider`, `delivery_type`, `is_active`) |
+| POST | `/shipping/rules` | `ac_manage_shipping` | add a rate rule → 201 |
+| GET | `/shipping/rules/{id}` | `ac_manage_shipping` | read |
+| PATCH | `/shipping/rules/{id}` | `ac_manage_shipping` | change a price, threshold or estimate |
+| DELETE | `/shipping/rules/{id}` | `ac_manage_shipping` | remove a rule |
 | GET | `/orders/{id}/shipments` | `ac_manage_shipping` | the order's parcels, newest first |
 | POST | `/orders/{id}/shipments` | `ac_manage_shipping` | hand a parcel to a courier → 201 |
 | GET | `/shipments` | `ac_manage_shipping` | list (paginated; `order_id`, `provider`, `status`, `tracking_number`, `date_from`, `date_to`) |
@@ -1032,6 +1039,61 @@ idempotency guard, but a shipment created locally and not yet accepted has an em
 treats `''` as a value rather than as absent, so the second such row would be refused. "One live
 shipment per order" is a business rule with a reason to give the caller, so the service enforces it
 and answers 409.
+
+### What the shop charges — the tariff
+
+Roadmap §4 step 28b, docs/PLAN.md §14. A rule is one price for one kind of
+destination, and `0`/`''` mean "any", so a real tariff is a national rate plus
+its exceptions rather than sixty-nine rows:
+
+```bash
+curl -u "$CRED" -X POST .../shipping/rules -d '{"amount":"800","free_over":"10000"}'
+curl -u "$CRED" -X POST .../shipping/rules -d '{"wilaya_id":16,"amount":"500","estimated_days":2}'
+curl -u "$CRED" -X POST .../shipping/rules -d '{"wilaya_id":16,"commune_id":1234,"amount":"300"}'
+
+curl -u "$CRED" ".../shipping/rates?wilaya_id=16&commune_id=1234&subtotal=2000.00"
+# [{"provider":"manual","service":"standard","label":"Delivery","amount":"300.00",
+#   "currency":"DZD","estimated_days":null,"source":"rules","free_shipping":false}]
+```
+
+**The narrowest matching rule wins, and only that one.** Rules are not added
+together and do not fall back field by field: a shop that has priced a commune
+means that price, not that price plus the wilaya's. Every combination of
+dimensions scores uniquely — commune 8, wilaya 4, delivery type 2, provider 1 —
+so two rules can never tie, which matters because a tie would make the price
+depend on row order and change when an unrelated rule was edited. A narrower
+*place* deliberately outranks a courier-specific rule: where a parcel is going
+is the stronger fact about what it costs.
+
+**Not WooCommerce shipping zones**, and not by preference. WooCommerce keys a
+zone on country, state and *postcode*; §51's dataset has no postal codes at all,
+and pricing here is routinely per commune, which WooCommerce has no level for.
+The storefront is headless, so WC's cart never computes this. Modelling 1,541
+communes as postcode lists inside a structure designed for a different shape
+would be forking a WooCommerce model rather than using one — which is what
+CLAUDE.md forbids. A custom table for a genuinely custom domain is the sanctioned
+answer.
+
+**Free-shipping thresholds are compared in integer minor units.** `4999.99 >=
+5000.00` on floats is a comparison of two numbers that are not what they were
+written as, and the customer one centime short of free delivery is exactly the
+one who notices. A basket *exactly* at the threshold qualifies: "free over 5000"
+is read by a customer as "spend 5000 and delivery is free", and charging that
+basket is the reading nobody expects. No threshold is applied when no `subtotal`
+is given — "what does delivery here cost" and "what does delivering *this basket*
+here cost" are different questions, and answering the second with an empty basket
+quotes full price to someone who qualifies.
+
+The quote endpoint returns the shop's own price **and** the courier's, each
+labelled with its `source`. Both are real and they routinely disagree: the shop
+is charging the customer, the courier is charging the shop. With no `provider`,
+every configured courier is quoted, which is what PLAN §14's "provider selection"
+needs to be possible at all.
+
+`is_active` suspends a rule without losing it; deleting one is a real delete,
+because a tariff row is configuration rather than the record of something that
+happened — and the audit trail keeps what it said, which is what anyone asking
+"why was this customer charged that" actually needs.
 
 ### What §56 plugs into
 

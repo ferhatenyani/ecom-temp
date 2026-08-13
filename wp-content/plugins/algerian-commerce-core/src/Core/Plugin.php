@@ -46,6 +46,7 @@ use AlgerianCommerce\Shipping\ManualProvider;
 use AlgerianCommerce\Shipping\ProviderRegistry;
 use AlgerianCommerce\Shipping\ShipmentRepository;
 use AlgerianCommerce\Shipping\ShippingController;
+use AlgerianCommerce\Shipping\ShippingRuleRepository;
 use AlgerianCommerce\Shipping\ShippingService;
 use AlgerianCommerce\Products\ProductCategoryController;
 use AlgerianCommerce\Products\ProductController;
@@ -96,6 +97,7 @@ final class Plugin
     private ?CustomerRepository $customerRepository = null;
     private ?CustomerService $customerService = null;
     private ?ShipmentRepository $shipmentRepository = null;
+    private ?ShippingRuleRepository $shippingRuleRepository = null;
     private ?ProviderRegistry $shippingProviders = null;
     private ?ShippingService $shippingService = null;
     private ?CodRepository $codRepository = null;
@@ -194,6 +196,13 @@ final class Plugin
         return $this->shipmentRepository ??= new ShipmentRepository($wpdb);
     }
 
+    public function shippingRuleRepository(): ShippingRuleRepository
+    {
+        global $wpdb;
+
+        return $this->shippingRuleRepository ??= new ShippingRuleRepository($wpdb);
+    }
+
     /**
      * The couriers this shop has, in preference order — the first is the
      * default.
@@ -227,7 +236,8 @@ final class Plugin
             $this->shippingProviders(),
             $this->orderRepository(),
             $this->geoRepository(),
-            $this->auditLogger()
+            $this->auditLogger(),
+            $this->shippingRuleRepository()
         );
     }
 
