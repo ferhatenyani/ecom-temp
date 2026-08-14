@@ -34,11 +34,10 @@ namespace AlgerianCommerce\Integrations\Yalidine;
 final class YalidineSettings
 {
     /**
-     * ASSUMPTION (unverified — no merchant account, no sandbox): the parcel
-     * payload's dimension and weight fields are optional and may be omitted.
-     * Sources 1 and 2 both send them only when set, which is why the defaults
-     * here are 0 = "do not send". If the live API turns out to require them,
-     * this is the one place to give them a real default.
+     * Verified 2026-08-14: the dimension and weight fields are optional. A
+     * parcel created without any of them was accepted and read back with
+     * `length`, `width`, `height` and `weight` all null — as are the account's
+     * real parcels. The defaults here are therefore 0 = "do not send".
      */
     public const DEFAULTS = [
         'origin_wilaya_id' => 0,
@@ -63,12 +62,21 @@ final class YalidineSettings
         /**
          * Whether the courier is told delivery is already paid for.
          *
-         * ASSUMPTION (unverified): `freeshipping: true` means Yalidine collects
-         * exactly `price` and does not add its own delivery fee on top. That is
-         * the correct default *for this codebase* — what a shop charges for
-         * delivery is its own tariff (`ac_shipping_rates`), it is already inside
-         * the order total, and the driver must not collect it twice. A client
-         * who wants Yalidine's fee added at the door sets this false.
+         * Partly verified 2026-08-14. The flag is accepted and read back as
+         * `freeshipping: 1`, and the parcel still reports a `delivery_fee` of
+         * its own (650 DZD, Béjaïa → Alger Centre) — so the fee is always
+         * *quoted*; what the flag changes is who absorbs it. The reference
+         * implementation's production parcels are the mirror image: they send
+         * `freeshipping: 0` with `price` set to the goods alone, and Yalidine
+         * adds its fee at the door.
+         *
+         * ASSUMPTION (unverified): that with the flag on, the driver collects
+         * exactly `price`. It cannot be read back from the API — only from a
+         * delivered parcel's payout — but it is the correct default *for this
+         * codebase* either way: what a shop charges for delivery is its own
+         * tariff (`ac_shipping_rates`), it is already inside the order total,
+         * and the driver must not collect it twice. A client who wants
+         * Yalidine's fee charged at the door sets this false.
          */
         public readonly bool $freeshipping,
         public readonly int $length,

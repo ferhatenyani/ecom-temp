@@ -30,6 +30,15 @@ final class DestinationSyncPlan
     public const NOT_DELIVERABLE = 'not_deliverable';
 
     /**
+     * Placed by its official code because the two names disagree.
+     *
+     * Not a failure — the row is written and parcels to it work — but it is the
+     * one match nobody chose deliberately, so it is surfaced rather than left
+     * for someone to notice that a courier calls Algiers *Alger*.
+     */
+    public const MATCHED_BY_CODE = 'matched_by_code';
+
+    /**
      * @param list<array<string, mixed>> $rows  ready for GeoRepository::upsertDestinations()
      * @param list<array<string, mixed>> $gaps  each with `type`, `kind` and enough naming to act on
      * @param array<string, int>         $fetched how many places of each kind the provider published

@@ -62,7 +62,7 @@ final class DestinationMatcherTest extends TestCase
         self::assertSame('Bouzaréah', $commune['metadata']['name']);
     }
 
-    /** Ids are stored, never interpreted — roadmap §56. */
+    /** The name wins, whatever the courier's numbering says. */
     public function testAPlaceIsMatchedByNameRatherThanByItsId(): void
     {
         $plan = $this->plan([
@@ -72,7 +72,83 @@ final class DestinationMatcherTest extends TestCase
         ]);
 
         self::assertNotNull($this->rowFor($plan, 16, 0));
+        self::assertSame('name', $this->rowFor($plan, 16, 0)['metadata']['matched_by']);
         self::assertSame('9901', $this->rowFor($plan, 16, 513)['destination_id']);
+    }
+
+    /**
+     * The case a live run turned up: the courier says *Alger*, our dataset —
+     * which took its wilaya names from WooCommerce — says *Algiers*, and the
+     * mismatch silently took 57 communes with it. The wilaya code is a real
+     * natural key, verified as identical on both sides across a whole published
+     * list, so it breaks the tie.
+     */
+    public function testAWilayaTheNameMissedIsPlacedByItsOfficialCode(): void
+    {
+        $plan = DestinationMatcher::plan(
+            'yalidine',
+            [
+                new ProviderPlace(ProviderPlace::WILAYA, '16', 'Alger'),
+                new ProviderPlace(ProviderPlace::COMMUNE, '1601', 'Bouzareah', '16'),
+            ],
+            [['id' => 16, 'name' => 'Algiers', 'slug' => 'algiers']],
+            [['id' => 512, 'wilaya_id' => 16, 'name' => 'Bouzareah', 'slug' => 'bouzareah']]
+        );
+
+        $wilaya = $this->rowFor($plan, 16, 0);
+
+        self::assertNotNull($wilaya);
+        self::assertSame('code', $wilaya['metadata']['matched_by']);
+        // Their spelling is still what gets stored — it is what a parcel has to
+        // be addressed with.
+        self::assertSame('Alger', $wilaya['metadata']['name']);
+        // And the commune underneath it is reachable again, which is the point.
+        self::assertNotNull($this->rowFor($plan, 16, 512));
+
+        // Reported, not silent: nobody chose this match.
+        $reported = $plan->gapsOfType(DestinationSyncPlan::MATCHED_BY_CODE);
+        self::assertCount(1, $reported);
+        self::assertSame('Alger', $reported[0]['provider_name']);
+        self::assertSame('Algiers', $reported[0]['name']);
+    }
+
+    /**
+     * The failure the "never parse their ids" rule was written against: a
+     * courier whose numbering has drifted must not be able to hand one of our
+     * wilayas to a second place that another of its names already claimed.
+     */
+    public function testACodeCannotStealAWilayaThatANameAlreadyClaimed(): void
+    {
+        $plan = $this->plan([
+            new ProviderPlace(ProviderPlace::WILAYA, '99', 'Alger'),
+            // Numbered 16 but called something we do not know: 16 is taken.
+            new ProviderPlace(ProviderPlace::WILAYA, '16', 'Wilaya Fantôme'),
+        ]);
+
+        self::assertSame('name', $this->rowFor($plan, 16, 0)['metadata']['matched_by']);
+        self::assertSame('99', $this->rowFor($plan, 16, 0)['destination_id']);
+        self::assertSame([], $plan->gapsOfType(DestinationSyncPlan::MATCHED_BY_CODE));
+        self::assertCount(1, $plan->gapsOfType(DestinationSyncPlan::PROVIDER_UNMATCHED));
+    }
+
+    /**
+     * Communes get no code fallback: their ids are the courier's own numbering
+     * with no national equivalent to compare against. The nearest name we hold
+     * is offered as a hint for a person to judge — never applied.
+     */
+    public function testAnUnmatchedCommuneIsReportedWithItsNearestNeighbour(): void
+    {
+        $plan = $this->plan([
+            new ProviderPlace(ProviderPlace::WILAYA, '16', 'Alger'),
+            new ProviderPlace(ProviderPlace::COMMUNE, '1601', 'Bab Ezouar', '16'),
+        ]);
+
+        self::assertNull($this->rowFor($plan, 16, 513));
+
+        $gap = $plan->gapsOfType(DestinationSyncPlan::PROVIDER_UNMATCHED)[0];
+
+        self::assertSame('no_commune_of_that_name', $gap['reason']);
+        self::assertStringContainsString('Bab Ezzouar', $gap['nearest']);
     }
 
     public function testAStopDeskIsRecordedAgainstTheCommuneItSitsIn(): void

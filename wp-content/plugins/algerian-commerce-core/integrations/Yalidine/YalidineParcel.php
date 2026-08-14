@@ -60,14 +60,15 @@ final class YalidineParcel
 
         $payload = [
             /*
-             * The merchant reference, not the order id.
+             * The merchant reference, not the order id — and it is also the key
+             * the create response comes back under.
              *
-             * ASSUMPTION (unverified): Yalidine treats a repeated `order_id` as
-             * the same parcel, so a retried create returns the one it already
-             * made rather than putting a second van on the road. Every courier
-             * in this market offers a merchant reference and most behave this
-             * way; ShippingService's one-live-shipment-per-order rule is what
-             * actually holds the line on our side until this is proven.
+             * **Not an idempotency key.** Verified 2026-08-14: posting the same
+             * `order_id` twice produced two parcels with two tracking numbers.
+             * Yalidine will happily make a duplicate, so the guard is ours —
+             * `YalidineProvider::findByReference()` looks the reference up
+             * before creating, and ShippingService's one-live-shipment-per-order
+             * rule sits behind that.
              */
             'order_id' => $request->reference !== '' ? $request->reference : (string) $request->orderId,
             'from_wilaya_name' => $originWilaya->name(),
@@ -123,9 +124,9 @@ final class YalidineParcel
     /**
      * Algerian mobile numbers as Yalidine wants them: `0XXXXXXXXX`.
      *
-     * ASSUMPTION (unverified, but from a service running in production against
-     * the live API): Yalidine expects the national form with the leading zero,
-     * not E.164. Orders here can carry either, since a checkout takes whatever
+     * From a service running in production against the live API, and a parcel
+     * created in that form was accepted on 2026-08-14. Whether E.164 would
+     * *also* be accepted was not tested — one shape that works is enough. Orders here can carry either, since a checkout takes whatever
      * a customer types, so both are normalised to one shape and anything
      * unrecognisable is passed through untouched — a wrong-looking phone number
      * that Yalidine rejects is better than a "corrected" one that reaches a

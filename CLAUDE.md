@@ -31,15 +31,25 @@ Providers implement `Shipping\ShippingProviderInterface` and are registered in
 `ManualProvider` (in-house delivery) and `Integrations\Yalidine\YalidineProvider` both ship today. Everything
 crossing the provider boundary is one of our value objects — an adapter never sees a `WC_Order`.
 
-Yalidine (§56) was written with **no merchant account and no sandbox**, from three agreeing implementations
-rather than from memory (§54 forbids memory, not working code). Every point they are silent on is marked
-`ASSUMPTION (unverified)` in `integrations/Yalidine/` — `grep -rn ASSUMPTION integrations/Yalidine` — so the
-first live call proves or disproves each one. Do not quietly delete one of those markers; confirm it first.
+Yalidine (§56) was written with no merchant account, from three agreeing implementations rather than from
+memory (§54 forbids memory, not working code), and **verified against the live API on 2026-08-14** with
+another project's credentials. What is still unproven is marked `ASSUMPTION (unverified)` in
+`integrations/Yalidine/` — `grep -rn ASSUMPTION integrations/Yalidine` — and what was proven says so with the
+date. Do not delete either kind of marker without evidence. Three assumptions were **wrong** and the code
+now reflects reality: `GET parcels/{tracking}` is wrapped in `{data:[…]}` (a missing parcel is a 200 with
+`total_data: 0`, not a 404); `order_id` is **not** an idempotency key, so the adapter runs
+`GET parcels/?order_id=` before creating; and `DELETE parcels/{tracking}` exists, so cancellation works.
+The quota is published on every response (`second/minute/hour/day-quota-left`, 5/50/1000/10000), which is
+why the poller batches 25.
 A courier's coverage is **data it publishes**, loaded by `wp algerian-commerce sync-destinations` into
 `ac_geo_provider_destinations`, including its own spelling of every wilaya and commune, because Yalidine
-matches those names exactly and rejects a mismatch with an empty array and no message. Never hard-code a
-wilaya-name table or a set of unsupported wilayas. Cancellation is refused rather than invented: no source
-documents that endpoint. Status sync is a poll (`wp algerian-commerce sync-shipments`, plus an hourly cron);
+matches those names exactly. Never hard-code a wilaya-name table or a set of unsupported wilayas. Commune
+matching is by accent-folded name and never fuzzy — the report names the nearest candidate for a person to
+judge. A **wilaya** may also match on its official code, which the live run showed identical to the
+courier's id in 54 of 54 cases: name first, code only as a tie-break, and every such row reports itself.
+Two known coverage gaps are data, not bugs: ~338 communes are transliteration variance, and 95 sit in the
+11 wilayas created after 2019 that Yalidine still files under their old parent.
+Status sync is a poll (`wp algerian-commerce sync-shipments`, plus an hourly cron);
 the webhook waits for §55's review, since Yalidine's `security_token` is a shared secret in the body rather
 than a signature. Per-client settings are the `ac_yalidine_settings` option — origin wilaya, insurance,
 parcel defaults — never `.env` and never constants, because the plugin is cloned per client.

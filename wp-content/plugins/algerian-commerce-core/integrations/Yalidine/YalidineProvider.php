@@ -25,15 +25,26 @@ use AlgerianCommerce\Shipping\StatusReport;
  * `ShippingProviderInterface`, receives our value objects, and returns ours.
  * `ShippingService` still says *create shipment*.
  *
- * ## What this was written from
+ * ## What this was written from, and what has since been verified
  *
- * There is **no merchant account and no sandbox**, so nothing here has been
- * confirmed against the live API. Roadmap §54 forbids writing an adapter from
- * memory; it does not forbid writing one from working code, and three
- * independent implementations agree on every endpoint and field name used here
- * — chiefly a Spring Boot service running in production against the live API.
- * Every point where they are silent is marked `ASSUMPTION (unverified)` in the
- * code, so the first live call proves or disproves each one visibly:
+ * Written from three independent implementations that agree on every endpoint
+ * and field name — chiefly a Spring Boot service running in production against
+ * the live API — because roadmap §54 forbids writing an adapter from memory but
+ * not from working code. Every point where they were silent was marked
+ * `ASSUMPTION (unverified)`.
+ *
+ * **On 2026-08-14 those markers were tested against the live API**, using the
+ * merchant credentials of that same Spring Boot project, with its owner's
+ * permission. Most were confirmed; three were wrong and are corrected here:
+ *
+ * ```
+ * GET parcels/{tracking}   wrapped in {data:[…]}, not the bare object assumed
+ * order_id                 NOT idempotent — a repeat creates a second parcel
+ * DELETE parcels/{t}       exists, so cancellation is real after all
+ * ```
+ *
+ * What remains marked is what a single afternoon against one account cannot
+ * settle:
  *
  * ```
  * grep -rn 'ASSUMPTION' integrations/Yalidine
@@ -53,13 +64,14 @@ use AlgerianCommerce\Shipping\StatusReport;
  *  - **Statuses are mapped by whole label, never by substring.** See
  *    `YalidineStatusMap`, and the two traps it exists to avoid.
  *
- * ## What it deliberately does not do
+ * ## Idempotency is ours, because it is not theirs
  *
- * `cancelShipment()` refuses. None of the three sources documents a cancel or
- * delete endpoint, and §56's own list of what they agree on does not contain
- * one. Inventing a `DELETE parcels/{tracking}` would be a guess whose failure
- * mode is destroying a real parcel record, so the operator is told to cancel in
- * the Yalidine dashboard and mark the shipment cancelled here.
+ * Sending the same `order_id` twice produced two parcels with two tracking
+ * numbers, so the merchant reference is *not* an idempotency key — the belief
+ * §53 and §56 were both written under. What is true is that
+ * `GET parcels/?order_id=` finds a parcel by our reference, so this adapter
+ * looks before it creates: a retry after a lost response returns the parcel
+ * that already exists instead of putting a second van on the road.
  */
 final class YalidineProvider implements ShippingProviderInterface, DestinationCatalogueInterface
 {
@@ -103,11 +115,13 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
      * Hand a parcel to Yalidine.
      *
      * `POST parcels/` takes an **array** of parcels and answers with an
-     * **object keyed by `order_id`** — ours, the merchant reference — which is
-     * how the result is found. An empty array in response means the request was
-     * rejected outright, almost always because `to_commune_name` did not match
-     * a Yalidine commune exactly; that gets a named error of its own, because
-     * "unexpected response" would send an operator looking at the wrong thing.
+     * **object keyed by `order_id`** — ours, the merchant reference — whose
+     * entry is `{success, order_id, tracking, import_id, label, labels,
+     * message}`. Verified 2026-08-14, including the failure: a commune name
+     * Yalidine does not know comes back as that same object with
+     * `success: false` and a message naming the field, which is a far better
+     * answer than the bare `[]` the production implementation logged. Both are
+     * handled — the empty array is rare, and it was seen in the wild.
      */
     public function createShipment(ShipmentRequest $request): ShipmentResult
     {
@@ -120,6 +134,12 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
 
         $stopdeskId = $request->destination->isDesk() ? $this->requireStopDesk($toCommune) : null;
         $reference = $request->reference !== '' ? $request->reference : (string) $request->orderId;
+
+        $existing = $this->findByReference($reference);
+
+        if ($existing !== null) {
+            return $existing;
+        }
 
         $payload = YalidineParcel::payload($request, $origin, $toWilaya, $toCommune, $this->settings, $stopdeskId);
 
@@ -137,7 +157,7 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
 
             throw new ApiException(
                 'yalidine_parcel_rejected',
-                'Yalidine rejected this parcel without giving a reason, which usually means it does not recognise the destination. Re-run the destination sync for this commune.',
+                'Yalidine rejected this parcel without giving a reason. Re-run the destination sync for this commune.',
                 400,
                 [
                     'provider' => self::NAME,
@@ -211,20 +231,48 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
     }
 
     /**
-     * Refused, with the reason — see the class docblock.
+     * `DELETE parcels/{tracking}`.
      *
-     * Not `false`: that means "the courier declined", and `ShippingService`
-     * turns it into "the provider will not cancel this shipment", which would
-     * be us putting words in Yalidine's mouth about a call nobody made.
+     * This adapter first refused to cancel at all: no source documented the
+     * endpoint, and §54 forbids inventing one whose failure mode is destroying a
+     * real parcel. Verified on 2026-08-14 — it exists, and answers
+     * `[{"tracking": "…", "deleted": true}]`, or `deleted: false` with a reason
+     * when it will not.
+     *
+     * `false` rather than an exception for that second case, which is exactly
+     * what the interface asks for: a parcel already collected is a legitimate
+     * refusal, not a fault, and `ShippingService` turns it into a 409 that keeps
+     * the shipment live — because the parcel *is* still live.
      */
     public function cancelShipment(string $providerShipmentId): bool
     {
-        throw new ApiException(
-            'cancel_unsupported',
-            'Cancelling a Yalidine parcel is not part of the API surface this adapter was built from. Cancel it in the Yalidine dashboard, then mark this shipment cancelled.',
-            409,
-            ['provider' => self::NAME]
-        );
+        $response = $this->client->delete('parcels/' . rawurlencode($providerShipmentId));
+
+        // A list of results, one per tracking number: the endpoint takes
+        // several, and we send one.
+        $result = is_array($response) ? ($response[0] ?? null) : null;
+
+        if (!is_array($result)) {
+            throw new ApiException(
+                'provider_response_invalid',
+                'Yalidine did not say whether the parcel was cancelled.',
+                502,
+                ['provider' => self::NAME]
+            );
+        }
+
+        if (empty($result['deleted'])) {
+            $this->logger->warning('Yalidine would not cancel a parcel', [
+                'tracking' => $providerShipmentId,
+                'reason' => isset($result['reason']) && is_scalar($result['reason'])
+                    ? (string) $result['reason']
+                    : '',
+            ]);
+
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -353,16 +401,42 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
     /**
      * `GET parcels/{tracking}`.
      *
-     * ASSUMPTION (unverified): the single-parcel endpoint answers with the
-     * parcel object itself. The list form of the same endpoint wraps rows in
-     * `data`, so both shapes are accepted — one of them is right, and guessing
-     * wrong would turn every status poll into an error.
+     * Verified 2026-08-14: the answer is the **list envelope**,
+     * `{has_more, total_data, data: [ … ], links}`, with the parcel as its only
+     * row — not the bare object this adapter first assumed. A missing parcel is
+     * a 200 with `total_data: 0`, not a 404, so "not found" has to be read from
+     * the body rather than the status.
+     *
+     * The bare-object form is still accepted, because it costs one line and the
+     * defensive branch is what kept this working when the assumption turned out
+     * to be wrong.
      *
      * @return array<string, mixed>
      */
     private function parcel(string $tracking): array
     {
-        $response = $this->client->get('parcels/' . rawurlencode($tracking));
+        $parcel = $this->findParcel('parcels/' . rawurlencode($tracking));
+
+        if ($parcel === null) {
+            throw new ApiException(
+                'provider_not_found',
+                'Yalidine has no record of that parcel.',
+                404,
+                ['provider' => self::NAME]
+            );
+        }
+
+        return $parcel;
+    }
+
+    /**
+     * The first parcel a query returns, or null when it returns none.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function findParcel(string $path): ?array
+    {
+        $response = $this->client->get($path);
 
         if (!is_array($response)) {
             throw new ApiException(
@@ -373,22 +447,81 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
             );
         }
 
-        if (isset($response['data']) && is_array($response['data'])) {
-            $first = $response['data'][0] ?? null;
+        if (array_key_exists('data', $response)) {
+            $first = is_array($response['data']) ? ($response['data'][0] ?? null) : null;
 
-            if (!is_array($first)) {
-                throw new ApiException(
-                    'provider_not_found',
-                    'Yalidine has no record of that parcel.',
-                    404,
-                    ['provider' => self::NAME]
-                );
-            }
-
-            return $first;
+            return is_array($first) ? $first : null;
         }
 
-        return $response;
+        return $response === [] ? null : $response;
+    }
+
+    /**
+     * The parcel this shop already created for that reference, if there is one.
+     *
+     * Yalidine does **not** deduplicate on `order_id` — verified on 2026-08-14,
+     * where sending the same one twice produced two parcels — so a lost response
+     * on create would otherwise mean two vans and one customer served twice.
+     * `GET parcels/?order_id=` is the query that makes this recoverable, and one
+     * cheap read before an expensive, irreversible write is the trade.
+     *
+     * **Best effort by design.** If the lookup itself fails, the create goes
+     * ahead: a courier that cannot answer a question is not a reason to refuse a
+     * shipment, and the behaviour then is simply what it was before this guard
+     * existed.
+     */
+    private function findByReference(string $reference): ?ShipmentResult
+    {
+        try {
+            $parcel = $this->findParcel('parcels/?' . http_build_query([
+                'order_id' => $reference,
+                'page_size' => 1,
+            ]));
+        } catch (ApiException $exception) {
+            $this->logger->warning('Yalidine could not be asked about an existing parcel', [
+                'reference' => $reference,
+                'error' => $exception->errorCode(),
+            ]);
+
+            return null;
+        }
+
+        $tracking = isset($parcel['tracking']) && is_scalar($parcel['tracking'])
+            ? trim((string) $parcel['tracking'])
+            : '';
+
+        if ($tracking === '') {
+            return null;
+        }
+
+        $lastStatus = isset($parcel['last_status']) && is_scalar($parcel['last_status'])
+            ? trim((string) $parcel['last_status'])
+            : '';
+
+        $this->logger->warning('Yalidine already had a parcel for this reference; reusing it', [
+            'reference' => $reference,
+            'tracking' => $tracking,
+            'last_status' => $lastStatus,
+        ]);
+
+        /*
+         * An unmappable status does not refuse the parcel here, unlike a status
+         * poll. The parcel exists either way, and the point of this branch is to
+         * stop a second one being made — reporting `created` with the courier's
+         * own word beside it keeps that record, and the next poll corrects the
+         * status the moment the mapping covers it.
+         */
+        return new ShipmentResult(
+            $tracking,
+            $tracking,
+            YalidineStatusMap::toShipmentStatus($lastStatus) ?? ShipmentStatus::CREATED,
+            array_filter([
+                'label' => isset($parcel['label']) && is_scalar($parcel['label']) ? (string) $parcel['label'] : '',
+                'reference' => $reference,
+                'provider_status' => $lastStatus,
+                'reused_existing_parcel' => true,
+            ])
+        );
     }
 
     /**

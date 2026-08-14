@@ -16,16 +16,15 @@ use AlgerianCommerce\Shipping\ProviderPlace;
  * GET centers/    the stop desks, each in a commune
  * ```
  *
- * All three answer with `{ has_more, total_data, data: [...] }` (roadmap §56,
- * confirmed by the DTOs of the production implementation), and all three take
- * `?page_size=1000`.
+ * All three answer with `{has_more, total_data, data: [...], links}` and take
+ * `?page_size=` and `?page=` — verified against the live API on 2026-08-14,
+ * along with every field name read below.
  *
  * **Nothing here matches anything.** It reads what the courier published and
  * stops; `DestinationMatcher` decides what lines up with the §51 dataset, which
- * is why the hard part is pure and testable. Field names outside `centers/` are
- * marked as assumptions below and read defensively — a row that does not carry
- * an id and a name is skipped rather than guessed at, and the sync reports the
- * shortfall instead of writing a map with holes it does not mention.
+ * is why the hard part is pure and testable. Rows are still read defensively —
+ * one without an id and a name is skipped rather than guessed at, and the sync
+ * reports the shortfall instead of writing a map with holes it does not mention.
  */
 final class YalidineDestinations
 {
@@ -58,11 +57,15 @@ final class YalidineDestinations
 
         foreach ($this->pages('wilayas/') as $row) {
             /*
-             * ASSUMPTION (unverified — no merchant account, no sandbox): a
-             * wilaya row is `{id, name, zone, is_deliverable}`. Only `id` and
-             * `name` are required here, and `wilaya_id`/`wilaya_name` are
-             * accepted as well because that is how the same fields are spelled
-             * on the endpoints we do have DTOs for.
+             * Verified 2026-08-14: a wilaya row is exactly
+             * `{id, name, zone, is_deliverable}` — e.g.
+             * `{"id": 1, "name": "Adrar", "zone": 4, "is_deliverable": 1}`.
+             * Note the **integer** 1/0 rather than a JSON boolean, which is why
+             * `deliverable()` below cannot simply cast.
+             *
+             * `wilaya_id`/`wilaya_name` are still accepted as alternates: they
+             * cost nothing and that is how the same fields are spelled on the
+             * other endpoints.
              */
             $id = self::str($row, ['id', 'wilaya_id']);
             $name = self::str($row, ['name', 'wilaya_name']);
@@ -91,8 +94,17 @@ final class YalidineDestinations
         $places = [];
 
         foreach ($this->pages('communes/') as $row) {
-            // ASSUMPTION (unverified): a commune row is
-            // `{id, name, wilaya_id, wilaya_name, has_stop_desk, is_deliverable}`.
+            /*
+             * Verified 2026-08-14: `{id, name, wilaya_id, wilaya_name,
+             * has_stop_desk, is_deliverable, delivery_time_parcel,
+             * delivery_time_payment}`.
+             *
+             * The two delivery-time fields are kept in the metadata rather than
+             * turned into `RateQuote::$estimatedDays`: they are plainly a
+             * duration, but nothing observed says in what unit, and a storefront
+             * promising "15" of the wrong thing is worse than promising nothing
+             * (see RateQuote on why that field is nullable).
+             */
             $id = self::str($row, ['id', 'commune_id']);
             $name = self::str($row, ['name', 'commune_name']);
             $wilayaId = self::str($row, ['wilaya_id']);
@@ -161,10 +173,10 @@ final class YalidineDestinations
         $page = 1;
 
         do {
-            // ASSUMPTION (unverified): pages are selected with `page`, counting
-            // from 1. `page_size` is documented in roadmap §56; the cursor
-            // parameter's name is not, and a provider that ignores it simply
-            // returns the first page again — which `MAX_PAGES` bounds.
+            // Verified 2026-08-14: `page` selects the page, counting from 1 —
+            // `?page_size=2&page=2` returned wilayas 3 and 4 where page 1
+            // returned 1 and 2. The envelope is
+            // `{has_more, total_data, data, links}`.
             $response = $this->client->get($path, ['page_size' => self::PAGE_SIZE, 'page' => $page]);
 
             if (!is_array($response)) {

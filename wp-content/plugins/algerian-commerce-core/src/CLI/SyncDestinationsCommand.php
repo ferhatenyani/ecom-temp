@@ -106,6 +106,7 @@ final class SyncDestinationsCommand
     private function reportGaps(DestinationSyncPlan $plan, int $limit): void
     {
         $headings = [
+            DestinationSyncPlan::MATCHED_BY_CODE => 'Matched on the official code — the two names disagree',
             DestinationSyncPlan::PROVIDER_UNMATCHED => 'Published by the courier, not in this store\'s geography',
             DestinationSyncPlan::UNCOVERED => 'In this store\'s geography, not published by the courier',
             DestinationSyncPlan::NOT_DELIVERABLE => 'Published, and this account cannot deliver there',
@@ -124,15 +125,19 @@ final class SyncDestinationsCommand
             $shown = $limit === 0 ? $gaps : array_slice($gaps, 0, $limit);
 
             foreach ($shown as $gap) {
-                WP_CLI::log(sprintf(
-                    '  %-8s %s',
-                    (string) ($gap['kind'] ?? ''),
-                    trim(sprintf(
-                        '%s %s',
-                        (string) ($gap['name'] ?? $gap['provider_name'] ?? ''),
-                        isset($gap['reason']) ? '(' . $gap['reason'] . ')' : ''
-                    ))
-                ));
+                $line = sprintf('  %-8s %s', (string) ($gap['kind'] ?? ''), (string) ($gap['provider_name'] ?? $gap['name'] ?? ''));
+
+                if ($type === DestinationSyncPlan::MATCHED_BY_CODE) {
+                    // Both names, because the pair is the whole point: someone
+                    // has to decide whether they are the same place.
+                    $line .= sprintf(' → %s (code %s)', (string) ($gap['name'] ?? ''), (string) ($gap['provider_id'] ?? ''));
+                } elseif (($gap['nearest'] ?? '') !== '') {
+                    $line .= sprintf(' — nearest of ours: %s', (string) $gap['nearest']);
+                } elseif (isset($gap['reason'])) {
+                    $line .= ' (' . $gap['reason'] . ')';
+                }
+
+                WP_CLI::log($line);
             }
 
             $hidden = count($gaps) - count($shown);
@@ -142,7 +147,9 @@ final class SyncDestinationsCommand
             }
         }
 
-        if ($plan->gaps !== []) {
+        if ($plan->gapsOfType(DestinationSyncPlan::PROVIDER_UNMATCHED) !== []
+            || $plan->gapsOfType(DestinationSyncPlan::UNCOVERED) !== []
+            || $plan->gapsOfType(DestinationSyncPlan::NOT_DELIVERABLE) !== []) {
             /*
              * A warning, not an error. A courier not covering every commune in
              * Algeria is ordinary — that is what the "cannot reach" list is —

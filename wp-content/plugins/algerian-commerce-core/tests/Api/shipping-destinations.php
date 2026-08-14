@@ -219,9 +219,16 @@ $request = new ShipmentRequest(
 );
 
 $http->requests = [];
+
+// Two scripted answers, in the order the adapter asks for them: "is there
+// already a parcel for reference 1-1?" — verified 2026-08-14, Yalidine does not
+// deduplicate, so the adapter checks — and then the create itself.
 $creating = new YalidineProvider(
     new YalidineClient(
-        new AcScriptedHttpClient(['parcels/' => ['1-1' => ['success' => true, 'tracking' => 'yal-TEST-1']]]),
+        new AcScriptedHttpClient([
+            'parcels/?order_id' => ['has_more' => false, 'total_data' => 0, 'data' => []],
+            'parcels/' => ['1-1' => ['success' => true, 'tracking' => 'yal-TEST-1', 'import_id' => 1]],
+        ]),
         new YalidineCredentials('id', 'token'),
         $settings,
         $logger,

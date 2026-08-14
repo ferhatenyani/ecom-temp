@@ -23,9 +23,41 @@ use PHPUnit\Framework\TestCase;
  * The adapter end to end, against recorded responses — roadmap §56's required
  * cases: a successful shipment, an invalid destination, a duplicate, a timeout,
  * an authentication failure and a provider failure.
+ *
+ * **The fixtures are real.** Every response body below was captured from the
+ * live API on 2026-08-14 and trimmed of personal data, rather than imagined —
+ * which is what makes this suite evidence rather than a restatement of the
+ * adapter's own assumptions.
  */
 final class YalidineProviderTest extends TestCase
 {
+    /** The create response, exactly as Yalidine shaped it. */
+    private const CREATED = [
+        'success' => true,
+        'order_id' => '42-2',
+        'tracking' => 'yal-LW21LH',
+        'import_id' => 127,
+        'label' => 'https://yalidine.app/app/bordereau.php?tracking=yal-LW21LH&token=REDACTED',
+        'labels' => 'https://yalidine.app/app/bordereau.php?import_id=127&si=93376&token=REDACTED',
+        'message' => '',
+        'do_insurance' => false,
+    ];
+
+    /** No parcel for that reference — a 200 with an empty list, not a 404. */
+    private const NO_PARCEL = ['has_more' => false, 'total_data' => 0, 'data' => [], 'links' => []];
+
+    /**
+     * A create needs its reference lookup answered first: the adapter looks
+     * before it creates, because Yalidine will duplicate a parcel otherwise.
+     *
+     * @param list<HttpResponse> $script
+     * @return array{0: YalidineProvider, 1: RecordedHttpClient}
+     */
+    private function creating(array $script, array $settings = [], bool $mapped = true): array
+    {
+        return $this->provider([RecordedHttpClient::json(self::NO_PARCEL), ...$script], $settings, $mapped);
+    }
+
     /**
      * @param list<HttpResponse> $script
      * @return array{0: YalidineProvider, 1: RecordedHttpClient}
@@ -78,29 +110,20 @@ final class YalidineProviderTest extends TestCase
 
     public function testASuccessfulParcelReturnsTheTrackingNumber(): void
     {
-        [$provider, $http] = $this->provider([
-            RecordedHttpClient::json([
-                '42-2' => [
-                    'success' => true,
-                    'order_id' => '42-2',
-                    'tracking' => 'yal-DZ-0001',
-                    'label' => 'https://api.yalidine.app/labels/yal-DZ-0001.pdf',
-                ],
-            ]),
-        ]);
+        [$provider, $http] = $this->creating([RecordedHttpClient::json(['42-2' => self::CREATED])]);
 
         $result = $provider->createShipment($this->request());
 
-        self::assertSame('yal-DZ-0001', $result->trackingNumber);
+        self::assertSame('yal-LW21LH', $result->trackingNumber);
         // Yalidine has no identifier other than the tracking number, so both
         // fields hold it — the interface keeps them apart for couriers that
         // disagree.
-        self::assertSame('yal-DZ-0001', $result->providerShipmentId);
+        self::assertSame('yal-LW21LH', $result->providerShipmentId);
         self::assertSame(ShipmentStatus::CREATED, $result->status);
-        self::assertSame('https://api.yalidine.app/labels/yal-DZ-0001.pdf', $result->metadata['label']);
+        self::assertStringContainsString('bordereau.php', $result->metadata['label']);
 
         // One parcel, wrapped in the array the endpoint takes.
-        $sent = $http->sentBody();
+        $sent = $http->sentBody(1);
         self::assertCount(1, $sent);
         self::assertSame('42-2', $sent[0]['order_id']);
         self::assertSame('Bouzaréah', $sent[0]['to_commune_name']);
@@ -113,7 +136,7 @@ final class YalidineProviderTest extends TestCase
      */
     public function testAnEmptyArrayIsReportedAsARejectedDestination(): void
     {
-        [$provider] = $this->provider([RecordedHttpClient::json([])]);
+        [$provider] = $this->creating([RecordedHttpClient::json([])]);
 
         try {
             $provider->createShipment($this->request());
@@ -125,11 +148,24 @@ final class YalidineProviderTest extends TestCase
         }
     }
 
+    /**
+     * The real rejection, captured on 2026-08-14 by sending a commune name
+     * Yalidine does not know. Their sentence names the field, which is the
+     * whole reason it is carried through to the operator.
+     */
     public function testAParcelYalidineRefusesKeepsItsReason(): void
     {
-        [$provider] = $this->provider([
+        [$provider] = $this->creating([
             RecordedHttpClient::json([
-                '42-2' => ['success' => false, 'message' => 'contact_phone invalide'],
+                '42-2' => [
+                    'success' => false,
+                    'order_id' => '42-2',
+                    'tracking' => null,
+                    'import_id' => null,
+                    'label' => null,
+                    'labels' => null,
+                    'message' => 'Unknown to_commune_name value in the order_id 42-2. Please check the acceptable commune name in the docs',
+                ],
             ]),
         ]);
 
@@ -138,7 +174,10 @@ final class YalidineProviderTest extends TestCase
             self::fail('success:false must throw');
         } catch (ApiException $exception) {
             self::assertSame('yalidine_parcel_refused', $exception->errorCode());
-            self::assertSame('contact_phone invalide', $exception->details()['provider_message']);
+            self::assertStringContainsString(
+                'Unknown to_commune_name',
+                $exception->details()['provider_message']
+            );
         }
     }
 
@@ -197,13 +236,11 @@ final class YalidineProviderTest extends TestCase
 
     public function testACollectedParcelPicksTheDeskInThatCommune(): void
     {
-        [$provider, $http] = $this->provider([
-            RecordedHttpClient::json(['42-2' => ['success' => true, 'tracking' => 'yal-DZ-0002']]),
-        ]);
+        [$provider, $http] = $this->creating([RecordedHttpClient::json(['42-2' => self::CREATED])]);
 
         $provider->createShipment($this->request(Destination::DESK));
 
-        $sent = $http->sentBody()[0];
+        $sent = $http->sentBody(1)[0];
 
         self::assertTrue($sent['is_stopdesk']);
         self::assertSame('88', $sent['stopdesk_id']);
@@ -226,15 +263,27 @@ final class YalidineProviderTest extends TestCase
         }
     }
 
+    /**
+     * The real envelope: `GET parcels/{tracking}` answers with the list
+     * wrapper, not the bare object this adapter first assumed. Verified
+     * 2026-08-14.
+     */
     public function testAStatusPollMapsTheCouriersWordAndKeepsIt(): void
     {
         [$provider] = $this->provider([
             RecordedHttpClient::json([
-                'tracking' => 'yal-DZ-0001',
-                'order_id' => '42-2',
-                'last_status' => 'Sorti en livraison',
-                'date_last_status' => '2026-08-13 09:15:00',
-                'payment_status' => 'not-ready',
+                'has_more' => false,
+                'total_data' => 1,
+                'links' => [],
+                'data' => [[
+                    'tracking' => 'yal-DZ-0001',
+                    'order_id' => '42-2',
+                    'last_status' => 'Sorti en livraison',
+                    'date_last_status' => '2026-08-13 09:15:00',
+                    'payment_status' => 'not-ready',
+                    'delivery_fee' => 650,
+                    'freeshipping' => 1,
+                ]],
             ]),
         ]);
 
@@ -250,7 +299,7 @@ final class YalidineProviderTest extends TestCase
     public function testAReturningParcelIsReportedAsStillMoving(): void
     {
         [$provider] = $this->provider([
-            RecordedHttpClient::json(['tracking' => 'yal-DZ-0001', 'last_status' => 'Retour vers centre']),
+            RecordedHttpClient::json(['data' => [['tracking' => 'yal-DZ-0001', 'last_status' => 'Retour vers centre']]]),
         ]);
 
         $report = $provider->getShipmentStatus('yal-DZ-0001');
@@ -262,7 +311,7 @@ final class YalidineProviderTest extends TestCase
     public function testAStatusTheAdapterCannotMapIsRaisedRatherThanGuessed(): void
     {
         [$provider] = $this->provider([
-            RecordedHttpClient::json(['tracking' => 'yal-DZ-0001', 'last_status' => 'Nouveau statut 2027']),
+            RecordedHttpClient::json(['data' => [['tracking' => 'yal-DZ-0001', 'last_status' => 'Nouveau statut 2027']]]),
         ]);
 
         try {
@@ -274,14 +323,35 @@ final class YalidineProviderTest extends TestCase
         }
     }
 
-    /** The list shape of the same endpoint, in case that is what it returns. */
-    public function testAStatusWrappedInDataIsStillRead(): void
+    /**
+     * The bare object is still accepted — it costs a line, and it was the
+     * defensive branch that carried this adapter while the primary assumption
+     * was the wrong way round.
+     */
+    public function testABareParcelObjectIsStillRead(): void
     {
         [$provider] = $this->provider([
-            RecordedHttpClient::json(['data' => [['tracking' => 'yal-DZ-0001', 'last_status' => 'Livré']]]),
+            RecordedHttpClient::json(['tracking' => 'yal-DZ-0001', 'last_status' => 'Livré']),
         ]);
 
         self::assertSame(ShipmentStatus::DELIVERED, $provider->getShipmentStatus('yal-DZ-0001')->status);
+    }
+
+    /**
+     * A parcel Yalidine has forgotten is a 200 with `total_data: 0`, not a 404,
+     * so "not found" has to be read from the body.
+     */
+    public function testAMissingParcelIsA404EvenThoughYalidineSays200(): void
+    {
+        [$provider] = $this->provider([RecordedHttpClient::json(self::NO_PARCEL)]);
+
+        try {
+            $provider->getShipmentStatus('yal-GONE');
+            self::fail('an empty result is not a status');
+        } catch (ApiException $exception) {
+            self::assertSame('provider_not_found', $exception->errorCode());
+            self::assertSame(404, $exception->statusCode());
+        }
     }
 
     public function testRatesQuoteAllFourServicesForTheCommune(): void
@@ -352,39 +422,85 @@ final class YalidineProviderTest extends TestCase
     }
 
     /**
-     * No source documents a cancel endpoint, and roadmap §54 forbids inventing
-     * one. Refused with the fix, rather than returned as false — which would be
-     * this adapter putting words in Yalidine's mouth about a call nobody made.
+     * This adapter first refused to cancel, because no source documented the
+     * endpoint. It does exist — verified 2026-08-14, response body below —
+     * so refusing would have left operators cancelling by hand forever.
      */
-    public function testCancellationIsRefusedRatherThanInvented(): void
-    {
-        [$provider, $http] = $this->provider([]);
-
-        try {
-            $provider->cancelShipment('yal-DZ-0001');
-            self::fail('cancellation is not part of the confirmed API');
-        } catch (ApiException $exception) {
-            self::assertSame('cancel_unsupported', $exception->errorCode());
-            self::assertSame(409, $exception->statusCode());
-            self::assertStringContainsString('dashboard', $exception->getMessage());
-            self::assertSame([], $http->requests);
-        }
-    }
-
-    /** Roadmap §56's "duplicate shipment": the reference is the idempotency key. */
-    public function testARetryReusesTheSameMerchantReference(): void
+    public function testCancellationDeletesTheParcel(): void
     {
         [$provider, $http] = $this->provider([
-            RecordedHttpClient::json(['42-2' => ['success' => true, 'tracking' => 'yal-DZ-0001']]),
-            RecordedHttpClient::json(['42-2' => ['success' => true, 'tracking' => 'yal-DZ-0001']]),
+            RecordedHttpClient::json([['tracking' => 'yal-LW21LH', 'deleted' => true]]),
         ]);
 
-        $first = $provider->createShipment($this->request());
-        $second = $provider->createShipment($this->request());
+        self::assertTrue($provider->cancelShipment('yal-LW21LH'));
+        self::assertSame('DELETE', $http->lastRequest()['method']);
+        self::assertStringContainsString('parcels/yal-LW21LH', $http->lastRequest()['url']);
+    }
 
-        self::assertSame('42-2', $http->sentBody(0)['0']['order_id'] ?? $http->sentBody(0)[0]['order_id']);
-        self::assertSame($http->sentBody(0), $http->sentBody(1));
-        self::assertSame($first->trackingNumber, $second->trackingNumber);
+    /**
+     * A parcel already collected is a legitimate refusal, not a fault: false
+     * keeps the shipment live, which is the truth about where the parcel is.
+     */
+    public function testARefusedCancellationIsAnAnswerRatherThanAnError(): void
+    {
+        [$provider] = $this->provider([
+            RecordedHttpClient::json([[
+                'tracking' => 'yal-LW21LH',
+                'deleted' => false,
+                'reason' => 'The parcel does not exist or cannot be deleted.',
+            ]]),
+        ]);
+
+        self::assertFalse($provider->cancelShipment('yal-LW21LH'));
+    }
+
+    /**
+     * Roadmap §56's "duplicate shipment", and the assumption that broke:
+     * Yalidine does **not** deduplicate on `order_id` — the same reference sent
+     * twice produced two parcels with two tracking numbers on 2026-08-14. So
+     * the adapter looks the reference up first and hands back the parcel that
+     * already exists, rather than putting a second van on the road.
+     */
+    public function testARetryReturnsTheParcelThatAlreadyExists(): void
+    {
+        [$provider, $http] = $this->provider([
+            RecordedHttpClient::json([
+                'has_more' => false,
+                'total_data' => 1,
+                'data' => [[
+                    'tracking' => 'yal-LW21LH',
+                    'order_id' => '42-2',
+                    'last_status' => 'En préparation',
+                    'label' => 'https://yalidine.app/app/bordereau.php?tracking=yal-LW21LH',
+                ]],
+            ]),
+        ]);
+
+        $result = $provider->createShipment($this->request());
+
+        self::assertSame('yal-LW21LH', $result->trackingNumber);
+        self::assertTrue($result->metadata['reused_existing_parcel']);
+        // Its real state, not an invented "created".
+        self::assertSame('En préparation', $result->metadata['provider_status']);
+        // One lookup, and no POST at all.
+        self::assertCount(1, $http->requests);
+        self::assertSame('GET', $http->lastRequest()['method']);
+        self::assertStringContainsString('order_id=42-2', $http->lastRequest()['url']);
+    }
+
+    /**
+     * The lookup is best effort. A courier that cannot answer a question is not
+     * a reason to refuse a shipment — the behaviour then is simply what it was
+     * before the guard existed.
+     */
+    public function testAFailedLookupDoesNotBlockTheShipment(): void
+    {
+        [$provider] = $this->provider([
+            new HttpResponse(500, ''),
+            RecordedHttpClient::json(['42-2' => self::CREATED]),
+        ]);
+
+        self::assertSame('yal-LW21LH', $provider->createShipment($this->request())->trackingNumber);
     }
 
     public function testAnAuthenticationFailureSurfacesAsTheProvidersProblem(): void

@@ -1117,22 +1117,41 @@ Roadmap §56. The adapter lives in [`integrations/Yalidine/`](integrations/Yalid
 because "which of this code is ours and which is shaped by somebody else's API" is worth being a
 directory rather than a convention.
 
-### It was written without an account, and says so everywhere
+### Written blind, then verified
 
-There is **no merchant account and no sandbox**, so nothing here has been confirmed against the live
-API. Roadmap §54 forbids writing an adapter from memory; it does not forbid writing one from working
-code, and three independent implementations agree on every endpoint and field name used — chiefly a
-Spring Boot service running in production against the live API. Everywhere they are silent, the
-guess is marked in the code:
+It was written without a merchant account or a sandbox, from three independent implementations that
+agree on every endpoint and field name — chiefly a Spring Boot service running in production against
+the live API. Roadmap §54 forbids writing an adapter from memory; it does not forbid writing one from
+working code. Everywhere those sources were silent, the guess was marked in the code rather than
+smoothed over:
 
 ```bash
 grep -rn 'ASSUMPTION' integrations/Yalidine
 ```
 
-Each one is phrased so the first live call proves or disproves it visibly. The current list is the
-`page` parameter on list endpoints, the shape of the wilaya and commune rows, `Retry-After` being a
-number of seconds, the single-parcel endpoint returning a bare object, a repeated `order_id` being
-idempotent, and `freeshipping: true` meaning "collect exactly `price`".
+**On 2026-08-14 those markers were tested against the live API**, with the merchant credentials of
+that same project and its owner's permission: read-only calls first, then two test parcels created
+and deleted again. Most held. Three did not — which is the entire reason for writing an assumption
+down instead of letting it pass for knowledge.
+
+| Assumed | Reality |
+| --- | --- |
+| `page` selects a page on list endpoints | confirmed |
+| wilaya row is `{id, name, zone, is_deliverable}` | confirmed — `is_deliverable` is `1`/`0`, not a JSON boolean |
+| commune row shape | confirmed, plus `delivery_time_parcel` / `delivery_time_payment` |
+| dimensions and weight are optional | confirmed — a parcel was accepted without any of them |
+| `GET parcels/{tracking}` returns a bare object | **wrong: wrapped in `{data:[…]}`**, and a parcel it has forgotten is a 200 with `total_data: 0` rather than a 404 |
+| a repeated `order_id` returns the same parcel | **wrong: two parcels, two tracking numbers** |
+| cancellation is not in the API | **wrong: `DELETE parcels/{tracking}` works** |
+| a rejection is a bare `[]` | half right — a bad commune name comes back as `success: false` with a message naming the field. The `[]` the production logs recorded is rarer than assumed; both are handled |
+| `Retry-After` is a number of seconds | still unverified — provoking a 429 means exhausting a live merchant's quota, which is not a reasonable price for reading one header |
+| `freeshipping: true` = collect exactly `price` | half verified — the flag round-trips as `1` and the parcel still quotes a `delivery_fee`, so what it changes is who absorbs that fee, which is visible only in a payout |
+
+The quota turned out to be published on **every** response rather than only at a 429:
+`second-quota-left`, `minute-quota-left`, `hour-quota-left`, `day-quota-left` — 5, 50, 1,000 and
+10,000 on the account tested. The client reads them and waits out a second whose allowance is already
+spent instead of earning the refusal, and the poller works in batches of 25 because of that
+50-a-minute line.
 
 ### Getting a store ready, in order
 
@@ -1181,24 +1200,58 @@ the name**. That last field is the point. Yalidine addresses a parcel by `to_wil
 `to_commune_name`, matched exactly, and answers a name it does not recognise with an empty array and
 no message at all — which is why "Bouzaréah" works and "Bouzzerea" does not.
 
-Matching is on the accent-folded name (`GeoSlug`, the same natural key the geography importer uses),
-never on the id: Yalidine's wilaya ids look like the official Algerian codes right up until they do
-not. A commune only ever matches inside its own wilaya, because Algeria has several communes of the
-same name in different ones.
+Matching is on the accent-folded name (`GeoSlug`, the same natural key the geography importer uses).
+A commune only ever matches inside its own wilaya, because Algeria has several communes of the same
+name in different ones.
+
+**A wilaya may also be matched on its official code**, and only a wilaya. §56 said never to parse a
+provider's ids — written when nobody could check them. The live run checked: across the whole
+published list, every wilaya matched by name carried an id identical to the official Algerian code
+(54 agreements, no disagreement), while four failed on spelling alone and took 96 communes down with
+them, because our dataset took its wilaya names from WooCommerce and so says *Algiers* where every
+courier in this market says *Alger*. So the code breaks a tie the name could not: it is consulted
+only for a wilaya no name placed, never for a commune, never over a name, and never for a place
+another wilaya already claimed. Each such row records `matched_by: code` and is listed in the report,
+because nobody chose that match:
+
+```
+Matched on the official code — the two names disagree (4):
+  wilaya   Alger → Algiers (code 16)
+  wilaya   Tipaza → Tipasa (code 42)
+```
 
 **Gaps are reported, never guessed at.** The reference implementation falls back to substring matching
 at parcel-creation time, which is how a parcel ends up addressed to a place nobody chose. Here a place
 that will not match stays unmatched and is named in the report — in both directions, plus the wilayas
-this account cannot reach, which is Yalidine's own `is_deliverable` rather than a list in our code:
+this account cannot reach, which is Yalidine's own `is_deliverable` rather than a list in our code.
+An unmatched commune is shown with the nearest name we hold and how far away it is, so a person can
+settle it in a second without a machine settling it wrongly in a millisecond:
 
 ```
-Published by the courier, not in this store's geography (2):
-  commune  Ouled Fayet (no_commune_of_that_name)
-In this store's geography, not published by the courier (37):
-  commune  Tamalous
-Published, and this account cannot deliver there (1):
-  wilaya   Illizi
+Published by the courier, not in this store's geography (355):
+  commune  Abou El Hassan — nearest of ours: Abou El Hassane (1)
+  commune  Ouled Ahmed Tammi — nearest of ours: Ouled Ahmed Timmi (1)
+In this store's geography, not published by the courier (254):
+  wilaya   Aflou
+Published, and this account cannot deliver there (51):
+  wilaya   In Guezzam
 ```
+
+That distance is a hint and never an action. At one edit these are plainly the same place spelled
+differently; at three, *Bitam* and *Batna* are neighbours too, and that mistake is a van driven to
+the wrong town.
+
+**The live run's real numbers**, against a working merchant account: of 1,541 communes Yalidine
+publishes, 1,261 destinations mapped. What is left is two honest kinds of gap, and neither is a bug
+in the sync:
+
+- **~338 transliteration variances** — *In Zghmir* against our *Ain Zghmir*. Two sources romanising
+  Arabic differently. Closing them properly means an alias in the §51 dataset, reviewed by someone
+  who knows the country, not a fuzzy match.
+- **95 communes in the 11 wilayas created after 2019** — Aflou, Barika, Boussaâda and the rest. We
+  model 69 wilayas; Yalidine still models 58 and files those communes under their old parent. That is
+  a structural disagreement about Algeria's map, it will affect ZR Express too (§57), and it is
+  §51-shaped work rather than adapter-shaped.
 
 Stop desks are folded into their commune's row rather than given rows of their own — the table is one
 row per (provider, wilaya, commune), and a desk is a property of delivering there.
@@ -1233,13 +1286,25 @@ WP-Cron only fires when someone visits the site, which is the wrong property for
 overnight while parcels move. It is the floor, not the plan: a real deployment points a scheduler at
 the command.
 
-### What Yalidine will not do
+### Cancellation, and idempotency we have to provide ourselves
 
-**Cancellation.** None of the three sources documents a cancel or delete endpoint, and §56's list of
-what they agree on does not contain one. `cancelShipment()` refuses with a 409 telling the operator to
-cancel in the Yalidine dashboard and then mark the shipment cancelled here — rather than returning
-`false`, which would be this adapter putting words in Yalidine's mouth about a call nobody made.
-Inventing a `DELETE parcels/{tracking}` is a guess whose failure mode is a destroyed parcel record.
+**Cancelling works** — `DELETE parcels/{tracking}`, answering
+`[{"tracking": "…", "deleted": true}]`, or `deleted: false` with a reason when it will not. The
+adapter first refused to cancel at all, because no source documented the endpoint and §54 forbids
+inventing one whose failure mode is a destroyed parcel record. Probing it cost nothing: a delete
+aimed at a tracking number that cannot exist answered without destroying anything, and that was the
+whole question settled. A refusal comes back as `false`, which is exactly what the interface asks for
+— a parcel already collected is a legitimate answer, not a fault — and the shipment stays live,
+because the parcel is.
+
+**Yalidine will happily create the same parcel twice.** Posting one `order_id` twice produced two
+tracking numbers, so the merchant reference is not the idempotency key §53 assumed it was. The guard
+is ours: the adapter runs `GET parcels/?order_id=` before it creates, and hands back the parcel that
+already exists rather than putting a second van on the road. Best effort by design — if that lookup
+itself fails the create still goes ahead, because a courier that cannot answer a question is not a
+reason to refuse a shipment.
+
+### What Yalidine still will not do
 
 **Choosing a specific stop desk.** A collected parcel goes to the first desk the sync recorded in that
 commune, and a commune with no desk is refused rather than quietly delivered to the door. Letting a

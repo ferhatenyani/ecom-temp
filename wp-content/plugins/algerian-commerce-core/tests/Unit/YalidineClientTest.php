@@ -264,6 +264,66 @@ final class YalidineClientTest extends TestCase
         $client->verifyCredentials();
     }
 
+    /**
+     * Verified 2026-08-14: Yalidine publishes what is left on every response —
+     * 5 a second, 50 a minute, 1,000 an hour, 10,000 a day on the account
+     * probed. Reading them is how a 429 is avoided rather than handled.
+     */
+    public function testTheQuotaCountdownIsRead(): void
+    {
+        [$client] = $this->client([
+            RecordedHttpClient::json(['data' => []], 200, [
+                'second-quota-left' => '4',
+                'minute-quota-left' => '49',
+                'hour-quota-left' => '999',
+                'day-quota-left' => '9999',
+            ]),
+        ]);
+
+        $client->get('wilayas/');
+
+        self::assertSame(
+            [
+                'second-quota-left' => 4,
+                'minute-quota-left' => 49,
+                'hour-quota-left' => 999,
+                'day-quota-left' => 9999,
+            ],
+            $client->quota()
+        );
+    }
+
+    /**
+     * A second whose allowance is spent is a second worth waiting out: the 429
+     * it would otherwise earn costs more than the wait.
+     */
+    public function testASpentSecondIsWaitedOutBeforeTheNextCall(): void
+    {
+        [$client] = $this->client([
+            RecordedHttpClient::json(['data' => []], 200, ['second-quota-left' => '0']),
+            RecordedHttpClient::json(['data' => []], 200, ['second-quota-left' => '4']),
+        ]);
+
+        $client->get('wilayas/');
+        self::assertSame([], $this->slept, 'the first call has nothing to wait for');
+
+        $client->get('communes/');
+        self::assertSame([1], $this->slept);
+    }
+
+    /** Verified 2026-08-14: the delete endpoint exists. */
+    public function testDeleteReachesTheParcelEndpoint(): void
+    {
+        [$client, $http] = $this->client([
+            RecordedHttpClient::json([['tracking' => 'yal-LW21LH', 'deleted' => true]]),
+        ]);
+
+        $response = $client->delete('parcels/yal-LW21LH');
+
+        self::assertSame('DELETE', $http->lastRequest()['method']);
+        self::assertTrue($response[0]['deleted']);
+    }
+
     public function testAPostSendsJsonAndReadsItBack(): void
     {
         [$client, $http] = $this->client([RecordedHttpClient::json(['42-1' => ['success' => true]])]);

@@ -14,18 +14,31 @@ use AlgerianCommerce\Geography\GeoSlug;
  * gaps in both directions. That is what makes the hardest part of a courier
  * integration testable without an account.
  *
- * **Matched on the accent-folded name, never on the id.** Two rules are at work
- * and both are deliberate:
+ * **Matched on the accent-folded name.** `GeoSlug` is reused rather than
+ * reimplemented — it is the codebase's one accent-folding table, already the
+ * natural key the geography importer upserts on, and already tested. Béjaïa and
+ * Bejaia have to reach the same commune whichever side spelled it which way,
+ * which is the exact failure the reference implementation works around at
+ * parcel-creation time by re-fetching the fees endpoint and matching names by
+ * hand.
  *
- *  - Ids are not comparable. Yalidine's wilaya ids look like the official
- *    Algerian codes right up until they do not, and roadmap §56 is explicit
- *    that the sync must never parse them. They are stored, not interpreted.
- *  - Names are, once folded. `GeoSlug` is reused rather than reimplemented —
- *    it is the codebase's one accent-folding table, already the natural key the
- *    geography importer upserts on, and already tested. Béjaïa and Bejaia have
- *    to reach the same commune whichever side spelled it which way, which is the
- *    exact failure the reference implementation works around at parcel-creation
- *    time by re-fetching the fees endpoint and matching names by hand.
+ * **A wilaya may also be matched on its code, and only a wilaya.** Roadmap §56
+ * says never to parse a provider's ids, written when nobody could check them.
+ * They were checked on 2026-08-14: across a courier's whole published list,
+ * every wilaya that matched by name carried an id identical to the official
+ * Algerian code — 54 agreements, no disagreement — while four failed on
+ * spelling alone (*Alger* against our *Algiers*, *Tipaza* against *Tipasa*),
+ * taking 96 of their communes down with them. So the code is used, but only
+ * where it is a real natural key and only as a tie-break:
+ *
+ *  - the name is tried first and always wins;
+ *  - the code is consulted only for a wilaya the name could not place, and only
+ *    if no other place has claimed it;
+ *  - the match records which of the two found it, and a code that contradicts a
+ *    name is reported rather than trusted.
+ *
+ * Communes get no such fallback. Their ids are the courier's own numbering with
+ * no national equivalent, and there is nothing to compare against.
  *
  * A name that folds to nothing matches nothing: that is a courier sending an
  * Arabic-only or empty label, and inventing a match for it would be worse than
@@ -45,8 +58,21 @@ final class DestinationMatcher
         array $communes
     ): DestinationSyncPlan {
         $ourWilayaBySlug = [];
+        $ourWilayaById = [];
         foreach ($wilayas as $wilaya) {
             $ourWilayaBySlug[self::key((string) ($wilaya['slug'] ?? $wilaya['name'] ?? ''))] = $wilaya;
+            $ourWilayaById[(string) ($wilaya['id'] ?? '')] = $wilaya;
+        }
+
+        // Which of our wilayas a name already claimed, so the code fallback
+        // cannot hand the same place to two of the courier's.
+        $claimed = [];
+        foreach (self::ofKind($places, ProviderPlace::WILAYA) as $place) {
+            $byName = $ourWilayaBySlug[self::key($place->name)] ?? null;
+
+            if ($byName !== null) {
+                $claimed[(int) $byName['id']] = true;
+            }
         }
 
         $ourCommuneByPlace = [];
@@ -74,6 +100,27 @@ final class DestinationMatcher
             $fetched[ProviderPlace::WILAYA]++;
 
             $ours = $ourWilayaBySlug[self::key($place->name)] ?? null;
+            $matchedBy = 'name';
+
+            if ($ours === null) {
+                $byCode = $ourWilayaById[$place->id] ?? null;
+
+                // Only an unclaimed wilaya, so a courier that renumbers cannot
+                // quietly steal a place another of its wilayas already matched
+                // by name.
+                if ($byCode !== null && !isset($claimed[(int) $byCode['id']])) {
+                    $ours = $byCode;
+                    $matchedBy = 'code';
+                    $claimed[(int) $byCode['id']] = true;
+
+                    $gaps[] = self::gap(DestinationSyncPlan::MATCHED_BY_CODE, ProviderPlace::WILAYA, [
+                        'provider_id' => $place->id,
+                        'provider_name' => $place->name,
+                        'wilaya_id' => (int) $byCode['id'],
+                        'name' => (string) ($byCode['name'] ?? ''),
+                    ]);
+                }
+            }
 
             if ($ours === null) {
                 $gaps[] = self::gap(DestinationSyncPlan::PROVIDER_UNMATCHED, ProviderPlace::WILAYA, [
@@ -102,7 +149,7 @@ final class DestinationMatcher
                 ]);
             }
 
-            $rows[] = self::row($provider, (int) $ours['id'], 0, $place);
+            $rows[] = self::row($provider, (int) $ours['id'], 0, $place, $matchedBy);
         }
 
         foreach (self::ofKind($places, ProviderPlace::COMMUNE) as $place) {
@@ -132,6 +179,17 @@ final class DestinationMatcher
                     'provider_name' => $place->name,
                     'wilaya_id' => $ourWilayaId,
                     'reason' => 'no_commune_of_that_name',
+                    /*
+                     * A hint, and deliberately never an action. Most of these
+                     * are transliteration variance — *Abou El Hassan* against
+                     * our *Abou El Hassane* — and matching them automatically is
+                     * the fuzzy-matching this class exists to refuse: at three
+                     * edits, "Bitam" and "Batna" are neighbours too, and that
+                     * mistake is a parcel driven to the wrong town. Naming the
+                     * nearest candidate lets a person settle it in a second
+                     * without a machine settling it wrongly in a millisecond.
+                     */
+                    'nearest' => self::nearest($place->name, $communes, $ourWilayaId),
                 ]);
 
                 continue;
@@ -241,6 +299,42 @@ final class DestinationMatcher
     }
 
     /**
+     * The closest name we hold in that wilaya, for a report to quote.
+     *
+     * Bounded at three edits because beyond that the "nearest" name is noise,
+     * and shown with its distance so the reader can weigh it: one edit is
+     * almost always the same place spelled differently, three is a coin toss.
+     *
+     * @param list<array<string, mixed>> $communes
+     */
+    private static function nearest(string $name, array $communes, int $wilayaId): string
+    {
+        $theirs = self::key($name);
+
+        if ($theirs === '') {
+            return '';
+        }
+
+        $best = '';
+        $bestDistance = 4;
+
+        foreach ($communes as $commune) {
+            if ((int) ($commune['wilaya_id'] ?? 0) !== $wilayaId) {
+                continue;
+            }
+
+            $distance = levenshtein($theirs, self::key((string) ($commune['name'] ?? '')));
+
+            if ($distance < $bestDistance) {
+                $bestDistance = $distance;
+                $best = (string) ($commune['name'] ?? '');
+            }
+        }
+
+        return $best === '' ? '' : sprintf('%s (%d)', $best, $bestDistance);
+    }
+
+    /**
      * The comparison key: a folded slug, or '' for a name that folds away.
      *
      * '' is returned rather than the raw string so that two unmatchable names
@@ -252,8 +346,13 @@ final class DestinationMatcher
     }
 
     /** @return array<string, mixed> */
-    private static function row(string $provider, int $wilayaId, int $communeId, ProviderPlace $place): array
-    {
+    private static function row(
+        string $provider,
+        int $wilayaId,
+        int $communeId,
+        ProviderPlace $place,
+        string $matchedBy = 'name'
+    ): array {
         return [
             'provider' => $provider,
             'wilaya_id' => $wilayaId,
@@ -269,6 +368,10 @@ final class DestinationMatcher
             'metadata' => [
                 'name' => $place->name,
                 'is_deliverable' => $place->isDeliverable,
+                // Which of the two rules placed this row. A row matched on the
+                // code is one whose names disagree, and that is worth being
+                // able to query later rather than only reading in a report.
+                'matched_by' => $matchedBy,
             ] + $place->metadata,
         ];
     }

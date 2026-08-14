@@ -47,11 +47,15 @@ final class ShipmentRequest
          * parcel sent for order 42.
          *
          * Not the order id, because an order can be shipped more than once: a
-         * first delivery fails, comes back, and goes out again. Every courier
-         * has a field for a merchant's own reference and most treat it as an
-         * idempotency key, which is what makes this the right thing to send —
-         * a retried create then returns the existing parcel instead of putting
-         * a second one on a van.
+         * first delivery fails, comes back, and goes out again.
+         *
+         * §53 assumed couriers treat this as an idempotency key. **Yalidine
+         * does not** — verified 2026-08-14, where the same reference posted
+         * twice produced two parcels — so an adapter that wants a retry to be
+         * safe has to look the reference up first, which is what
+         * `YalidineProvider` does. The value still matters for exactly the
+         * reason it was introduced: it is how a parcel is found again at the
+         * courier, by a number the shop chose.
          */
         public readonly string $reference = '',
         /**

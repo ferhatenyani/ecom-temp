@@ -20,13 +20,22 @@ use AlgerianCommerce\Http\HttpTransportException;
  * so a fixture is the only evidence any of this behaves as intended before the
  * first live call.
  *
- * The API, as three independent implementations agree (roadmap §56):
+ * The API, as three independent implementations agree (roadmap §56) and as
+ * **verified against the live API on 2026-08-14**:
  *
  * ```
  * base   https://api.yalidine.app/v1/   (a per-client setting, defaulted)
  * auth   X-API-ID + X-API-TOKEN         both required, both headers
- * quota  429 with Retry-After           the limit itself is not published
+ * quota  every response carries
+ *        second-quota-left  minute-quota-left  hour-quota-left  day-quota-left
  * ```
+ *
+ * **The quota is published on every response**, which is better than the 429 we
+ * were braced for: the account probed answered 5 a second, 50 a minute, 1,000
+ * an hour and 10,000 a day, counted down in those headers. Reacting to a 429 is
+ * still the backstop, but a caller that reads the headers never provokes one —
+ * so they are recorded here and `quota()` hands them to whoever is pacing the
+ * work.
  *
  * **Nothing here logs a credential.** The headers are assembled at the moment
  * of the call and never put into a log context; what is logged is the method,
@@ -35,8 +44,19 @@ use AlgerianCommerce\Http\HttpTransportException;
  */
 final class YalidineClient
 {
+    /** Yalidine's own countdown, from the last response. */
+    private const QUOTA_HEADERS = [
+        'second-quota-left',
+        'minute-quota-left',
+        'hour-quota-left',
+        'day-quota-left',
+    ];
+
     /** @var callable(int): void */
     private $sleeper;
+
+    /** @var array<string, int> */
+    private array $quota = [];
 
     /**
      * @param callable(int): void|null $sleeper injected so the 429 path is
@@ -90,6 +110,17 @@ final class YalidineClient
     public function post(string $path, array $body): mixed
     {
         return $this->send('POST', $path, [], $body);
+    }
+
+    /**
+     * Verified 2026-08-14: `DELETE parcels/{tracking}` exists and answers a
+     * list of `{tracking, deleted}` results.
+     *
+     * @throws ApiException
+     */
+    public function delete(string $path): mixed
+    {
+        return $this->send('DELETE', $path, [], null);
     }
 
     /**
@@ -147,7 +178,18 @@ final class YalidineClient
         $attempt = 0;
 
         while (true) {
+            /*
+             * The per-second allowance is the one a loop actually exhausts —
+             * five, on the account this was verified against. Waiting out the
+             * second we already know is spent is cheaper than the 429 it would
+             * otherwise earn, and it is the whole reason these headers are read.
+             */
+            if (($this->quota['second-quota-left'] ?? 1) < 1) {
+                ($this->sleeper)(1);
+            }
+
             $response = $this->attempt($method, $url, $path, $encoded);
+            $this->rememberQuota($response);
 
             if ($response->status !== 429) {
                 return $this->decode($response, $method, $path);
@@ -172,6 +214,27 @@ final class YalidineClient
 
             $attempt++;
             ($this->sleeper)($wait);
+        }
+    }
+
+    /**
+     * What Yalidine says is left, from the last response.
+     *
+     * @return array<string, int> empty before the first call
+     */
+    public function quota(): array
+    {
+        return $this->quota;
+    }
+
+    private function rememberQuota(HttpResponse $response): void
+    {
+        foreach (self::QUOTA_HEADERS as $header) {
+            $value = trim($response->header($header));
+
+            if ($value !== '' && ctype_digit($value)) {
+                $this->quota[$header] = (int) $value;
+            }
         }
     }
 
@@ -340,10 +403,13 @@ final class YalidineClient
             return max(1, (int) $header);
         }
 
-        // ASSUMPTION (unverified): Retry-After arrives as a number of seconds.
-        // HTTP also allows an absolute date; if Yalidine sends one, this falls
-        // back to a second and the caller sees a 429 it can schedule around,
-        // rather than a wait of unknown length.
+        // ASSUMPTION (still unverified, 2026-08-14): that Retry-After arrives
+        // as a number of seconds. No 429 was provoked during verification —
+        // deliberately, since exhausting a live merchant's quota to read one
+        // header is not a reasonable trade — and the quota countdown above is
+        // what keeps us from meeting one. HTTP also allows an absolute date; if
+        // Yalidine sends one, this falls back to a second and the caller gets a
+        // 429 it can schedule around rather than a wait of unknown length.
         if ($header !== '') {
             $timestamp = strtotime($header);
 

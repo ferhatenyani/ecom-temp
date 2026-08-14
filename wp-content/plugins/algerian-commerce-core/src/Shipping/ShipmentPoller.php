@@ -42,14 +42,17 @@ final class ShipmentPoller
 
     /**
      * @param string $provider   only this courier, or all of them when empty
-     * @param int    $limit      parcels per run — an unpublished rate limit is
-     *                           a reason to move in batches
+     * @param int    $limit      parcels per run. 25 because one poll is one
+     *                           request and Yalidine's own headers put the
+     *                           allowance at 50 a minute — a run that spends
+     *                           the whole minute quota leaves nothing for the
+     *                           operator dispatching orders at the same time
      * @param int    $minMinutes leave a parcel alone if it was checked more
      *                           recently than this
      *
      * @return array{checked: int, updated: int, unchanged: int, skipped: int, failed: int, problems: list<string>}
      */
-    public function run(string $provider = '', int $limit = 50, int $minMinutes = 30): array
+    public function run(string $provider = '', int $limit = 25, int $minMinutes = 30): array
     {
         $staleBefore = $minMinutes > 0
             ? gmdate('Y-m-d H:i:s', time() - ($minMinutes * 60))

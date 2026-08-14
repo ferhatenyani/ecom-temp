@@ -32,8 +32,8 @@ final class SyncShipmentsCommand
      * : Only this courier. Defaults to all of them.
      *
      * [--limit=<count>]
-     * : How many parcels to ask about. Default 50 — couriers rate limit, and
-     * Yalidine does not publish its limit.
+     * : How many parcels to ask about. Default 25 — one poll is one request,
+     * and Yalidine allows 50 a minute.
      *
      * [--min-age=<minutes>]
      * : Leave a parcel alone if it was checked more recently than this.
@@ -51,7 +51,7 @@ final class SyncShipmentsCommand
     {
         $report = $this->poller->run(
             (string) ($assocArgs['provider'] ?? ''),
-            isset($assocArgs['limit']) ? (int) $assocArgs['limit'] : 50,
+            isset($assocArgs['limit']) ? (int) $assocArgs['limit'] : 25,
             isset($assocArgs['min-age']) ? max(0, (int) $assocArgs['min-age']) : 30
         );
 
