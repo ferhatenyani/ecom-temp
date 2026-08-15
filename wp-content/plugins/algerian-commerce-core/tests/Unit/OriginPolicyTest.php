@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\API\OriginPolicy;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class OriginPolicyTest extends TestCase
@@ -68,7 +69,7 @@ final class OriginPolicyTest extends TestCase
         ];
     }
 
-    /** @dataProvider rejectedProvider */
+    #[DataProvider('rejectedProvider')]
     public function testRejectsAnythingThatIsNotABareHttpOrigin(string $origin): void
     {
         self::assertNull(OriginPolicy::normalize($origin));
@@ -100,9 +101,8 @@ final class OriginPolicyTest extends TestCase
     /**
      * Matching is exact. A prefix or suffix match here would hand an
      * attacker-controlled domain a credentialed request against the API.
-     *
-     * @dataProvider lookalikeProvider
      */
+    #[DataProvider('lookalikeProvider')]
     public function testLookalikeOriginsAreNotAllowed(string $origin): void
     {
         $policy = new OriginPolicy(['https://store.example.dz']);

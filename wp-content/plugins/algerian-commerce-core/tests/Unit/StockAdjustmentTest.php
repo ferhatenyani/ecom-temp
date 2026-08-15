@@ -7,6 +7,7 @@ namespace AlgerianCommerce\Tests\Unit;
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Inventory\MovementReason;
 use AlgerianCommerce\Inventory\StockAdjustment;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class StockAdjustmentTest extends TestCase
@@ -93,7 +94,7 @@ final class StockAdjustmentTest extends TestCase
         return ['increase' => ['increase'], 'decrease' => ['decrease']];
     }
 
-    /** @dataProvider relativeModeProvider */
+    #[DataProvider('relativeModeProvider')]
     public function testRejectsAZeroMagnitudeMove(string $mode): void
     {
         // A no-op that would still write a ledger row.
@@ -123,9 +124,8 @@ final class StockAdjustmentTest extends TestCase
     /**
      * A human must not be able to write a row that reads as though an order
      * caused it — that is what keeps the ledger's provenance meaningful.
-     *
-     * @dataProvider systemReasonProvider
      */
+    #[DataProvider('systemReasonProvider')]
     public function testRejectsSystemReasons(string $reason): void
     {
         $fields = $this->reject($this->valid(['reason' => $reason]))->details()['fields'];
@@ -183,7 +183,7 @@ final class StockAdjustmentTest extends TestCase
         ];
     }
 
-    /** @dataProvider projectionProvider */
+    #[DataProvider('projectionProvider')]
     public function testProjectsTheResultingQuantity(string $mode, int $quantity, int $current, int $expected): void
     {
         $adjustment = StockAdjustment::fromPayload($this->valid(['mode' => $mode, 'quantity' => $quantity]));

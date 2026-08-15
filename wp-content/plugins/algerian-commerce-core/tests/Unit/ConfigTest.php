@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\Core\Config;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class ConfigTest extends TestCase
@@ -61,7 +62,7 @@ final class ConfigTest extends TestCase
         ];
     }
 
-    /** @dataProvider truthyProvider */
+    #[DataProvider('truthyProvider')]
     public function testIsTruthy(?string $value, bool $expected): void
     {
         self::assertSame($expected, Config::isTruthy($value));

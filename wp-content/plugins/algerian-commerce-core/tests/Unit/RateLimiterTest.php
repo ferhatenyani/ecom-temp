@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\Security\RateLimiter;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -63,7 +64,7 @@ final class RateLimiterTest extends TestCase
         ];
     }
 
-    /** @dataProvider invalidEntryProvider */
+    #[DataProvider('invalidEntryProvider')]
     public function testDropsMalformedEntries(string $entry): void
     {
         self::assertSame([], RateLimiter::parseIpList($entry));

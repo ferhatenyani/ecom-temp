@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\Orders\LineItemInput;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class LineItemInputTest extends TestCase
@@ -98,7 +99,7 @@ final class LineItemInputTest extends TestCase
         ];
     }
 
-    /** @dataProvider badQuantityProvider */
+    #[DataProvider('badQuantityProvider')]
     public function testQuantityMustBeAWholeNumberOfOneOrMore(mixed $quantity): void
     {
         $line = ['product_id' => 7];

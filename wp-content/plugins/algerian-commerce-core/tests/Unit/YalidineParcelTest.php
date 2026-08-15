@@ -9,6 +9,7 @@ use AlgerianCommerce\Integrations\Yalidine\YalidineSettings;
 use AlgerianCommerce\Shipping\Destination;
 use AlgerianCommerce\Shipping\ProviderDestination;
 use AlgerianCommerce\Shipping\ShipmentRequest;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -186,9 +187,8 @@ final class YalidineParcelTest extends TestCase
      * Algerian checkouts take one name field and Yalidine wants two. Everything
      * after the first word is the family name: a two-word family name is
      * ordinary here, a two-word first name is not.
-     *
-     * @dataProvider nameProvider
      */
+    #[DataProvider('nameProvider')]
     public function testTheRecipientsNameIsSplitAtTheFirstSpace(string $full, string $first, string $family): void
     {
         self::assertSame([$first, $family], YalidineParcel::splitName($full));

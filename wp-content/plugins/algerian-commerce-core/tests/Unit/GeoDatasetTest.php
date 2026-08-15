@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\Geography\GeoDataset;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class GeoDatasetTest extends TestCase
@@ -161,7 +162,7 @@ final class GeoDatasetTest extends TestCase
         ];
     }
 
-    /** @dataProvider badTopLevelProvider */
+    #[DataProvider('badTopLevelProvider')]
     public function testRejectsABrokenTopLevelShape(mixed $decoded): void
     {
         $result = GeoDataset::wilayas($decoded);

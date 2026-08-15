@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\API\ApiException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
@@ -42,7 +43,7 @@ final class ApiExceptionTest extends TestCase
         ];
     }
 
-    /** @dataProvider factoryProvider */
+    #[DataProvider('factoryProvider')]
     public function testFactoriesMapToTheExpectedCodeAndStatus(
         ApiException $exception,
         string $expectedCode,

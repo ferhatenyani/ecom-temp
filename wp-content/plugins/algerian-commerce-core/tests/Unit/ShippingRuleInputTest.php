@@ -9,6 +9,7 @@ use AlgerianCommerce\Shipping\Destination;
 use AlgerianCommerce\Shipping\ShippingRule;
 use AlgerianCommerce\Shipping\ShippingRuleInput;
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class ShippingRuleInputTest extends TestCase
@@ -70,7 +71,7 @@ final class ShippingRuleInputTest extends TestCase
         ];
     }
 
-    /** @dataProvider badAmountProvider */
+    #[DataProvider('badAmountProvider')]
     public function testBadAmountsAreRefused(mixed $amount): void
     {
         try {

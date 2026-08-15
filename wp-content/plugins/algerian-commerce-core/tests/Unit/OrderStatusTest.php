@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\Orders\OrderStatus;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class OrderStatusTest extends TestCase
@@ -76,7 +77,7 @@ final class OrderStatusTest extends TestCase
         ];
     }
 
-    /** @dataProvider allowedTransitionProvider */
+    #[DataProvider('allowedTransitionProvider')]
     public function testAllowedTransitions(string $from, string $to): void
     {
         self::assertTrue(OrderStatus::canTransition($from, $to));
@@ -101,7 +102,7 @@ final class OrderStatusTest extends TestCase
         ];
     }
 
-    /** @dataProvider refusedTransitionProvider */
+    #[DataProvider('refusedTransitionProvider')]
     public function testRefusedTransitions(string $from, string $to): void
     {
         self::assertFalse(OrderStatus::canTransition($from, $to));

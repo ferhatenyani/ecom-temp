@@ -7,6 +7,7 @@ namespace AlgerianCommerce\Tests\Unit;
 use AlgerianCommerce\Core\Migrations\MigrationPlan;
 use AlgerianCommerce\Core\Schema;
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class MigrationPlanTest extends TestCase
@@ -41,7 +42,7 @@ final class MigrationPlanTest extends TestCase
         ];
     }
 
-    /** @dataProvider invalidFilenameProvider */
+    #[DataProvider('invalidFilenameProvider')]
     public function testIgnoresFilesThatDoNotMatchTheConvention(string $filename): void
     {
         self::assertNull(MigrationPlan::parseVersion($filename));
