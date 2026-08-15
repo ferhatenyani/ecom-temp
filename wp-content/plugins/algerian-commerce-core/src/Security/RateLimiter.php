@@ -140,13 +140,18 @@ final class RateLimiter
          * difference between one broken client and a credential under attack.
          * The identifier is not logged — SECURITY.md forbids unnecessary PII,
          * and the hashed key is enough to correlate repeats.
+         *
+         * It is called `bucket`, not `key`: `Logger::redact()` masks any
+         * context key containing "key", so this line spent its life writing
+         * `[redacted]` where the one correlatable value was meant to go
+         * (docs/SECURITY.md, §55).
          */
         $this->logger->warning('Rate limit exceeded', [
             'limit' => $limit->name,
             'allowed' => $limit->limit,
             'window' => $limit->windowSeconds,
             'context' => $context,
-            'key' => $key,
+            'bucket' => $key,
         ]);
 
         throw new ApiException(

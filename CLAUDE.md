@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53, §56 and §57 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53 and §55–§57 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine and
 ZR Express — and its
@@ -15,10 +15,26 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53, §56 and §57 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53 and §55–§57 are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
-shipping rules, and the Yalidine and ZR Express adapters. **Next up is §58, the payment abstraction**, plus
-the two couriers' webhooks, which §56 and §57 deliberately deferred until §55's security review.
+shipping rules, the Yalidine and ZR Express adapters, and the security review. **Next up is §58, the payment
+abstraction**, plus the two couriers' webhooks, which §56 and §57 deferred until §55 — and which are now
+unblocked, because §55 ended with a written webhook rule.
+
+**That rule is `docs/SECURITY.md` → "Webhooks", and it is not negotiable per provider.** The short form:
+the secret is `.env`-only and reaches the verifier through the bootstrap, as API credentials do; a webhook
+route exists only when its provider is registered, so an unconfigured secret is a 404 rather than an open
+door; verification runs on the **raw body** before any JSON decode, with `hash_equals()`; a real signature
+(Svix for ZR Express, Chargily) may be acted on, while a body secret that binds to nothing (Yalidine's
+`security_token`) is a **hint to re-fetch and never a source of truth**; replay is stopped by a 5-minute
+timestamp tolerance where the timestamp is signed, plus an event id *claimed* by a write-once insert whose
+duplicate-key failure is the answer; an unverified request gets 401 `webhook_unverified` and is told nothing
+about which check failed. Read the section, not this paragraph, before writing one.
+
+§55 also recorded that **Yalidine label URLs carry an access token** — `label` and `labels` are credentials
+to one customer's name, phone and address, not links. They are stored in `ac_shipments.metadata` and served
+behind `ac_manage_shipping` on purpose, and they are in `Logger::SENSITIVE_EXACT` so they can never reach a
+log. A provider field holding a tokenised URL joins that list when its adapter is written.
 
 COD state is order meta plus audit events, never new order statuses (PLAN §8) and never a table of its own.
 A COD outcome does not change the order's status; the order's cancellation closes the COD state through
@@ -61,9 +77,10 @@ judge. A **wilaya** may also match on its official code, which the live run show
 courier's id in 54 of 54 cases: name first, code only as a tie-break, and every such row reports itself.
 Two known coverage gaps are data, not bugs: ~338 communes are transliteration variance, and 95 sit in the
 11 wilayas created after 2019 that Yalidine still files under their old parent.
-Status sync is a poll (`wp algerian-commerce sync-shipments`, plus an hourly cron);
-the webhook waits for §55's review, since Yalidine's `security_token` is a shared secret in the body rather
-than a signature. Per-client settings are the `ac_yalidine_settings` option — origin wilaya, insurance,
+Status sync is a poll (`wp algerian-commerce sync-shipments`, plus an hourly cron); the webhook is now
+unblocked but stays a *hint*, because `security_token` is a shared secret in the body rather than a
+signature — it binds to nothing, so a verified delivery means "go and re-fetch `GET parcels/{tracking}`",
+never "believe this payload". Per-client settings are the `ac_yalidine_settings` option — origin wilaya, insurance,
 parcel defaults — never `.env` and never constants, because the plugin is cloned per client.
 
 What the shop *charges* is separate from what a courier quotes: `ac_shipping_rates` (migration 005,
@@ -81,8 +98,9 @@ national commune code, not a postal code.
 
 [docs/PLAN.md](docs/PLAN.md) — the functional specification — answers *what* we build.
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (layering, module map, provider abstraction, data/schema design) and
-[docs/SECURITY.md](docs/SECURITY.md) (read before touching auth, payments, webhooks, uploads, or any integration)
-supersede the roadmap for their topics. `docs/API.md` and `docs/DEPLOYMENT.md` (§55) do not exist yet.
+[docs/SECURITY.md](docs/SECURITY.md) (read before touching auth, payments, webhooks, uploads, or any integration —
+its "Webhooks" section is the §55 rule every inbound endpoint follows) supersede the roadmap for their
+topics. `docs/API.md` and `docs/DEPLOYMENT.md` do not exist yet.
 
 ## Architecture
 

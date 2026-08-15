@@ -65,6 +65,27 @@ final class YalidineSettingsTest extends TestCase
         );
     }
 
+    /**
+     * §55 asks for explicit timeouts. A setting that can raise one to ten
+     * minutes removes the bound as surely as never setting it — a hung courier
+     * would hold a PHP worker that long on every request, checkout included.
+     */
+    public function testAnOverlongTimeoutIsCappedAndReported(): void
+    {
+        $settings = YalidineSettings::fromArray(['timeout' => 600]);
+
+        self::assertSame(YalidineSettings::MAX_TIMEOUT, $settings->timeout);
+        self::assertStringContainsString('timeout', $settings->problems()[0]);
+    }
+
+    public function testATimeoutWithinTheCeilingIsHonoured(): void
+    {
+        $settings = YalidineSettings::fromArray(['timeout' => 30]);
+
+        self::assertSame(30, $settings->timeout);
+        self::assertSame([], $settings->problems());
+    }
+
     /** Zero means "do not send it", not "a parcel of no size". */
     public function testUnsetDimensionsAreOmittedRatherThanSentAsZero(): void
     {

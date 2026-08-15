@@ -1414,6 +1414,54 @@ when there is no commune-level price. ZR Express restricts rate lookups to the s
 wilaya and says so in a sentence; that comes back as no quote and a logged explanation rather than an
 error, because `GET /shipping/rates` asks every courier at once.
 
+## Security review (§55)
+
+§55 is a review rather than a feature: walk everything that ships — `Auth/`, `Security/`, `Permissions/`,
+`Http/`, `COD/`, `Shipping/` and both integrations — against its checklist before a provider is switched on
+for a real client. It gates the two courier webhooks and §58's payments, which is why it ran now.
+
+What it did not change, because the list was already met: credentials are read from `.env` in exactly one
+place (`Plugin::shippingProviders()`) and no accessor prints them; `sslverify` is hard-coded true with no
+switch and `redirection => 0`, so a token never follows a redirect; both settings classes refuse a
+non-`https://` base URL; every REST arg pairs `sanitize_callback` with `validate_callback`; the single retry
+is 429-only and bounded, and a parcel create is never retried blind; the provider is called last in a
+create, so a refusal cannot arrive after a van has one; every statement is prepared.
+
+Four things it did change:
+
+**Yalidine label URLs are credentials.** `label` and `labels` on a parcel response are URLs carrying an
+access token — anyone holding one fetches the customer's name, phone and full address without a credential
+of their own, and we can neither expire nor revoke it. They stay in `ac_shipments.metadata` and stay served
+behind `ac_manage_shipping`, because an operator has to print a label; they are now in
+`Logger::SENSITIVE_EXACT` so they can never reach a log or an audit row. Exact-match, not the substring
+list, because "label" is an ordinary word — `provider_status_label` is ZR Express's wording for a parcel
+state and carries nothing.
+
+**A timeout needs a ceiling, not just a floor.** `timeout` is a per-client setting and had a minimum of one
+second and no maximum, so `wp option update ac_yalidine_settings --format=json '{"timeout":600}'` would hold
+a PHP worker for ten minutes per hung request, checkout included. Capped at
+`YalidineSettings::MAX_TIMEOUT` / `ZRExpressSettings::MAX_TIMEOUT` = 60s, clamped and reported through
+`problems()` like every other corrected value.
+
+**Redaction was eating two diagnostics.** `Logger::redact()` masks any context key containing "key", which
+silently redacted the hashed rate-limit bucket in `RateLimiter::enforce()` — whose own comment says that
+value is what correlates repeats — and Yalidine's "which parcel did you answer about" list. Both were
+written as `[redacted]` for their whole life. Renamed to `bucket` and `answered_for` rather than loosening
+the matcher, which would have traded a harmless false positive for a possible false negative. Note that
+`response_keys` would have been masked too; the substring does not care where it sits.
+
+**`RateLimitGuard::addRetryAfterHeader()` read an absent array key**, raising an undefined-key warning on
+every 429 that came from the `WP_Error` path — the header was still attached correctly, only the noise was
+wrong.
+
+The review's actual deliverable is the **webhook rule** in [docs/SECURITY.md](../../../docs/SECURITY.md)
+under "Webhooks", settled before the first webhook exists so the three providers are not each argued out
+separately: where the secret lives, verification on the raw body with `hash_equals()`, the hard split
+between a real signature (Svix, Chargily) and a body secret that binds to nothing (Yalidine's
+`security_token` — a hint to re-fetch, never a source of truth), a 5-minute timestamp tolerance where the
+timestamp is signed, an event id *claimed* by a write-once insert rather than checked, and 401
+`webhook_unverified` that says nothing about which check failed.
+
 ## Algerian geography
 
 Roadmap §51, docs/PLAN.md §10. Wilayas, communes, postal codes, and the shipping providers'

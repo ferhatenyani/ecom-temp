@@ -32,6 +32,24 @@ final class Logger
         'card', 'cvv', 'pan', 'cookie',
     ];
 
+    /**
+     * Keys masked only on an exact match — docs/SECURITY.md, §55.
+     *
+     * A Yalidine parcel comes back with `label` and `labels`: **URLs that carry
+     * an access token**, so anyone holding one can fetch the shipping label and
+     * with it the customer's name, phone and full address, without a credential
+     * of their own. They belong in `ac_shipments.metadata` — an operator has to
+     * print the label — but never in a log, where they outlive the parcel and
+     * cannot be revoked.
+     *
+     * Exact rather than substring, because "label" is an ordinary English word
+     * that also names harmless things (`provider_status_label` is ZR Express's
+     * wording for a parcel state). Widening the substring list with it would
+     * mask those too — the same over-matching that already redacts a hashed
+     * rate-limit bucket into uselessness.
+     */
+    private const SENSITIVE_EXACT = ['label', 'labels'];
+
     public const MASK = '[redacted]';
 
     public function __construct(
@@ -120,6 +138,10 @@ final class Logger
     private static function isSensitiveKey(string $key): bool
     {
         $needle = strtolower($key);
+
+        if (in_array($needle, self::SENSITIVE_EXACT, true)) {
+            return true;
+        }
 
         foreach (self::SENSITIVE as $marker) {
             if (str_contains($needle, $marker)) {

@@ -105,12 +105,16 @@ final class RateLimitGuard
     /**
      * A WP_Error served by the REST server carries no Retry-After of its own,
      * so it is attached on the way out.
+     *
+     * `get_headers()` returns only the headers that were set, so the absent
+     * case has to be coalesced rather than compared: reading the key directly
+     * raised an "undefined array key" warning on the very path this exists for.
      */
     public function addRetryAfterHeader(mixed $response): mixed
     {
         if ($response instanceof WP_REST_Response
             && $response->get_status() === 429
-            && $response->get_headers()['Retry-After'] === null
+            && ($response->get_headers()['Retry-After'] ?? null) === null
         ) {
             $response->header('Retry-After', (string) $this->limiter->authFailureLimit()->secondsUntilReset(time()));
         }
