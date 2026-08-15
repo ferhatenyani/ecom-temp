@@ -3490,6 +3490,61 @@ Critical rule:
 
 The backend verifies the transaction.
 
+## What was built
+
+`integrations/Chargily/` — credentials, settings, client, status map, provider —
+plus `Payments/Transaction`, `TransactionRepository`, `WebhookEventRepository`,
+`PaymentPoller`, `PaymentController`, `PaymentWebhookController`,
+`CLI/SyncPaymentsCommand`, and migrations 007 and 008 (`Schema::VERSION` 8).
+Nothing above `PaymentProviderInterface` changed, which was the §58 standard.
+
+## Verified against the live test API, 2026-08-15
+
+Chargily issues test keys to anyone with an email address, so §54's "do not work
+from memory" could be satisfied all the way to a real call. There are **no
+`ASSUMPTION (unverified)` markers** in this integration. Four things the run
+settled that the reference does not state:
+
+``` text
+expired        a real status; the documented enum lists only five
+1500.50        a fractional amount is accepted, despite type `integer`
+checkout_url   returned as http:// though the docs write https://
+account{…}     every response embeds the merchant's own record —
+                 trade register, NIS, NIF, satim_credentials
+```
+
+## Three things the documentation got wrong about our own assumptions
+
+``` text
+§58 wrote that Chargily quotes in centimes. It quotes in dinars, which
+  is why the transaction amount is decimal(12,2) and not an integer.
+SECURITY.md named a CHARGILY_WEBHOOK_SECRET. There is none: Chargily
+  signs with the API secret key, so the variable was deleted rather
+  than left as a slot only fillable wrongly.
+PaymentReport::matches() skipped the currency check when a report did
+  not state one — and Chargily's webhook payload does not. Tightened.
+```
+
+## The webhook is a trigger, never evidence
+
+The checkout object inside a Chargily event carries no `currency`, so
+docs/SECURITY.md's "amount **and** currency are re-checked" cannot be satisfied
+from the payload at all. Every path — the verify endpoint, the webhook, the
+poller — ends in `verifyPayment()` against the gateway. The signature proves who
+sent the message; the re-fetch proves the money.
+
+`wp algerian-commerce sync-payments` exists because of the five-minute replay
+window: Chargily publishes no retry schedule, so a late retry is refused, and a
+strictness with no backstop is a strictness somebody eventually removes.
+
+## Refunds
+
+Chargily's API has none — balance, customers, products, prices, checkouts and
+payment links are the whole surface. §59's "refunds if supported" therefore
+resolves to *not supported*, and `PaymentProviderInterface` gained no method for
+it. `PaymentStatus::REFUNDED` stays in the vocabulary for the provider that has
+one.
+
 ------------------------------------------------------------------------
 
 # 60. Webhooks

@@ -18,6 +18,7 @@ use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
 use AlgerianCommerce\CLI\ShippingCheckCommand;
 use AlgerianCommerce\CLI\SyncDestinationsCommand;
+use AlgerianCommerce\CLI\SyncPaymentsCommand;
 use AlgerianCommerce\CLI\SyncShipmentsCommand;
 use AlgerianCommerce\CLI\UnlockCommand;
 use AlgerianCommerce\COD\CodController;
@@ -42,13 +43,22 @@ use AlgerianCommerce\Orders\OrderRepository;
 use AlgerianCommerce\Orders\OrderService;
 use AlgerianCommerce\Orders\OrderStockSubscriber;
 use AlgerianCommerce\Payments\CashOnDeliveryProvider;
+use AlgerianCommerce\Payments\PaymentController;
+use AlgerianCommerce\Payments\PaymentPoller;
 use AlgerianCommerce\Payments\PaymentProviderRegistry;
 use AlgerianCommerce\Payments\PaymentService;
+use AlgerianCommerce\Payments\PaymentWebhookController;
+use AlgerianCommerce\Payments\TransactionRepository;
+use AlgerianCommerce\Payments\WebhookEventRepository;
 use AlgerianCommerce\Permissions\Roles;
 use AlgerianCommerce\Security\RateLimiter;
 use AlgerianCommerce\Security\RateLimitGuard;
 use AlgerianCommerce\Security\RateLimitStore;
 use AlgerianCommerce\Http\WpHttpClient;
+use AlgerianCommerce\Integrations\Chargily\ChargilyClient;
+use AlgerianCommerce\Integrations\Chargily\ChargilyCredentials;
+use AlgerianCommerce\Integrations\Chargily\ChargilyProvider;
+use AlgerianCommerce\Integrations\Chargily\ChargilySettings;
 use AlgerianCommerce\Integrations\Yalidine\YalidineClient;
 use AlgerianCommerce\Integrations\Yalidine\YalidineCredentials;
 use AlgerianCommerce\Integrations\Yalidine\YalidineProvider;
@@ -76,6 +86,7 @@ use AlgerianCommerce\Products\VariationService;
 use Throwable;
 use WP_CLI;
 
+use const AlgerianCommerce\REST_NAMESPACE;
 use const AlgerianCommerce\VERSION;
 
 /**
@@ -94,8 +105,14 @@ final class Plugin
     /** Per-client ZR Express configuration — roadmap §57. */
     public const ZR_EXPRESS_SETTINGS_OPTION = 'ac_zrexpress_settings';
 
+    /** Per-client Chargily configuration — roadmap §59, never the secret key. */
+    public const CHARGILY_SETTINGS_OPTION = 'ac_chargily_settings';
+
     /** The hourly "where are my parcels" event. */
     public const POLL_EVENT = 'ac_poll_shipments';
+
+    /** The hourly "did that payment ever arrive" event — roadmap §59. */
+    public const PAYMENT_POLL_EVENT = 'ac_poll_payments';
 
     private static ?self $instance = null;
 
@@ -137,6 +154,10 @@ final class Plugin
     private ?CodSubscriber $codSubscriber = null;
     private ?PaymentProviderRegistry $paymentProviders = null;
     private ?PaymentService $paymentService = null;
+    private ?TransactionRepository $transactionRepository = null;
+    private ?WebhookEventRepository $webhookEventRepository = null;
+    private ?PaymentPoller $paymentPoller = null;
+    private ?ChargilySettings $chargilySettings = null;
     private ?GeoRepository $geoRepository = null;
     private ?GeoService $geoService = null;
     private ?GeoImporter $geoImporter = null;
@@ -176,6 +197,7 @@ final class Plugin
          */
         $this->codSubscriber()->register();
         $this->registerShipmentPolling();
+        $this->registerPaymentPolling();
         $this->registerCliCommands();
 
         $this->logger()->debug('Plugin booted', ['version' => VERSION]);
@@ -214,6 +236,33 @@ final class Plugin
         }
     }
 
+    /**
+     * The hourly "did that payment ever arrive" poll — roadmap §59.
+     *
+     * Registered exactly as the parcel poll is, and for the same two failure
+     * modes: a scheduled event with no listener runs nothing forever, and a
+     * listener with no schedule never runs at all. Scheduled here as well as at
+     * activation, because an install that was already running when this event
+     * was added would otherwise never schedule it.
+     *
+     * Hourly is the floor rather than the recommendation. A checkout lives for
+     * thirty minutes, so a shop that wants a customer's browser to see "paid"
+     * promptly points a real scheduler at
+     * `wp algerian-commerce sync-payments` every few minutes — WP-Cron only
+     * fires when somebody visits the site, which a quiet shop with open
+     * checkouts cannot rely on.
+     */
+    private function registerPaymentPolling(): void
+    {
+        add_action(self::PAYMENT_POLL_EVENT, function (): void {
+            $this->paymentPoller()->run();
+        });
+
+        if (!wp_next_scheduled(self::PAYMENT_POLL_EVENT)) {
+            wp_schedule_event(time() + HOUR_IN_SECONDS, 'hourly', self::PAYMENT_POLL_EVENT);
+        }
+    }
+
     private function registerCliCommands(): void
     {
         if (!defined('WP_CLI') || !WP_CLI) {
@@ -226,6 +275,7 @@ final class Plugin
         WP_CLI::add_command('algerian-commerce import-algeria', new ImportAlgeriaCommand($this->geoImporter()));
         WP_CLI::add_command('algerian-commerce sync-destinations', new SyncDestinationsCommand($this->destinationSync()));
         WP_CLI::add_command('algerian-commerce sync-shipments', new SyncShipmentsCommand($this->shipmentPoller()));
+        WP_CLI::add_command('algerian-commerce sync-payments', new SyncPaymentsCommand($this->paymentPoller()));
         WP_CLI::add_command('algerian-commerce shipping-check', new ShippingCheckCommand(
             $this->shippingProviders(),
             $this->geoRepository(),
@@ -262,6 +312,17 @@ final class Plugin
             new LocationController($this->logger(), $this->geoService()),
             new CodController($this->logger(), $this->codService()),
             new ShippingController($this->logger(), $this->shippingService()),
+            new PaymentController($this->logger(), $this->paymentService()),
+            /*
+             * Registers one route per registered payment provider, so a shop
+             * with no gateway configured has no inbound endpoint at all —
+             * docs/SECURITY.md, "Webhooks".
+             */
+            new PaymentWebhookController(
+                $this->logger(),
+                $this->paymentProviders(),
+                $this->paymentService()
+            ),
         ]);
     }
 
@@ -489,12 +550,70 @@ final class Plugin
         }
 
         $providers = [];
+        $chargily = new ChargilyCredentials((string) $this->config()->secret('CHARGILY_SECRET_KEY'));
+
+        /*
+         * Chargily first when it is on, which makes it the default for a shop
+         * that has it: a client who has put a secret key in `.env` wants card
+         * and EDAHABIA payment offered, with cash on delivery beside it.
+         *
+         * Two conditions rather than Yalidine's three, and that is a fact about
+         * the gateway: Chargily authenticates with **one** secret key, which is
+         * also what signs its webhooks — there is no second credential to check
+         * for. See ChargilyCredentials on why `CHARGILY_WEBHOOK_SECRET` no
+         * longer exists.
+         */
+        if ($this->config()->isEnabled('ENABLE_CHARGILY') && $chargily->isComplete()) {
+            $settings = $this->chargilySettings();
+
+            $providers[] = new ChargilyProvider(
+                new ChargilyClient(
+                    new WpHttpClient($settings->timeout),
+                    $chargily,
+                    $settings,
+                    $this->logger()
+                ),
+                $settings,
+                $chargily,
+                $this->logger(),
+                /*
+                 * Deferred, and it has to be: this runs at `plugins_loaded`,
+                 * where `$wp_rewrite` is null and `rest_url()` fatals inside
+                 * `get_rest_url()`. Resolved when a checkout is created, it
+                 * honours whatever this install is actually reachable at —
+                 * pretty permalinks or `?rest_route=` — which is the only value
+                 * Chargily could ever deliver to.
+                 */
+                static fn (): string => rest_url(REST_NAMESPACE . '/webhooks/' . ChargilyProvider::NAME)
+            );
+        }
 
         if ($this->config()->isEnabled('ENABLE_COD')) {
             $providers[] = new CashOnDeliveryProvider();
         }
 
         return $this->paymentProviders = new PaymentProviderRegistry($providers);
+    }
+
+    /**
+     * Everything about a Chargily account that is not the secret key.
+     *
+     * An option rather than `.env`, on the line §56 drew for Yalidine and for
+     * the same reason: a checkout page's language, and whether the shop or the
+     * customer pays the gateway fee, are configuration a client changes — the
+     * plugin is cloned per client. A bad value falls back to the default and is
+     * reported by `problems()`; an option must never be able to fatal the plugin
+     * on boot.
+     */
+    public function chargilySettings(): ChargilySettings
+    {
+        if ($this->chargilySettings !== null) {
+            return $this->chargilySettings;
+        }
+
+        $stored = get_option(self::CHARGILY_SETTINGS_OPTION, []);
+
+        return $this->chargilySettings = ChargilySettings::fromArray(is_array($stored) ? $stored : []);
     }
 
     /**
@@ -506,7 +625,33 @@ final class Plugin
         return $this->paymentService ??= new PaymentService(
             $this->paymentProviders(),
             $this->orderRepository(),
-            $this->auditLogger()
+            $this->auditLogger(),
+            $this->transactionRepository(),
+            $this->webhookEventRepository(),
+            $this->logger()
+        );
+    }
+
+    public function transactionRepository(): TransactionRepository
+    {
+        global $wpdb;
+
+        return $this->transactionRepository ??= new TransactionRepository($wpdb);
+    }
+
+    public function webhookEventRepository(): WebhookEventRepository
+    {
+        global $wpdb;
+
+        return $this->webhookEventRepository ??= new WebhookEventRepository($wpdb);
+    }
+
+    public function paymentPoller(): PaymentPoller
+    {
+        return $this->paymentPoller ??= new PaymentPoller(
+            $this->transactionRepository(),
+            $this->paymentService(),
+            $this->logger()
         );
     }
 
@@ -732,14 +877,20 @@ final class Plugin
             wp_schedule_event(time() + HOUR_IN_SECONDS, 'hourly', self::POLL_EVENT);
         }
 
+        if (!wp_next_scheduled(self::PAYMENT_POLL_EVENT)) {
+            wp_schedule_event(time() + HOUR_IN_SECONDS, 'hourly', self::PAYMENT_POLL_EVENT);
+        }
+
         flush_rewrite_rules(false);
     }
 
     public static function deactivate(): void
     {
         // A deactivated plugin leaves no timer behind asking couriers about
-        // parcels for a shop that has stopped listening.
+        // parcels, or gateways about payments, for a shop that has stopped
+        // listening.
         wp_clear_scheduled_hook(self::POLL_EVENT);
+        wp_clear_scheduled_hook(self::PAYMENT_POLL_EVENT);
 
         flush_rewrite_rules(false);
     }

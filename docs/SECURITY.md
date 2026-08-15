@@ -81,8 +81,15 @@ Use WordPress's own security APIs (nonces, capabilities, `sanitize_*`, `esc_*`, 
 > Never trust the frontend to tell the backend that a payment succeeded.
 
 - Payment status is confirmed by a server-side call to the provider, or by a signature-verified webhook.
-- Every transaction attempt is recorded with its provider reference and verification result.
-- Amount and currency are re-checked server-side against the order before marking it paid.
+- Every transaction attempt is recorded with its provider reference and verification result. The row is
+  written **before** the gateway is called and closed as `failed` if that call never returns — the attempt
+  worth having is the one where a gateway may have taken money on a request this side then dropped.
+- Amount and currency are re-checked server-side against the order before marking it paid. **A report that
+  states no currency fails that check rather than skipping it** (§59): Chargily's webhook payload carries an
+  amount and no currency, and the lenient reading answered "matches" on a payload where the comparison had
+  never run.
+- Where a provider's webhook cannot carry what the re-check needs, the handler **re-fetches** and acts on
+  that. A signature proves who sent a message; it does not prove the money.
 
 ## Webhooks
 
@@ -100,9 +107,16 @@ receive → verify signature/auth → validate payload → identify event
 ### Where the secret lives
 
 - One secret per provider **per environment**, in `.env` only: `YALIDINE_WEBHOOK_SECRET`,
-  `ZR_EXPRESS_WEBHOOK_SECRET`, `CHARGILY_WEBHOOK_SECRET`. Read through `Config::secret()` and handed to the
-  verifier by the plugin bootstrap — the same path `Plugin::shippingProviders()` already uses for API
-  credentials, and for the same reason: one place in the codebase reads a provider's credentials.
+  `ZR_EXPRESS_WEBHOOK_SECRET`, `CHARGILY_SECRET_KEY`. Read through `Config::secret()` and handed to the
+  verifier by the plugin bootstrap — the same path `Plugin::shippingProviders()` and
+  `Plugin::paymentProviders()` already use for API credentials, and for the same reason: one place in the
+  codebase reads a provider's credentials.
+- **Chargily has no separate webhook secret, and §59 removed the variable that pretended it did.** It signs
+  with the API secret key itself — its documentation, its own WooCommerce plugin and its PHP SDK all agree —
+  so `CHARGILY_WEBHOOK_SECRET` had nothing that could correctly go in it, and anything anyone put there would
+  have failed every signature check in silence. A slot that can only be filled in wrongly is worse than no
+  slot. The rule this section states is "one secret per provider per environment"; for Chargily that secret
+  happens to be the API key, which is a fact about the provider rather than an exception to the rule.
 - Never an option, never a constant, never a query parameter, never part of the route. A webhook URL is not
   a secret — it appears in the provider's dashboard, in their logs and in ours — so a "secret path" is not
   authentication and must never be treated as any.
@@ -136,10 +150,23 @@ rule as "payment status is verified server-side, never believed from a callback"
 - **Timestamp tolerance: 5 minutes**, in either direction — clock skew is not one-sided. This is only
   meaningful where the timestamp is *inside* the signed material, as Svix's is. Where it is not, there is
   nothing binding a timestamp to the payload and the check is theatre; that is one more reason the
-  body-secret shape may not be acted on directly.
+  body-secret shape may not be acted on directly. Chargily puts no timestamp in a header at all, but its
+  event's `created_at` is in the body, which is what the HMAC covers — so the tolerance binds there too, and
+  is enforced.
+- **The tolerance's cost is paid by a reconciliation poll, not by relaxing it.** Chargily does not document
+  how long it retries, so a genuine retry arriving after five minutes is refused — correctly, since the
+  alternative is accepting an event captured off the wire last week. `wp algerian-commerce sync-payments`
+  (hourly cron, or a real scheduler) asks the gateway about every payment still `pending`, so a refused or
+  never-delivered event costs minutes of delay instead of a payment nobody recorded. A webhook endpoint whose
+  strictness has no such backstop will eventually be loosened by whoever is on call.
 - **The event id is claimed, not checked.** A repeat delivery is acknowledged with 200 and dropped. The claim
   is a write-once insert whose duplicate-key failure *is* the idempotency answer — a read-then-write races
-  precisely when a provider retries in parallel, which is the case it exists for.
+  precisely when a provider retries in parallel, which is the case it exists for. `ac_webhook_events`
+  (migration 008) holds it, `UNIQUE (provider, event_id)`; `WebhookEventRepository` has one method and
+  deliberately no `has()`.
+- The claim is taken **before** processing, which means a retry after a failed process finds it already taken
+  and is answered as a duplicate. The 500 such a failure returns is honest — it puts the failure in the
+  provider's delivery log as well as ours — but it is not what recovers the event. The reconciliation poll is.
 - Where a provider sends no event id, the id is the SHA-256 of the signed material (`{id}.{timestamp}.{body}`,
   or the body alone), which is stable across a genuine retransmission and distinct between real events.
 - Duplicate delivery must never duplicate a payment, shipment, order transition, or notification.

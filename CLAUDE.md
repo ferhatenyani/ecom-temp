@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53 and §55–§58 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53 and §55–§59 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
-ZR Express and the payment abstraction — and its
+ZR Express, the payment abstraction and Chargily — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -15,11 +15,12 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53 and §55–§58 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53 and §55–§59 are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
-shipping rules, the Yalidine and ZR Express adapters, the security review and the payment abstraction.
-**Next up is §59, Chargily**, which brings PLAN §19's transaction table with it. The two couriers' webhooks
-are also unblocked now that §55 has ended with a written rule; §56 and §57 deferred them for exactly that.
+shipping rules, the Yalidine and ZR Express adapters, the security review, the payment abstraction and
+Chargily with PLAN §19's transaction table. **Next up is §60's remaining half**: the two couriers' webhooks,
+which §56 and §57 deferred until §55 produced a written rule and which now have a working implementation of
+that rule to copy in `Payments/PaymentWebhookController` and `integrations/Chargily`.
 
 **That rule is `docs/SECURITY.md` → "Webhooks", and it is not negotiable per provider.** The short form:
 the secret is `.env`-only and reaches the verifier through the bootstrap, as API credentials do; a webhook
@@ -51,8 +52,29 @@ are read. Everything crossing the boundary is one of our value objects — `Paym
 actually use, and proof the seam works before §59 puts a network call behind it.
 `PaymentStatus::accepts()` carries the one rule that protects money: from `paid`, **only `refunded`** —
 providers send late `pending` events and webhooks arrive out of order, and without it one of them un-pays a
-settled order. There is **no transaction table yet**; PLAN §19 owns it and it lands with Chargily in §59,
-because designing its columns against an imagined provider is exactly what §56 forbids.
+settled order. PLAN §19's transaction table arrived with Chargily in §59, and waiting paid: `amount` is `decimal(12,2)`
+rather than an integer of minor units, because Chargily turned out to quote in **dinars**.
+
+Chargily (§59) is `integrations/Chargily/`, **verified against the live test API on 2026-08-15** — test keys
+are free, so unlike §56 nothing stayed a guess and `grep -rn ASSUMPTION integrations/Chargily` is empty.
+Four things the run settled that its reference does not say: `expired` is a real status though the documented
+enum omits it; a fractional amount is accepted though the type is documented `integer`; `checkout_url` comes
+back `http://` though the docs write `https://`, and is corrected because that is where a shopper types card
+details; and every response embeds the merchant's own record (trade register, NIS, NIF, `satim_credentials`),
+which is why stored metadata is an allowlist rather than the payload.
+**Chargily has one secret, not two** — it signs webhooks with the API secret key itself, so
+`CHARGILY_WEBHOOK_SECRET` was deleted rather than left as a slot that could only be filled in wrongly, and
+the key's `test_sk_` prefix picks the environment so a live key cannot be pointed at the test URL.
+**A verified webhook is still re-fetched**: its checkout object carries no `currency`, so SECURITY.md's
+"amount *and* currency" re-check is unsatisfiable from the payload — the signature proves the sender, the
+re-fetch proves the money. `PaymentReport::matches()` was tightened accordingly: a report stating no currency
+now fails a check that was given one instead of skipping it.
+`ac_payment_transactions` is migration 007 and `ac_webhook_events` migration 008 (`Schema::VERSION` is 8);
+the event claim is a write-once insert whose duplicate-key failure *is* the answer, never a read.
+**Several transactions per order is the design**, and there is deliberately no mirror of migration 006's
+"one live per order" index: a duplicated parcel is a van, a duplicated checkout is a link nobody clicks.
+`wp algerian-commerce sync-payments` (hourly cron too) is the safety net under the five-minute replay window,
+since Chargily does not document its retry schedule — a refused late retry costs minutes, not a payment.
 
 Shipping follows the same rule: a parcel's status never moves the order. `ac_shipments` is migration 004.
 **One live shipment per order is enforced by the schema, not by a check** (migration 006):
@@ -141,11 +163,10 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `COD/`, `Shipping/`, `Geography/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
+`Customers/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
-`tests/`, plus `integrations/ZRExpress/` and `Payments/`. Still to come: `Analytics/`, `CMS/`, … and
-`integrations/Chargily/`.
+`tests/`, plus `integrations/ZRExpress/` and `integrations/Chargily/`. Still to come: `Analytics/`, `CMS/`, …
 
 Bulk reference data lives in `data/` as JSON and is loaded by a WP-CLI importer — never inlined into PHP files
 (roadmap §51). Datasets ship inside the plugin, because the plugin is what gets cloned and deployed per client.
@@ -227,8 +248,10 @@ curl http://localhost:8090/wp-json/algerian-commerce/v1/health   # → {"success
 `.env` (gitignored) holds `DB_PASSWORD`, `DB_ROOT_PASSWORD`, `WP_PORT`, and provider credentials
 (`YALIDINE_API_ID`, `YALIDINE_API_TOKEN`, `YALIDINE_WEBHOOK_SECRET` — Yalidine authenticates with two headers,
 not a key/secret pair — plus `ZR_EXPRESS_TENANT_ID`, `ZR_EXPRESS_API_KEY`, `ZR_EXPRESS_WEBHOOK_SECRET`,
-`CHARGILY_*`, `SMTP_*`); `.env.example` mirrors those keys with blank values. `WP_PORT` is honoured —
-`compose.yaml` publishes `${WP_PORT:-8090}:80`.
+`CHARGILY_SECRET_KEY` — **one key, which also signs the webhooks** — and `SMTP_*`); `.env.example` mirrors
+those keys with blank values. `WP_PORT` is honoured — `compose.yaml` publishes `${WP_PORT:-8090}:80`.
+**A variable in `.env` reaches the plugin only if `compose.yaml` passes it into the container**, in both the
+`wordpress` and `wpcli` services — `Config` reads `getenv()`, and the containers get nothing by default.
 
 `scripts/test.sh` runs every stage — `syntax`, `unit`, `rest` (in-process, `tests/Api/`) and `http`
 (`scripts/test-api.sh`). Pass a stage name to run just one. The `http` stage is not redundant:

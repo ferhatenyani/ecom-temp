@@ -73,7 +73,20 @@ final class PaymentReport
             return false;
         }
 
-        if ($expectedCurrency !== '' && $this->currency !== ''
+        /*
+         * An unstated currency fails, and §59 is why the exception it used to
+         * get is gone. Chargily's *webhook* carries a checkout object with an
+         * amount and no currency at all — so the lenient version answered "yes,
+         * this matches" on a payload where the currency check had simply not
+         * happened. That is the shape docs/SECURITY.md's rule exists to refuse:
+         * a check that quietly does not run is worse than one that fails, and a
+         * caller with an expectation to test is entitled to an answer about it.
+         *
+         * Nothing legitimate loses by this. A provider that reports an amount
+         * reports what it is denominated in; a caller that does not care passes
+         * no expected currency and reaches this branch never.
+         */
+        if ($expectedCurrency !== ''
             && strtoupper(trim($this->currency)) !== strtoupper(trim($expectedCurrency))
         ) {
             return false;

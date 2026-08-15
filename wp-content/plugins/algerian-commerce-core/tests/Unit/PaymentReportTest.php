@@ -54,6 +54,25 @@ final class PaymentReportTest extends TestCase
     }
 
     /**
+     * An unstated currency is not a matching one either — tightened at §59.
+     *
+     * Chargily's webhook carries a checkout object with an amount and no
+     * currency, so the lenient reading answered "matches" on a payload where the
+     * currency check had simply not run. docs/SECURITY.md asks for both to be
+     * re-checked; a check that quietly does not happen is worse than one that
+     * fails.
+     */
+    public function testAReportWithNoCurrencyDoesNotMatchAnExpectedOne(): void
+    {
+        $report = new PaymentReport(PaymentStatus::PAID, 'paid', '4500.00');
+
+        self::assertFalse($report->matches('4500.00', 'DZD'));
+        // A caller with no expectation about currency still gets an answer
+        // about the amount.
+        self::assertTrue($report->matches('4500.00'));
+    }
+
+    /**
      * An unstated amount is not a matching one.
      *
      * Reading '' as zero would compare equal to nothing and pass silently, which
