@@ -59,12 +59,27 @@ services:
       # Add feature flags (ENABLE_COD, ...) here the same way when needed.
       AC_CORS_ORIGINS: ${AC_CORS_ORIGINS:-}
       AC_LOG_LEVEL: ${AC_LOG_LEVEL:-}
-      # Chargily — roadmap §59. One key: it authenticates API calls *and* signs
-      # the webhooks, so there is no separate webhook secret. A key beginning
+      # Provider credentials and feature flags. Config reads getenv(), so a
+      # variable in .env reaches the plugin only if it is listed here — an
+      # adapter whose keys are not passed through simply never registers, and
+      # says nothing about why.
+      #
+      # Chargily takes one key: it authenticates API calls *and* signs the
+      # webhooks, so there is no separate webhook secret. A key beginning
       # test_sk_ selects Chargily's test environment by itself.
       ENABLE_CHARGILY: ${ENABLE_CHARGILY:-}
       CHARGILY_SECRET_KEY: ${CHARGILY_SECRET_KEY:-}
       ENABLE_COD: ${ENABLE_COD:-}
+      # Yalidine authenticates with two headers rather than a key/secret pair.
+      ENABLE_YALIDINE: ${ENABLE_YALIDINE:-}
+      YALIDINE_API_ID: ${YALIDINE_API_ID:-}
+      YALIDINE_API_TOKEN: ${YALIDINE_API_TOKEN:-}
+      YALIDINE_WEBHOOK_SECRET: ${YALIDINE_WEBHOOK_SECRET:-}
+      # ZR Express: X-Tenant identifies the account, X-Api-Key authenticates it.
+      ENABLE_ZR_EXPRESS: ${ENABLE_ZR_EXPRESS:-}
+      ZR_EXPRESS_TENANT_ID: ${ZR_EXPRESS_TENANT_ID:-}
+      ZR_EXPRESS_API_KEY: ${ZR_EXPRESS_API_KEY:-}
+      ZR_EXPRESS_WEBHOOK_SECRET: ${ZR_EXPRESS_WEBHOOK_SECRET:-}
     volumes:
       - wordpress_data:/var/www/html
       - ./wp-content/plugins/algerian-commerce-core:/var/www/html/wp-content/plugins/algerian-commerce-core
@@ -103,12 +118,27 @@ services:
       # Add feature flags (ENABLE_COD, ...) here the same way when needed.
       AC_CORS_ORIGINS: ${AC_CORS_ORIGINS:-}
       AC_LOG_LEVEL: ${AC_LOG_LEVEL:-}
-      # Chargily — roadmap §59. One key: it authenticates API calls *and* signs
-      # the webhooks, so there is no separate webhook secret. A key beginning
+      # Provider credentials and feature flags. Config reads getenv(), so a
+      # variable in .env reaches the plugin only if it is listed here — an
+      # adapter whose keys are not passed through simply never registers, and
+      # says nothing about why.
+      #
+      # Chargily takes one key: it authenticates API calls *and* signs the
+      # webhooks, so there is no separate webhook secret. A key beginning
       # test_sk_ selects Chargily's test environment by itself.
       ENABLE_CHARGILY: ${ENABLE_CHARGILY:-}
       CHARGILY_SECRET_KEY: ${CHARGILY_SECRET_KEY:-}
       ENABLE_COD: ${ENABLE_COD:-}
+      # Yalidine authenticates with two headers rather than a key/secret pair.
+      ENABLE_YALIDINE: ${ENABLE_YALIDINE:-}
+      YALIDINE_API_ID: ${YALIDINE_API_ID:-}
+      YALIDINE_API_TOKEN: ${YALIDINE_API_TOKEN:-}
+      YALIDINE_WEBHOOK_SECRET: ${YALIDINE_WEBHOOK_SECRET:-}
+      # ZR Express: X-Tenant identifies the account, X-Api-Key authenticates it.
+      ENABLE_ZR_EXPRESS: ${ENABLE_ZR_EXPRESS:-}
+      ZR_EXPRESS_TENANT_ID: ${ZR_EXPRESS_TENANT_ID:-}
+      ZR_EXPRESS_API_KEY: ${ZR_EXPRESS_API_KEY:-}
+      ZR_EXPRESS_WEBHOOK_SECRET: ${ZR_EXPRESS_WEBHOOK_SECRET:-}
     volumes:
       - wordpress_data:/var/www/html
       - ./wp-content/plugins/algerian-commerce-core:/var/www/html/wp-content/plugins/algerian-commerce-core
