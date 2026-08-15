@@ -1,7 +1,7 @@
 services:
 
   # Versions are pinned to the exact builds this stack was verified against —
-  # WordPress 7.0.4, WP-CLI 2.12.0, MySQL 8.0.46, with WooCommerce 11.0.1 and
+  # WordPress 7.0.4, WP-CLI 2.12.0, MySQL 8.4.11, with WooCommerce 11.0.1 and
   # PHP 8.4. `latest` meant a routine `docker compose pull` could swap a major
   # version underneath the plugin with no changelog review, which is precisely
   # what CLAUDE.md's "pin versions once the environment is known-good" forbids.
@@ -12,12 +12,22 @@ services:
   # wp-includes/version.php are both absent, so an existing install is upgraded
   # with `wp core update` and the tag is kept in step so the two never disagree.
   #
-  # MySQL 8.0 reached end of life on 2026-04-30 and 8.0.46 is the last release
-  # of that line — no further security patches exist. Moving to 8.4 LTS
-  # (supported to 2032) is a separate, data-bearing upgrade.
+  # `db` is MySQL 8.4 LTS, upgraded in place from 8.0.46 after that line reached
+  # end of life on 2026-04-30. 8.4 is supported to 2032-04-30.
+  #
+  # **There is no in-place downgrade.** Booting 8.4 against a volume upgrades it
+  # irreversibly; retagging back to 8.0.46 will not work, because the data files
+  # belong to 8.4 from the first boot. The only way back is a dump taken while
+  # 8.0 was still running, restored into a fresh volume.
+  #
+  # Two things that must be true before any future major upgrade, learned here:
+  # take and *verify* the dump by restoring it into a throwaway container of the
+  # target version, and stop the database with `docker compose stop -t 120 db`.
+  # The default 10s timeout kills mysqld mid-shutdown (exit 137), which turns
+  # the next boot into crash recovery *and* a version upgrade at once.
 
   db:
-    image: mysql:8.0.46
+    image: mysql:8.4.11
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: wordpress

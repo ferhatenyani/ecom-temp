@@ -155,7 +155,7 @@ disk — a unit test enforces that. Migrations must never require deleting exist
 
 ## Environment
 
-Docker Compose (`compose.yaml`) runs three services: `db` (mysql:8.0.46), `wordpress` (7.0.4, PHP 8.4) and
+Docker Compose (`compose.yaml`) runs three services: `db` (mysql:8.4.11 LTS), `wordpress` (7.0.4, PHP 8.4) and
 `wpcli` (2.12.0, run-on-demand), with WooCommerce 11.0.1. Every tag is pinned to an exact build; upgrade one
 at a time on a branch and re-run the suites.
 `wp-content/plugins/algerian-commerce-core` is bind-mounted into both `wordpress` and `wpcli`; the rest of WordPress lives
@@ -173,9 +173,16 @@ WordPress's bundled Akismet and Hello Dolly are **deleted**, not deactivated —
 headless backend and unused code still has to be patched. They live in the volume, so a fresh install brings
 them back; deleting them belongs in §66's `setup.sh` when it exists.
 
-**`db` is past end of life.** MySQL 8.0 ended on 2026-04-30 and 8.0.46 is the last release of the line, so
-no further security patch will ever exist. Moving to 8.4 LTS (supported to 2032) is outstanding and is a
-data-bearing upgrade, not a tag change; note that 8.4 removes `mysql_native_password` entirely.
+**`db` is MySQL 8.4 LTS**, upgraded in place from 8.0.46 after that line reached end of life on 2026-04-30.
+Supported to 2032-04-30. `caching_sha2_password` is still how it authenticates, so `wp db query` remains
+broken in this stack for the reason above — use `wp eval` with `$wpdb`.
+
+**A major MySQL upgrade has no in-place downgrade.** Booting a new major against the volume rewrites it
+irreversibly; retagging back does not work. Before the next one, do all three: dump while the *old* version
+is still running, **verify the dump by restoring it into a throwaway container of the target version** and
+diffing row counts (SECURITY.md: an untested backup is not a backup), and stop the database with
+`docker compose stop -t 120 db`. The default 10-second timeout SIGKILLs mysqld mid-shutdown — exit 137 —
+which makes the next boot do crash recovery *and* a version upgrade at once.
 
 ```bash
 docker compose up -d                  # start (WordPress at http://localhost:8090)
