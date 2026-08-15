@@ -16,9 +16,10 @@ the migration runner, roles and capabilities, and audit recording.
 
 Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (authentication), §50
 (orders and customers), §51 (Algerian geography), §52 (COD), §53 (the shipping abstraction), §4
-step 28b (shipping rules and pricing, PLAN §14), §56 (Yalidine) and §57 (ZR Express) are in, along
-with rate limiting. Not implemented yet: 2FA, customer sessions, the couriers' webhooks (they need
-§55's security review first — the adapters poll), payments, analytics, CMS.
+step 28b (shipping rules and pricing, PLAN §14), §56 (Yalidine), §57 (ZR Express), §58 (the payment
+abstraction), §59 (Chargily), §60 (all three webhooks) and §61 (CMS and media) are in, along with
+rate limiting. Not implemented yet: 2FA, customer sessions, SEO and marketing, analytics,
+notifications, import/export.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -63,6 +64,13 @@ integrations/ZRExpress/      ZRExpressProvider, ZRExpressClient, ZRExpressParcel
                              ZRExpressSettings, ZRExpressCredentials
 src/Geography/               LocationController, GeoService, GeoDataset, GeoSlug,
                              GeoRepository, GeoImporter
+src/CMS/                     ContentTypes (the post types, taxonomy and menu
+                             locations), CmsController, CmsService,
+                             CmsRepository, CmsPresenter, HomepageSections
+src/Media/                   MediaController, MediaService, MediaRepository,
+                             MediaPresenter, MediaInput, UploadedFile,
+                             UploadPolicy (every rule POST /media enforces),
+                             ImageSanitizer (the metadata strip)
 data/algeria/                wilayas.json, communes.json, provider-destinations.json,
                              sources/ (the CSV they are built from)
 src/API/                     Response envelope, ApiException, ErrorNormalizer, Cors, OriginPolicy,
@@ -127,6 +135,16 @@ tests/Unit/                  unit tests — no WordPress required
 | GET | `/locations/wilayas/{id}/communes` | **public** | its communes (`search`, `postal_code`, `active_only`) |
 | GET | `/locations/communes/{id}` | **public** | one commune |
 | GET | `/locations/coverage` | **public** | how much of the dataset is loaded |
+| GET | `/cms/homepage` | `ac_manage_content` | the ordered `{type, data}` sections §23 defines |
+| GET | `/cms/pages/{path}` | `ac_manage_content` | a published page, by **path** (`legal/terms`), content rendered |
+| GET | `/cms/banners` | `ac_manage_content` | list (paginated; `placement`, `search`) |
+| GET | `/cms/faqs` | `ac_manage_content` | list (paginated; `category`, `search`) |
+| GET | `/cms/menus/{location}` | `ac_manage_content` | a nav menu as a tree (`primary`, `footer`) |
+| POST | `/media` | `ac_manage_content` | multipart upload, one file, `alt`/`title`/`caption` alongside → 201 |
+| GET | `/media` | `ac_manage_content` | the library (paginated; `search`, `type`, `orderby`, `order`) |
+| GET | `/media/{id}` | `ac_manage_content` | read |
+| PATCH | `/media/{id}` | `ac_manage_content` | alt text, title, caption — never the bytes |
+| DELETE | `/media/{id}` | `ac_manage_content` | permanent, file included |
 
 ```bash
 curl http://localhost:8090/wp-json/algerian-commerce/v1/health
@@ -1705,6 +1723,135 @@ nothing else was listening. The plugin bootstrap already carried exactly this re
 for `integrations/`; it had never been applied to `src/`, where a classmap makes it
 more necessary rather than less.
 
+## CMS (§61)
+
+Five read endpoints over content WordPress already knows how to store. There is no write surface,
+and that is what §61 specifies: WordPress stores content, Next.js renders it, and authoring is the
+editor plus WP-CLI. A CMS write API belongs to PLAN §52's admin coverage.
+
+### Nothing here is a custom table
+
+| What | Where it lives |
+| --- | --- |
+| pages | core `page` post type, addressed by **path** |
+| banners | `ac_banner` post type — title, caption, featured image, `menu_order`, plus link and placement meta |
+| FAQs | `ac_faq` post type, grouped by the `ac_faq_category` taxonomy |
+| menus | core nav menus, assigned to the `primary` / `footer` locations this plugin registers |
+| homepage | the `ac_cms_homepage` option — one document of `{type, data}` sections |
+
+`docs/ARCHITECTURE.md` §7 reserves custom tables for genuinely custom, high-volume domains, and a
+shop's FAQ list is neither. `Schema::VERSION` is unchanged at 8.
+
+The post types are registered `public => false, show_ui => true, show_in_rest => false`: a headless
+backend must not give a banner a URL of its own, and `/wp/v2` is not this project's contract — a
+second, unversioned way to read the same content is a second thing to secure. The editor screens are
+WordPress's own, and they are the only authoring surface §61 asks for.
+
+### One capability, both doors
+
+`ac_manage_content` guards all five routes **and** the dashboard screens, because the plugin's roles
+carry no core post capabilities: with the default `capability_type`, an `ac_admin` would have been
+able to read a banner through the API and not see it in wp-admin.
+
+Map the **primitive** capabilities only. Registering `'edit_post' => 'ac_manage_content'` writes that
+name into WordPress's global `$post_type_meta_caps`, after which every check of `ac_manage_content`
+anywhere maps to `delete_post` with no post id and resolves to `do_not_allow` — every CMS and media
+route answered 403 to the exact capability being asked about, administrators included.
+`map_meta_cap => true` derives the three meta capabilities from the primitives, which is the point of
+it. `tests/Api/cms.php` is the only reason this did not ship.
+
+### The homepage is a document, not eleven rows
+
+One value, edited as a whole:
+
+```bash
+wp option update ac_cms_homepage --format=json \
+  '{"sections":[{"type":"hero","data":{"title":"Soldes"}},{"type":"featured_products","data":{"limit":8}}]}'
+```
+
+`HomepageSections` is pure and normalises on read against §23's eleven types. A malformed section is
+**dropped and reported** in the response `meta` — never silently. An option is edited by hand, and a
+section that vanishes without a word is the one failure a content manager cannot diagnose. A garbled
+option degrades to an empty homepage; it never 500s.
+
+### A page is addressed by its path
+
+`legal/terms`, not `terms`. That is how WordPress addresses a hierarchical page, and it is the
+unambiguous reading — two children called `terms` under different parents are two pages, and a bare
+slug lookup would have to pick one. Menus come back as a **tree**, because a navigation menu is one
+and every client would otherwise rebuild the nesting from `menu_item_parent`, once each, differently.
+
+## Media (§61)
+
+`POST /media` is the highest-risk endpoint in this API: the only one that writes a file a web server
+might later execute. **Read `docs/SECURITY.md` → "File uploads" before touching it** — that section
+is the rule, the way "Webhooks" is for inbound requests. What follows is the shape, not the reasoning.
+
+```
+authorize → rate limit → read the multipart entry → validate every way
+          → move → strip metadata → register → audit
+```
+
+Every rule lives in `UploadPolicy`, which is **pure**: no WordPress, no globals, so each §65 abuse
+case is a unit test rather than a live experiment.
+
+| Check | How |
+| --- | --- |
+| size | 8 MiB, clamped to PHP's `upload_max_filesize` — the lower of the two always wins |
+| filename | a path, a `..`, a NUL or an interior `.php` is **rejected**, never repaired |
+| contents | `finfo` magic bytes **and** `getimagesize()`, which must agree |
+| extension | the allowlist, compared against what the contents proved |
+| once more | `wp_handle_upload()`'s own check, from an allowlist generated from ours |
+
+**jpg, jpeg, png, webp — nothing else.** `svg` is XML and carries `<script>`; `pdf` has its own
+scripting engine; `gif` is only wanted for animation, which cannot survive the strip; `avif` decoding
+is a GD build option, so a file accepted on one host would be unsanitisable on another.
+
+### The stored file is not the file that was sent
+
+The name is rewritten — the readable stem survives, folded to `[a-z0-9-]`, and the extension comes
+from the **sniffed type** — and the bytes are re-encoded from decoded pixels, which is what strips
+EXIF, GPS and comments, and what makes a polyglot inert. An image that cannot be re-encoded is
+refused and unlinked rather than stored as it arrived.
+
+`ImageSanitizer` pins the editor to GD through the `wp_image_editors` filter, and the reason is
+measured rather than assumed: **`WP_Image_Editor_Imagick::save()` keeps EXIF and JPEG comments**
+(`strip_meta()` is only reached through the resize path, and a same-size resize early-returns first),
+while the two containers in this stack disagreed about which editor WordPress picks. A security
+property that depends on which PHP process handled the request is not a property. The costs are one
+JPEG recompression at quality 90 and no ICC profile; alpha survives, which was measured too.
+
+### The gap this leaves, on purpose
+
+A **Product Manager cannot upload.** They can point a product at an image that exists (§47c takes an
+attachment id) and cannot create one. `docs/PLAN.md` §3 defines no media capability, and both ways of
+closing the gap are worse than naming it: inventing `ac_manage_media` puts a capability in the matrix
+PLAN.md does not have, and adding `ac_manage_content` to Product Manager hands whoever edits the
+catalogue the homepage as well.
+
+### Two things the environment had to change
+
+`docker/php-uploads.ini` raises `upload_max_filesize` from the image's 2 MB, which is below one
+photograph and would have made the 8 MiB cap unreachable — PHP discards an oversized body before any
+application code runs, so the two numbers move together. And `docker/apache-wordpress.conf` makes
+`wp-content/uploads` non-executable: the allowlist and the re-encode are application-layer defences,
+and that block is the layer that does not depend on either being right. `scripts/test-api.sh` asserts
+it, because a vhost edit could silently drop it.
+
+### Where the upload tests live, and why they are split
+
+`tests/Api/media.php` proves every hostile file is refused, through the real route. It stops there:
+`wp_handle_upload()` finishes with `move_uploaded_file()`, which by design fails for anything that
+did not arrive over a real POST, and `rest_do_request()` cannot make one. Everything below the
+refusals — the file actually being written, the metadata actually gone, the payload actually gone —
+is in `scripts/test-api.sh`, with `curl -F`. Neither stage can see what the other does.
+
+Two bugs came out of that split. `wp_handle_upload()` takes its first argument **by reference**, so
+an array literal is a fatal `TypeError` — and only a legitimate upload reaches that line, which is
+exactly the case no refusal test exercises. And a traversal filename never reaches the application
+over real HTTP at all: PHP's multipart parser applies `basename()` before `$_FILES` exists. Our check
+is the layer that does not depend on that being true.
+
 ## Security review (§55)
 
 §55 is a review rather than a feature: walk everything that ships — `Auth/`, `Security/`, `Permissions/`,
@@ -1998,3 +2145,13 @@ The line between the two is per-client, not per-secret: a credential is an envir
 anything a shop owner would reasonably change — the wilaya they ship from, whether they insure a
 parcel — is a setting (`ac_yalidine_settings`). This plugin is cloned per client, so a value that
 belongs to *one* client must never end up in code.
+
+`AC_MEDIA_MAX_BYTES` (default 8388608) and `AC_RATE_LIMIT_UPLOADS` (default 30/minute) tune
+`POST /media`. The size cap is only ever the **lower** of that value and PHP's `upload_max_filesize`,
+so raising it means raising `docker/php-uploads.ini` too — otherwise the web server refuses the body
+before this plugin can say anything about it.
+
+**A variable reaches the plugin only if `compose.yaml` passes it into the container**, in both the
+`wordpress` and `wpcli` services. `Config` reads `getenv()`, and the containers get nothing by
+default; §61 found `AC_RATE_LIMIT_*` in that state — documented, read by `RateLimiter`, and
+unreachable — and added them alongside the media keys.

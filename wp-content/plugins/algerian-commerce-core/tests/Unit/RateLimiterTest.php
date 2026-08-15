@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace AlgerianCommerce\Tests\Unit;
 
+use AlgerianCommerce\Core\Config;
+use AlgerianCommerce\Core\Logger;
 use AlgerianCommerce\Security\RateLimiter;
+use AlgerianCommerce\Security\RateLimitStore;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -85,5 +88,45 @@ final class RateLimiterTest extends TestCase
         self::assertGreaterThan(RateLimiter::DEFAULT_WRITES, RateLimiter::DEFAULT_READS);
         self::assertLessThan(RateLimiter::DEFAULT_WRITES, RateLimiter::DEFAULT_AUTH_FAILURES);
         self::assertGreaterThan(RateLimiter::WINDOW, RateLimiter::AUTH_FAILURE_WINDOW);
+    }
+
+    /**
+     * An upload is a write that costs megabytes and a CPU-bound decode rather
+     * than a database row, so its budget has to be the smaller one — roadmap
+     * §61. If these two are ever equal, the upload limit has stopped doing
+     * anything the write limit was not already doing.
+     */
+    public function testUploadsAreTighterThanOrdinaryWrites(): void
+    {
+        self::assertLessThan(RateLimiter::DEFAULT_WRITES, RateLimiter::DEFAULT_UPLOADS);
+        self::assertGreaterThan(0, RateLimiter::DEFAULT_UPLOADS);
+    }
+
+    public function testTheUploadLimitIsConfigurableAndNamedForItsOwnBucket(): void
+    {
+        $limiter = new RateLimiter(
+            new RateLimitStore(),
+            new Logger('test'),
+            new Config(['AC_RATE_LIMIT_UPLOADS' => '5'])
+        );
+
+        $limit = $limiter->uploadLimit();
+
+        self::assertSame(5, $limit->limit);
+        self::assertSame(RateLimiter::WINDOW, $limit->windowSeconds);
+        // Its own name, so an upload burst cannot spend the write allowance's
+        // counter or be spent by one.
+        self::assertSame('upload', $limit->name);
+    }
+
+    public function testAnUnusableUploadLimitFallsBackToTheDefault(): void
+    {
+        $limiter = new RateLimiter(
+            new RateLimitStore(),
+            new Logger('test'),
+            new Config(['AC_RATE_LIMIT_UPLOADS' => 'lots'])
+        );
+
+        self::assertSame(RateLimiter::DEFAULT_UPLOADS, $limiter->uploadLimit()->limit);
     }
 }

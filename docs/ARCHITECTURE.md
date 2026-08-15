@@ -214,7 +214,12 @@ Namespace `algerian-commerce/v1`. One envelope everywhere:
   `enum` and `pattern` unenforced.
 
 Planned surface: `/products`, `/orders`, `/customers`, `/inventory`, `/analytics/*`, `/shipping/shipments`,
-`/payments/checkout`, `/cms/*`, `/webhooks/{chargily,yalidine,zrexpress}`, `/health`.
+`/payments/checkout`, `/cms/*`, `/media`, `/webhooks/{chargily,yalidine,zrexpress}`, `/health`.
+
+`POST /media` is the one route that writes a file rather than a row, and it is governed by
+docs/SECURITY.md → "File uploads" the way the webhook routes are governed by "Webhooks". Its rules live
+in one pure class (`Media\UploadPolicy`) for the same reason the response envelope lives in one place:
+a security decision spread across a controller and a repository is a security decision nobody can read.
 
 ## 7. Database architecture
 
@@ -228,7 +233,11 @@ declaration is a promise with a concrete meaning: orders are reached only throug
 returns nothing on an HPOS one, which is the worst possible failure shape. `Orders/OrderRepository`
 is the only file allowed to touch an order object at all.
 
-Custom tables (prefix `{$wpdb->prefix}ac_`) only for genuinely custom, high-volume domains:
+Custom tables (prefix `{$wpdb->prefix}ac_`) only for genuinely custom, high-volume domains. **CMS content
+and media are the worked example of the other side of that rule** (§61): banners and FAQs are post types,
+menus are nav menus, uploads are attachments, and the homepage is a single option holding one document —
+so §61 added five endpoints, a media library and no migration at all. WordPress already stores content;
+a parallel copy of it would have to be kept in step with the editor forever.
 
 | Table | Purpose |
 | --- | --- |

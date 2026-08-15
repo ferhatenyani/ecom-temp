@@ -1,7 +1,10 @@
 # Security Requirements
 
 Read this before implementing authentication, authorization, payments, webhooks, file uploads, or any
-third-party integration. Source roadmap §26, §42, §55.
+third-party integration. Source roadmap §26, §42, §55, §61.
+
+Two sections here are **rules** rather than reminders, each settled before the code they govern was
+written: "Webhooks" (§55) for anything inbound, and "File uploads" (§61) for anything that writes a file.
 
 ## Baseline requirements
 
@@ -218,8 +221,81 @@ runtime.
 
 ## File uploads
 
-Validate real MIME type and extension against an allowlist, cap size, strip metadata, store outside
-web-executable paths where possible, and never trust the client-supplied filename.
+**This section is the rule**, as "Webhooks" is for inbound requests. It was settled by §61, which built
+`POST /media` — the only endpoint in this API that writes a file a web server might later execute.
+A route that accepts a file follows it or does not ship.
+
+The short form: validate the real MIME type and the extension against an allowlist, independently of each
+other and of the client's `Content-Type`; cap the size; strip metadata; never trust the client-supplied
+filename; and make sure the directory it lands in cannot execute anything.
+
+### Four independent checks, in this order
+
+```
+size        cheapest, and refuses before anything reads the file
+filename    hostile shapes rejected, not silently repaired
+contents    finfo magic bytes AND getimagesize(), which must agree
+extension   the allowlist, compared against what the contents proved
+```
+
+`wp_handle_upload()`'s own `wp_check_filetype_and_ext()` then runs as a fifth, from an allowlist generated
+from ours so the two cannot drift. Any one of them passing is not enough, and the order is load-bearing: a
+size check that ran after the sniff would read a 200 MB file to find out it was too big.
+
+`UploadPolicy` holds all of it and is **pure** — no WordPress, no globals — so every abuse case is a unit
+test rather than a live experiment. The client's `Content-Type` is recorded in the audit entry and never
+used to decide anything.
+
+### The stored file is not the file that was sent
+
+- **The name is rewritten.** The readable part of the client's stem survives, folded to
+  `[a-z0-9-]`; the extension comes from the **sniffed type**, never from the name. A double extension
+  cannot survive that function even if the filename check were one day loosened.
+- **The bytes are re-encoded.** Every accepted image is decoded and written back out, so what is stored is
+  pixels and nothing else. This is what strips EXIF, GPS coordinates and JPEG comments — and what makes a
+  polyglot inert, since anything appended after the end-of-image marker is simply not part of the picture.
+
+  Measured on 2026-08-15, and the reason `ImageSanitizer` pins the editor to GD with the `wp_image_editors`
+  filter: **`WP_Image_Editor_Imagick::save()` keeps EXIF and comments.** Its `strip_meta()` is only reached
+  through the resize path, and a same-size resize early-returns before it. Worse, the two containers in this
+  stack disagreed about which editor WordPress picks. A security property that depends on which PHP process
+  handled the request is not a property.
+- **An image that cannot be re-encoded is refused and unlinked**, never stored as it arrived.
+
+### The allowlist is short, and each exclusion has a reason
+
+JPEG, PNG and WebP. `svg` is XML and carries `<script>`; `pdf` has its own scripting engine; `gif` is only
+wanted for animation, which cannot survive the strip; `avif` decoding is a GD build option, so a file
+accepted on one host would be unsanitisable on another. Adding a type means adding it to the allowlist
+**and** confirming the sanitiser can re-encode it.
+
+### The directory must not execute
+
+The allowlist and the re-encode are application-layer defences. The layer that does not depend on either
+being right is the web server: `wp-content/uploads` must refuse to run anything.
+`docker/apache-wordpress.conf` denies PHP, CGI and `.htaccess` by `FilesMatch` — pure core Apache, so it is
+valid whether or not mod_php is loaded — and turns the interpreter off as well where it is. `scripts/test-api.sh`
+asserts it, because a compose or vhost edit could silently drop it. **On nginx the equivalent is a
+`location ^~ /wp-content/uploads/ { location ~ \.php$ { deny all; } }`, and it is not optional.**
+
+Uploads cannot be moved off the web root here: the storefront serves these URLs and WordPress generates
+them. "Store outside web-executable paths where possible" is satisfied by making the path non-executable
+rather than by moving it.
+
+### Authorization and rate limiting
+
+- Every media route requires `ac_manage_content`. There is deliberately no weaker second capability: a
+  Product Manager can attach an image that exists and cannot create one, which is a named gap rather than a
+  reason to widen anything. Writing files to the server is the privilege to be strictest about.
+- `POST /media` carries its **own** rate limit (`AC_RATE_LIMIT_UPLOADS`, 30/minute) on top of the
+  namespace-wide write limit. That limit was sized for endpoints that insert a row; an upload moves a file
+  and re-encodes an image.
+- The size cap is the **lower** of `AC_MEDIA_MAX_BYTES` and PHP's `upload_max_filesize`. A cap the web
+  server refuses first is a number that lies — PHP discards an oversized body before any application code
+  runs, so the two must be raised together (`docker/php-uploads.ini`).
+- Deletion is permanent, files included. An attachment in the trash still answers at the same URL, so
+  "deleted" would not be true of the only thing anyone can reach — and these files are customer-supplied
+  photographs as often as they are product shots.
 
 ## Audit logging
 

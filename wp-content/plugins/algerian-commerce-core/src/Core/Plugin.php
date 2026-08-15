@@ -21,6 +21,10 @@ use AlgerianCommerce\CLI\SyncDestinationsCommand;
 use AlgerianCommerce\CLI\SyncPaymentsCommand;
 use AlgerianCommerce\CLI\SyncShipmentsCommand;
 use AlgerianCommerce\CLI\UnlockCommand;
+use AlgerianCommerce\CMS\CmsController;
+use AlgerianCommerce\CMS\CmsRepository;
+use AlgerianCommerce\CMS\CmsService;
+use AlgerianCommerce\CMS\ContentTypes;
 use AlgerianCommerce\COD\CodController;
 use AlgerianCommerce\COD\CodRepository;
 use AlgerianCommerce\COD\CodService;
@@ -38,6 +42,11 @@ use AlgerianCommerce\Geography\GeoService;
 use AlgerianCommerce\Geography\LocationController;
 use AlgerianCommerce\Customers\CustomerRepository;
 use AlgerianCommerce\Customers\CustomerService;
+use AlgerianCommerce\Media\ImageSanitizer;
+use AlgerianCommerce\Media\MediaController;
+use AlgerianCommerce\Media\MediaRepository;
+use AlgerianCommerce\Media\MediaService;
+use AlgerianCommerce\Media\UploadPolicy;
 use AlgerianCommerce\Orders\OrderController;
 use AlgerianCommerce\Orders\OrderRepository;
 use AlgerianCommerce\Orders\OrderService;
@@ -162,6 +171,12 @@ final class Plugin
     private ?GeoRepository $geoRepository = null;
     private ?GeoService $geoService = null;
     private ?GeoImporter $geoImporter = null;
+    private ?ContentTypes $contentTypes = null;
+    private ?CmsRepository $cmsRepository = null;
+    private ?CmsService $cmsService = null;
+    private ?UploadPolicy $uploadPolicy = null;
+    private ?MediaRepository $mediaRepository = null;
+    private ?MediaService $mediaService = null;
     private bool $booted = false;
 
     private function __construct()
@@ -197,6 +212,13 @@ final class Plugin
          * calling customers about cancelled orders is the failure this stops.
          */
         $this->codSubscriber()->register();
+        /*
+         * Also not tied to the REST API: a post type has to exist on every
+         * request, or WP_Query returns nothing and the editor screens are
+         * absent — and it must be registered on `init`, which is later than
+         * this. See ContentTypes.
+         */
+        $this->contentTypes()->register();
         $this->registerShipmentPolling();
         $this->registerPaymentPolling();
         $this->registerCliCommands();
@@ -329,7 +351,64 @@ final class Plugin
                 $this->shippingProviders(),
                 $this->shippingService()
             ),
+            new CmsController($this->logger(), $this->cmsService()),
+            new MediaController($this->logger(), $this->mediaService()),
         ]);
+    }
+
+    public function contentTypes(): ContentTypes
+    {
+        return $this->contentTypes ??= new ContentTypes();
+    }
+
+    public function cmsRepository(): CmsRepository
+    {
+        return $this->cmsRepository ??= new CmsRepository();
+    }
+
+    public function cmsService(): CmsService
+    {
+        return $this->cmsService ??= new CmsService($this->cmsRepository(), $this->logger());
+    }
+
+    /**
+     * What `POST /media` will accept — roadmap §61.
+     *
+     * The cap is resolved once, here, from the configured value and PHP's own
+     * `upload_max_filesize`. Both are needed: a 20 MB setting on a host that
+     * accepts 2 MB is a promise the web server breaks before this plugin ever
+     * sees the request.
+     */
+    public function uploadPolicy(): UploadPolicy
+    {
+        return $this->uploadPolicy ??= UploadPolicy::withCap(
+            $this->config()->get('AC_MEDIA_MAX_BYTES'),
+            function_exists('wp_max_upload_size') ? (int) wp_max_upload_size() : null
+        );
+    }
+
+    public function mediaRepository(): MediaRepository
+    {
+        return $this->mediaRepository ??= new MediaRepository(
+            $this->uploadPolicy(),
+            new ImageSanitizer($this->logger())
+        );
+    }
+
+    /**
+     * Takes the rate limiter, which no other service does: an upload is the
+     * one write whose cost is measured in megabytes and CPU rather than in
+     * rows, so it carries a limit of its own on top of the namespace-wide one.
+     */
+    public function mediaService(): MediaService
+    {
+        return $this->mediaService ??= new MediaService(
+            $this->mediaRepository(),
+            $this->uploadPolicy(),
+            $this->rateLimiter(),
+            $this->auditLogger(),
+            $this->logger()
+        );
     }
 
     public function shipmentRepository(): ShipmentRepository

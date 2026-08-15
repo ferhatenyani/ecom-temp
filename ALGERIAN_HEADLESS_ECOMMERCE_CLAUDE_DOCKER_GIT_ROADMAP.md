@@ -355,6 +355,7 @@ transactions
 CMS
 SEO
 pixels
+Meta Pixel + Conversions API
 analytics
 notifications
 ```
@@ -408,6 +409,13 @@ charges a customer for delivery*, which is a thing a store cannot open without.
 It needs no provider documentation, so it can be built at any point after §53
 and before a storefront quotes a price.
 
+**37b is the same device.** Step 37 is the marketing event layer; 37b is the
+first provider mapped onto it, standing to 37 as Yalidine stands to the
+shipping abstraction. It is split out because the server half is a real
+third-party integration — a token, a hashed-PII payload and a deduplication
+contract with the storefront — and §62b says so where §62 only lists event
+names.
+
 ``` text
 01. WSL 2
 02. Docker Desktop
@@ -448,6 +456,8 @@ and before a storefront quotes a price.
 35. CMS
 36. SEO
 37. Marketing/pixels
+37b. Meta Pixel + Conversions API — the first concrete provider behind
+     the marketing event layer (PLAN §26, roadmap §62b)
 38. Analytics
 39. Import/export
 40. Security hardening
@@ -3756,6 +3766,83 @@ Test the abuse cases from §65 — a PHP file renamed to `.jpg`, a polyglot
 image, a double extension, a path-traversal filename, an oversized file —
 and treat §55's checklist as applying to this endpoint too.
 
+## What was built
+
+``` text
+src/CMS/     ContentTypes, CmsController, CmsService, CmsRepository,
+               CmsPresenter, HomepageSections
+src/Media/   MediaController, MediaService, MediaRepository, MediaPresenter,
+               MediaInput, UploadedFile, UploadPolicy, ImageSanitizer
+```
+
+**No migration, and no custom table.** WordPress stores content, which was the
+instruction: banners and FAQs are post types, menus are nav menus, pages are
+pages. `Schema::VERSION` is still 8.
+
+The homepage is the one thing that is not a post. It is a single document — the
+`ac_cms_homepage` option, holding §23's `{type, data}` sections — because it is
+edited as a whole rather than an item at a time, and splitting it across eleven
+post rows would make "what does the homepage look like" a query instead of a
+value. It is written the way §20 prefers:
+
+``` bash
+wp option update ac_cms_homepage --format=json '{"sections":[{"type":"hero","data":{}}]}'
+```
+
+A malformed section is dropped **and reported** in the response `meta`, never
+silently. An option is edited by hand; a section that vanishes without a word is
+the one failure a content manager cannot diagnose.
+
+CMS is **read-only**, as this section specifies. Authoring is the WordPress
+editor and WP-CLI; a CMS write surface belongs to PLAN §52's admin coverage.
+
+## The upload checklist, line by line
+
+``` text
+MIME from contents      finfo magic bytes AND getimagesize(), which must agree
+extension allowlist     checked independently, jpg/jpeg/png/webp only
+size cap                8 MiB, clamped to PHP's own upload_max_filesize
+metadata stripped       every image re-encoded from decoded pixels
+filenames               rewritten: our stem, and the extension the bytes proved
+outside web-executable  cannot be — the storefront serves these URLs — so the
+                          uploads directory is made non-executable instead
+authorization           ac_manage_content on all five routes
+rate limiting           its own 30/minute, above the namespace write limit
+```
+
+`UploadPolicy` is pure, so every §65 abuse case is a unit test rather than a
+live experiment, and `docs/SECURITY.md` → "File uploads" is now the rule the way
+"Webhooks" is.
+
+## Three things this section found
+
+``` text
+map_meta_cap    Registering a post type with 'edit_post' => 'ac_manage_content'
+                  writes that name into WordPress's global $post_type_meta_caps,
+                  after which *every* check of `ac_manage_content` maps to
+                  `delete_post` with no post id and resolves to do_not_allow.
+                  Every CMS and media route answered 403 to the exact capability
+                  being asked about — administrators included. Map the primitive
+                  capabilities only; map_meta_cap derives the other three.
+
+by reference    wp_handle_upload() takes its first argument by reference, so
+                  passing an array literal is a fatal TypeError. Only a
+                  legitimate upload reaches that line, which is precisely the
+                  case no refusal test exercises.
+
+Imagick keeps   WP_Image_Editor_Imagick::save() preserves EXIF and JPEG
+  metadata        comments — strip_meta() is only reached through the resize
+                  path, and a same-size resize early-returns first. GD strips
+                  everything. The two containers in this stack also disagreed
+                  about which editor WordPress picks, so the sanitiser pins it.
+```
+
+The first two were found by `tests/Api/`, the third by measuring rather than
+believing. §65's file-upload-abuse tests land with this section, not after it:
+the refusals run in `tests/Api/media.php`, and the parts only a real multipart
+POST can reach — the file being written, the metadata actually gone, the
+polyglot's payload actually gone — run in `scripts/test-api.sh`.
+
 ------------------------------------------------------------------------
 
 # 62. SEO and Marketing
@@ -3791,6 +3878,92 @@ Purchase
 ```
 
 Use unique purchase/event IDs to prevent duplicate conversions.
+
+------------------------------------------------------------------------
+
+# 62b. Meta Pixel and Conversions API
+
+
+**62b is numbered rather than renumbering the list**, for the reason §4 gives
+for 28b. §62 names the events and stops; PLAN.md §26 names Meta Pixel as the
+first integration. This step decides who sends an event and from where, which
+is the part a headless install gets wrong by default.
+
+## The pixel has two halves and this repository owns one of them
+
+The browser half — `fbevents.js` and the `fbq()` calls — belongs to the Next.js
+storefront, because WordPress renders no page here. **Do not solve it with a
+WooCommerce pixel plugin** (PLAN §54 lists "Meta for WooCommerce" as a
+candidate, not a decision): those plugins inject their script through
+WooCommerce's template hooks, and in a headless install those templates never
+run, so the plugin is inert and looks installed.
+
+The server half — the Conversions API — belongs here, because it is an outbound
+HTTP call carrying order data and a long-lived token. It is a third-party
+integration like any other: §54 and §55 apply to it in full.
+
+Build it as an abstraction with one provider, the way §58 and §59 did payments:
+
+``` text
+Marketing/MarketingProviderInterface
+Marketing/MarketingEvent            value object crossing the boundary
+Marketing/MarketingService
+Plugin::marketingProviders()        the only place a token or flag is read
+integrations/Meta/MetaProvider      Conversions API adapter
+```
+
+An adapter never sees a `WC_Order`. TikTok and Google Ads (PLAN §26) are the
+second provider, and adding one must change nothing above the interface.
+
+## Deduplication is the whole problem
+
+The same Purchase reaches Meta twice — once from the browser, once from the
+server — and Meta discards the copy only when both carry the same `event_name`
+*and* the same `event_id`. Two systems cannot each invent that id. **The backend
+mints it and the storefront is told what it is**, never the reverse:
+
+``` text
+GET  /marketing/config              public ids only, for the storefront
+POST /marketing/events/purchase     → { event_id, event_name, ... }
+```
+
+The storefront passes that value as `fbq('track', 'Purchase', {...},
+{eventID})` and the adapter sends the same one server-side. Derive it from the
+order rather than from randomness, so a retry, a refresh and a second tab all
+produce one conversion.
+
+Send server-side only what the server actually witnessed. `Purchase` — and
+`InitiateCheckout` if checkout is what creates the order — are facts the backend
+holds. `PageView`, `Search` and `ViewContent` are browser facts; a server that
+reports them is guessing, and a guessed event is worse than a missing one
+because it silently reprices somebody's ad spend.
+
+Fire Purchase **once**, and claim it the way §60 claims a webhook event: a
+write-once insert into `ac_marketing_events` (migration 009, `Schema::VERSION`
+moves with it) whose duplicate-key failure *is* the answer, never a read.
+
+## Rules that are not negotiable
+
+``` text
+META_PIXEL_ID is public — it ships in browser JS, so /marketing/config may serve it
+META_CAPI_ACCESS_TOKEN is a credential — .env only, reaches the adapter through the
+  bootstrap as courier and gateway credentials do, never in any response, and it
+  joins Logger::SENSITIVE_EXACT
+user data is hashed SHA-256 over trimmed lowercase values; the raw email or phone
+  never leaves. Hashing is not anonymisation — this is still customer PII going to a
+  third party, so §55's review runs before the first call
+never in the checkout request path — queue the call and drain it on cron; a Meta
+  outage must never fail or delay an order, exactly as §57 refuses to let a
+  read-back fail a parcel that already exists
+pin the Graph API version per §68, and verify against the live API per §54 —
+  test_event_code exercises it without polluting the dataset, so nothing here
+  needs to stay an ASSUMPTION
+```
+
+Gate it on `ENABLE_MARKETING_PIXELS` (§72). No flag or no token means no
+provider registered and no outbound call at all, and `/marketing/config` says
+the pixel is off rather than erroring — a client without an ad account is the
+normal case, not a misconfiguration.
 
 ------------------------------------------------------------------------
 
@@ -4243,6 +4416,7 @@ ENABLE_YALIDINE
 ENABLE_ZEDAIR
 ENABLE_BLOG
 ENABLE_REVIEWS
+ENABLE_MARKETING_PIXELS
 ENABLE_SMS
 ENABLE_WHATSAPP
 ```

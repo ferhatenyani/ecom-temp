@@ -25,6 +25,7 @@ final class RateLimiter
 {
     public const DEFAULT_READS = 600;
     public const DEFAULT_WRITES = 120;
+    public const DEFAULT_UPLOADS = 30;
     public const DEFAULT_AUTH_FAILURES = 10;
 
     public const WINDOW = 60;
@@ -45,6 +46,21 @@ final class RateLimiter
     public function writeLimit(): RateLimit
     {
         return new RateLimit('write', $this->limitFrom('AC_RATE_LIMIT_WRITES', self::DEFAULT_WRITES), self::WINDOW);
+    }
+
+    /**
+     * Uploads, which are writes that cost far more than a write — roadmap §61.
+     *
+     * `POST /media` is already counted by the namespace-wide write limit, and
+     * that limit was sized for endpoints that insert a database row. An upload
+     * moves a file and re-encodes an image, so the same 120 a minute is
+     * hundreds of megabytes of disk and a CPU-bound decode loop from a single
+     * credential. This is the counter that bounds that; the write limit still
+     * applies underneath it.
+     */
+    public function uploadLimit(): RateLimit
+    {
+        return new RateLimit('upload', $this->limitFrom('AC_RATE_LIMIT_UPLOADS', self::DEFAULT_UPLOADS), self::WINDOW);
     }
 
     /**
