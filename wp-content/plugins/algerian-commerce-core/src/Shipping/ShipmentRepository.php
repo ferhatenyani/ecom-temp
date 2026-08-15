@@ -52,13 +52,67 @@ final class ShipmentRepository
         // re-date the parcel.
         unset($row['created_at'], $row['order_id']);
 
+        // provider, provider_shipment_id, tracking_number, status,
+        // live_order_id, metadata, updated_at — in toRow() order, minus the two
+        // unset above.
         return $this->wpdb->update(
             $this->table(),
             $row,
             ['id' => $shipment->id],
-            ['%s', '%s', '%s', '%s', '%s', '%s'],
+            ['%s', '%s', '%s', '%s', '%d', '%s', '%s'],
             ['%d']
         ) !== false;
+    }
+
+    /**
+     * Take the exclusive right to create a shipment for one order.
+     *
+     * The invariant is "one live shipment per order", and checking it with a
+     * read is not enough: `ShippingService::create()` reads the table, calls a
+     * courier, then writes: two requests arriving together both read "none",
+     * both hand over a parcel, and the customer gets two. Migration 006's unique
+     * index refuses the second *row*, but by then the second *parcel* exists —
+     * which is the failure §53's "call the provider last" rule was built to
+     * avoid, arriving through a different door.
+     *
+     * `GET_LOCK` closes it because it is decided by the database server, not by
+     * this process: whichever connection asks first wins, and the second is told
+     * so immediately. The `0` timeout is deliberate — a caller waiting on this
+     * lock is a duplicate request, and the useful answer is "no", not a queue.
+     *
+     * The lock is held across the courier call, which is exactly the window that
+     * needs covering, and released in a `finally`. MySQL drops it on its own if
+     * the connection dies, so a killed request cannot wedge an order.
+     */
+    public function claimOrder(int $orderId): bool
+    {
+        $acquired = $this->wpdb->get_var(
+            $this->wpdb->prepare('SELECT GET_LOCK(%s, 0)', $this->lockName($orderId))
+        );
+
+        return (string) $acquired === '1';
+    }
+
+    public function releaseOrder(int $orderId): void
+    {
+        $this->wpdb->query(
+            $this->wpdb->prepare('SELECT RELEASE_LOCK(%s)', $this->lockName($orderId))
+        );
+    }
+
+    /**
+     * Hashed, because `GET_LOCK` names are scoped to the whole MySQL **server**
+     * rather than to a database: two WordPress installs sharing a server and a
+     * table prefix would otherwise lock each other's orders. The database name
+     * and prefix go into the hash, and truncating it to 40 hex characters keeps
+     * the name inside MySQL's 64-byte limit — which it rejects outright, rather
+     * than trimming — whatever they are called.
+     */
+    private function lockName(int $orderId): string
+    {
+        $scope = $this->wpdb->dbname . '|' . $this->wpdb->prefix . '|' . $orderId;
+
+        return 'ac_ship_' . substr(hash('sha256', $scope), 0, 40);
     }
 
     public function find(int $id): ?Shipment

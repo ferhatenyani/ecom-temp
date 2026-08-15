@@ -42,6 +42,12 @@ A COD outcome does not change the order's status; the order's cancellation close
 that module — it gates what checkout offers, which is §58.
 
 Shipping follows the same rule: a parcel's status never moves the order. `ac_shipments` is migration 004.
+**One live shipment per order is enforced by the schema, not by a check** (migration 006):
+`live_order_id` holds the order id while a parcel is live and NULL once it is finished, and a unique index
+ignores NULLs — so re-sending after a failed delivery still works. `ShipmentRepository::claimOrder()` takes
+a MySQL `GET_LOCK` for the order across the whole of `ShippingService::create()`, courier call included,
+because the index would otherwise refuse the duplicate *row* only after the duplicate *parcel* was real.
+The lock is the defence; the index is the guarantee. Never reintroduce a bare read as the guard.
 Providers implement `Shipping\ShippingProviderInterface` and are registered in
 `Plugin::shippingProviders()`, which is the only place a courier's credentials and feature flag are read;
 `ManualProvider` (in-house delivery), `Integrations\Yalidine\YalidineProvider` and
@@ -84,7 +90,7 @@ never "believe this payload". Per-client settings are the `ac_yalidine_settings`
 parcel defaults — never `.env` and never constants, because the plugin is cloned per client.
 
 What the shop *charges* is separate from what a courier quotes: `ac_shipping_rates` (migration 005,
-`Schema::VERSION` is 5) holds the tariff, and `RateResolver` picks the narrowest matching rule — commune beats
+`Schema::VERSION` is 6) holds the tariff, and `RateResolver` picks the narrowest matching rule — commune beats
 wilaya beats the national fallback, and rules are never added together. `GET /shipping/rates` returns both
 sources, each labelled. Deliberately not WooCommerce shipping zones: those key on postcodes, which the commune
 dataset does not have.

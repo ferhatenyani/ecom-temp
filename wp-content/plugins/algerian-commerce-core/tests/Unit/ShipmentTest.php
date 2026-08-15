@@ -82,11 +82,41 @@ final class ShipmentTest extends TestCase
 
         self::assertSame(
             ['order_id', 'provider', 'provider_shipment_id', 'tracking_number',
-                'status', 'metadata', 'created_at', 'updated_at'],
+                'status', 'live_order_id', 'metadata', 'created_at', 'updated_at'],
             array_keys($row)
         );
 
         self::assertCount(count($row), self::shipment()->rowFormats());
+    }
+
+    /**
+     * Migration 006's unique index ignores NULLs, so this column *is* the rule
+     * "one live shipment per order, any number of finished ones". A live
+     * shipment claims its order; a finished one lets go.
+     */
+    public function testALiveShipmentClaimsItsOrderAndAFinishedOneReleasesIt(): void
+    {
+        foreach (ShipmentStatus::ALL as $status) {
+            $row = (new Shipment(42, 'yalidine', 'yal-1', 'yal-1', $status))->toRow();
+
+            self::assertSame(
+                ShipmentStatus::isLive($status) ? 42 : null,
+                $row['live_order_id'],
+                "status \"{$status}\" claims the wrong thing"
+            );
+        }
+    }
+
+    /**
+     * The claim follows the status without anyone remembering to move it —
+     * cancelling a parcel is what frees the order for a re-send.
+     */
+    public function testTheClaimIsReleasedWhenAShipmentFinishes(): void
+    {
+        $live = new Shipment(42, 'yalidine', 'yal-1', 'yal-1', ShipmentStatus::IN_TRANSIT);
+
+        self::assertSame(42, $live->toRow()['live_order_id']);
+        self::assertNull($live->withStatus(ShipmentStatus::CANCELLED, '2026-08-15 10:00:00')->toRow()['live_order_id']);
     }
 
     public function testARowSurvivesARoundTrip(): void
