@@ -164,6 +164,19 @@ rule as "payment status is verified server-side, never believed from a callback"
 Apply to authentication, password reset, checkout, order creation, COD confirmation, search, and
 import endpoints. Limit per identity and per IP, and log rejections.
 
+## File permissions
+
+WordPress must not be able to write its own code. `wp-content` and everything under it is `755`/`644`
+owned by the web server user — never `777`, and never group- or world-writable.
+
+This is not theoretical here: `wp-content` was found at `777` during the stack audit, put there as a
+workaround for the `wordpress` and `wordpress:cli` images disagreeing about `www-data`'s uid (33 versus 82).
+A world-writable plugin directory turns any file-write bug, any compromised container process and any
+mis-scoped mount into arbitrary PHP execution inside the commerce backend. The correct fix is to align the
+uid — `compose.yaml` pins `user: "33:33"` on the `wpcli` service — not to loosen the permissions.
+
+When a permission error appears, fix who is running the command. Do not widen the mode.
+
 ## File uploads
 
 Validate real MIME type and extension against an allowlist, cap size, strip metadata, store outside
