@@ -40,7 +40,7 @@ use AlgerianCommerce\API\ApiException;
 interface ShippingProviderInterface
 {
     /**
-     * The provider's slug — `manual`, `yalidine`, `zedair`.
+     * The provider's slug — `manual`, `yalidine`, `zrexpress`.
      *
      * Stored on every shipment row and used to route a later cancel or status
      * check back to the same courier, so it must not change once shipments

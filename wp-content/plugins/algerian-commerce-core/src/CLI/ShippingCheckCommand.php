@@ -8,6 +8,8 @@ use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Geography\GeoRepository;
 use AlgerianCommerce\Integrations\Yalidine\YalidineProvider;
 use AlgerianCommerce\Integrations\Yalidine\YalidineSettings;
+use AlgerianCommerce\Integrations\ZRExpress\ZRExpressProvider;
+use AlgerianCommerce\Integrations\ZRExpress\ZRExpressSettings;
 use AlgerianCommerce\Shipping\ProviderRegistry;
 use WP_CLI;
 
@@ -32,7 +34,8 @@ final class ShippingCheckCommand
     public function __construct(
         private readonly ProviderRegistry $providers,
         private readonly GeoRepository $geography,
-        private readonly YalidineSettings $yalidine
+        private readonly YalidineSettings $yalidine,
+        private readonly ZRExpressSettings $zrExpress
     ) {
     }
 
@@ -87,6 +90,16 @@ final class ShippingCheckCommand
                     $notes[] = 'no origin wilaya set (ac_yalidine_settings.origin_wilaya_id)';
                 } elseif ($mapped > 0 && !$this->providerHasOrigin($name)) {
                     $notes[] = 'the origin wilaya is not among the courier\'s destinations';
+                }
+            }
+
+            if ($provider instanceof ZRExpressProvider) {
+                // No origin to check: ZR Express keeps the supplier's origin on
+                // the account rather than on the parcel.
+                $notes = [...$notes, ...$this->zrExpress->problems()];
+
+                if ($mapped === 0) {
+                    $notes[] = 'no destinations recorded — run: wp algerian-commerce sync-destinations --provider=' . $name;
                 }
             }
 

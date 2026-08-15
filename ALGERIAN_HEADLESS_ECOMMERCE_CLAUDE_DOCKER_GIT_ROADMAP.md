@@ -3280,11 +3280,99 @@ handled by:
 
 ``` text
 Yalidine
-Zedair
+ZR Express
 future provider
 ```
 
 Only the adapter should know provider-specific details.
+
+## What was built
+
+`integrations/ZRExpress/`, and **nothing above ShippingProviderInterface
+changed** — which is what this section was written to test. The destination
+sync, the status poller, `shipping-check` and the CLI were all built for
+Yalidine without knowing this provider existed, and took it unmodified. Two
+couriers that disagree about almost everything fit the same interface:
+
+``` text
+                    Yalidine              ZR Express
+destination         wilaya + commune      cityTerritoryId +
+                    NAMES, exact-matched  districtTerritoryId, UUIDs
+recipient           inline on the parcel  a customer record, searched by
+                                          phone and created if absent
+identifiers         tracking only         parcel id AND tracking number,
+                                          different strings
+merchant reference  NOT idempotent        idempotent — a repeat is a 409
+states              36 French labels      12 snake_case identifiers
+```
+
+`ENABLE_ZEDAIR` and `ZEDAIR_*` are renamed to `ENABLE_ZR_EXPRESS`,
+`ZR_EXPRESS_TENANT_ID`, `ZR_EXPRESS_API_KEY` and `ZR_EXPRESS_WEBHOOK_SECRET`.
+
+### Both gaps closed, from the provider's own documentation
+
+``` text
+the parcel states   state.name is a stable snake_case identifier with a
+                    separate human description — not the French label the
+                    reference implementation substring-matches on. Twelve
+                    were observed across real parcels' state histories and
+                    are mapped; anything else raises. An identifier does
+                    not change because somebody fixed an accent
+the webhook scheme  Svix — svix-id, svix-timestamp, svix-signature,
+                    HMAC-SHA256 over id.timestamp.body. A published
+                    standard, so there is nothing to invent. The webhook
+                    still waits for §55, as Yalidine's does
+```
+
+ZR Express publishes an **OpenAPI definition per endpoint** at
+`docs.zrexpress.app/reference/*.md`, which is where the payload shapes here
+come from. That is also where `rates` turned out to be
+`delivery-pricing/rates/{toTerritoryId}` — the paths this section listed from
+llms.txt are 404s. The swagger UI's spec is still closed: an API key gets 403.
+
+### Two defects in the reference implementation, found by testing live
+
+``` text
+filters are ignored   parcels/search accepts a `filters` object and pays no
+                      attention to it: filtering by externalId returned all
+                      706 parcels on the account. The reference recovers
+                      duplicate parcels that way, so it adopts whichever
+                      parcel is first and calls it the customer's. Ours
+                      searches by keyword AND verifies externalId on the
+                      row before accepting it — and reuses a customer only
+                      on an exact phone match, since a near miss puts a
+                      stranger's name on a delivery
+a read-back can lose  POST parcels answers with an id alone, so the
+a parcel              tracking number needs a second call — which timed out
+                      on the first live run, and the adapter reported the
+                      whole create as unreachable while a real parcel sat
+                      at the courier. Nothing after the parcel exists may
+                      throw now: an id with no tracking number is
+                      recoverable, neither is a parcel nobody knows about
+```
+
+### Verified against the live API, 2026-08-15
+
+A merchant account's credentials, with its owner's permission: read-only
+calls, then one test parcel created, retried, polled, cancelled and confirmed
+gone.
+
+``` text
+1,485 destinations mapped   54 wilayas, 1,531 communes, 77 pickup points
+coverage                    delivery.canSend per territory: 11 wilayas this
+                            account may not send to, and four not listed at
+                            all — Illizi, Tindouf, Bordj Badji Mokhtar and
+                            Djanet, which is exactly the UNSUPPORTED_WILAYAS
+                            set the reference hard-codes. Data, not code
+4 wilayas by code           MSila/M'Sila, Alger/Algiers, Tipaza/Tipasa,
+                            El Menia/El Meniaa — the same name drift §56 met
+~100 communes unmatched     transliteration variance, reported with the
+                            nearest candidate rather than fuzzy-matched
+rates                       600 DZD home / 470 pickup to Alger, 500 to a
+                            commune of the origin wilaya. Restricted to the
+                            origin wilaya, which comes back as no quote and
+                            a logged sentence rather than an error
+```
 
 ------------------------------------------------------------------------
 

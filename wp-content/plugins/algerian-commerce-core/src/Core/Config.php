@@ -18,7 +18,7 @@ final class Config
         'ENABLE_COD',
         'ENABLE_CHARGILY',
         'ENABLE_YALIDINE',
-        'ENABLE_ZEDAIR',
+        'ENABLE_ZR_EXPRESS',
         'ENABLE_BLOG',
         'ENABLE_REVIEWS',
         'ENABLE_SMS',
@@ -44,8 +44,14 @@ final class Config
             'YALIDINE_API_ID',
             'YALIDINE_API_TOKEN',
             'YALIDINE_WEBHOOK_SECRET',
-            'ZEDAIR_API_KEY',
-            'ZEDAIR_API_SECRET',
+            /*
+             * ZR Express identifies the merchant with X-Tenant and authenticates
+             * with X-Api-Key (roadmap §57). The webhook secret is Svix's signing
+             * secret, which the webhook slice will need.
+             */
+            'ZR_EXPRESS_TENANT_ID',
+            'ZR_EXPRESS_API_KEY',
+            'ZR_EXPRESS_WEBHOOK_SECRET',
             'CHARGILY_SECRET_KEY',
             'CHARGILY_WEBHOOK_SECRET',
             'SMTP_HOST',

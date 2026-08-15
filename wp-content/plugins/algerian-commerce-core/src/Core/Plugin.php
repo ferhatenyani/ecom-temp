@@ -50,6 +50,10 @@ use AlgerianCommerce\Integrations\Yalidine\YalidineClient;
 use AlgerianCommerce\Integrations\Yalidine\YalidineCredentials;
 use AlgerianCommerce\Integrations\Yalidine\YalidineProvider;
 use AlgerianCommerce\Integrations\Yalidine\YalidineSettings;
+use AlgerianCommerce\Integrations\ZRExpress\ZRExpressClient;
+use AlgerianCommerce\Integrations\ZRExpress\ZRExpressCredentials;
+use AlgerianCommerce\Integrations\ZRExpress\ZRExpressProvider;
+use AlgerianCommerce\Integrations\ZRExpress\ZRExpressSettings;
 use AlgerianCommerce\Shipping\DestinationSyncService;
 use AlgerianCommerce\Shipping\GeoDestinationDirectory;
 use AlgerianCommerce\Shipping\ManualProvider;
@@ -83,6 +87,9 @@ final class Plugin
 
     /** Per-client Yalidine configuration — roadmap §56, never credentials. */
     public const YALIDINE_SETTINGS_OPTION = 'ac_yalidine_settings';
+
+    /** Per-client ZR Express configuration — roadmap §57. */
+    public const ZR_EXPRESS_SETTINGS_OPTION = 'ac_zrexpress_settings';
 
     /** The hourly "where are my parcels" event. */
     public const POLL_EVENT = 'ac_poll_shipments';
@@ -118,6 +125,7 @@ final class Plugin
     private ?ProviderRegistry $shippingProviders = null;
     private ?ShippingService $shippingService = null;
     private ?YalidineSettings $yalidineSettings = null;
+    private ?ZRExpressSettings $zrExpressSettings = null;
     private ?GeoDestinationDirectory $destinationDirectory = null;
     private ?DestinationSyncService $destinationSync = null;
     private ?ShipmentPoller $shipmentPoller = null;
@@ -216,7 +224,8 @@ final class Plugin
         WP_CLI::add_command('algerian-commerce shipping-check', new ShippingCheckCommand(
             $this->shippingProviders(),
             $this->geoRepository(),
-            $this->yalidineSettings()
+            $this->yalidineSettings(),
+            $this->zrExpressSettings()
         ));
     }
 
@@ -271,8 +280,6 @@ final class Plugin
      *
      * This is where a provider is switched on for a client, and the only place
      * that reads its credentials and feature flag (docs/ARCHITECTURE.md §4).
-     * Zedair joins this list in §57, and nothing above this line changes when
-     * it does.
      *
      * **Yalidine is registered first when it is on**, which makes it the
      * default for a shop that has it: a client who has gone to the trouble of
@@ -318,9 +325,45 @@ final class Plugin
             );
         }
 
+        $zrExpress = new ZRExpressCredentials(
+            (string) $this->config()->secret('ZR_EXPRESS_TENANT_ID'),
+            (string) $this->config()->secret('ZR_EXPRESS_API_KEY'),
+            (string) $this->config()->secret('ZR_EXPRESS_WEBHOOK_SECRET')
+        );
+
+        if ($this->config()->isEnabled('ENABLE_ZR_EXPRESS') && $zrExpress->isComplete()) {
+            $settings = $this->zrExpressSettings();
+
+            $providers[] = new ZRExpressProvider(
+                new ZRExpressClient(
+                    new WpHttpClient($settings->timeout),
+                    $zrExpress,
+                    $settings,
+                    $this->logger()
+                ),
+                $this->destinationDirectory(),
+                $this->logger()
+            );
+        }
+
         $providers[] = new ManualProvider();
 
         return $this->shippingProviders = new ProviderRegistry($providers);
+    }
+
+    /**
+     * ZR Express has far less to configure than Yalidine: no origin, no
+     * insurance, no parcel defaults — the account carries all of it.
+     */
+    public function zrExpressSettings(): ZRExpressSettings
+    {
+        if ($this->zrExpressSettings !== null) {
+            return $this->zrExpressSettings;
+        }
+
+        $stored = get_option(self::ZR_EXPRESS_SETTINGS_OPTION, []);
+
+        return $this->zrExpressSettings = ZRExpressSettings::fromArray(is_array($stored) ? $stored : []);
     }
 
     /**

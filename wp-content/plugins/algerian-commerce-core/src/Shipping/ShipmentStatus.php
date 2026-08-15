@@ -10,7 +10,7 @@ namespace AlgerianCommerce\Shipping;
  * Pure — no WordPress — so the rule that decides whether a reported status may
  * be applied is unit-testable on its own.
  *
- * **This is our vocabulary, not any courier's.** Yalidine, Zedair and whoever
+ * **This is our vocabulary, not any courier's.** Yalidine, ZR Express and whoever
  * comes third each name their states differently and will rename them again
  * without telling us; each adapter maps its provider's states onto these, and
  * keeps the provider's own spelling in the shipment metadata so a mis-mapping

@@ -52,7 +52,19 @@ final class ProviderPlace
          * in the adapter.
          */
         public readonly bool $isDeliverable = true,
-        public readonly array $metadata = []
+        public readonly array $metadata = [],
+        /**
+         * The official Algerian code for this place, when the courier states
+         * one — ZR Express publishes `code: 16` for Alger beside its UUID.
+         *
+         * Kept apart from `$id` because the two are different claims. The id is
+         * the courier's handle and means nothing outside their system; the code
+         * is a national fact both sides can be checked against, which is what
+         * makes it usable as a tie-break when names disagree (see
+         * DestinationMatcher). A courier that publishes no code leaves this
+         * empty.
+         */
+        public readonly string $code = ''
     ) {
     }
 }

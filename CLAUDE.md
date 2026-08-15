@@ -4,9 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53 and §56 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53, §56 and §57 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
-REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping and Yalidine — and its
+REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine and
+ZR Express — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -14,11 +15,10 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53 and §56 are done** — orders, notes, timeline,
-customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's shipping rules
-and the Yalidine adapter. **Next up is §57, ZR Express** (the section formerly called "Zedair" — no such
-courier exists; rename `ENABLE_ZEDAIR`/`ZEDAIR_*` when building it), and Yalidine's webhook, which §56
-deliberately deferred until §55's security review.
+milestones, and section 29 the per-feature loop. **§50–§53, §56 and §57 are done** — orders, notes,
+timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
+shipping rules, and the Yalidine and ZR Express adapters. **Next up is §58, the payment abstraction**, plus
+the two couriers' webhooks, which §56 and §57 deliberately deferred until §55's security review.
 
 COD state is order meta plus audit events, never new order statuses (PLAN §8) and never a table of its own.
 A COD outcome does not change the order's status; the order's cancellation closes the COD state through
@@ -28,8 +28,20 @@ that module — it gates what checkout offers, which is §58.
 Shipping follows the same rule: a parcel's status never moves the order. `ac_shipments` is migration 004.
 Providers implement `Shipping\ShippingProviderInterface` and are registered in
 `Plugin::shippingProviders()`, which is the only place a courier's credentials and feature flag are read;
-`ManualProvider` (in-house delivery) and `Integrations\Yalidine\YalidineProvider` both ship today. Everything
-crossing the provider boundary is one of our value objects — an adapter never sees a `WC_Order`.
+`ManualProvider` (in-house delivery), `Integrations\Yalidine\YalidineProvider` and
+`Integrations\ZRExpress\ZRExpressProvider` all ship today. Everything crossing the provider boundary is one
+of our value objects — an adapter never sees a `WC_Order`. **Adding the second courier changed nothing above
+`ShippingProviderInterface`**, and the two disagree about almost everything: names against UUIDs, inline
+recipients against customer records, one identifier against two, an idempotent merchant reference against one
+that duplicates. Keep it that way.
+
+ZR Express (§57) had a specification — an OpenAPI definition per endpoint at
+`docs.zrexpress.app/reference/*.md` — and was verified live on 2026-08-15. Its `state.name` values are stable
+snake_case identifiers (12 mapped in `ZRExpressStateMap`, unknown ones raise); its webhooks are signed by
+**Svix**, a published scheme, so the webhook slice has nothing left to invent. Two traps its reference
+implementation falls into and this adapter does not: `parcels/search` **ignores `filters`** and returns
+everything, so lookups use `keyword` *and* verify `externalId` on the row; and `POST parcels` returns only an
+id, so the tracking-number read-back must never be allowed to fail the create — a parcel exists by then.
 
 Yalidine (§56) was written with no merchant account, from three agreeing implementations rather than from
 memory (§54 forbids memory, not working code), and **verified against the live API on 2026-08-14** with
@@ -95,7 +107,8 @@ Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `Al
 `Customers/`, `COD/`, `Shipping/`, `Geography/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
-`tests/`. Still to come: `Payments/`, `Analytics/`, `CMS/`, … and `integrations/{ZRExpress,Chargily}/`.
+`tests/`, plus `integrations/ZRExpress/`. Still to come: `Payments/`, `Analytics/`, `CMS/`, … and
+`integrations/Chargily/`.
 
 Bulk reference data lives in `data/` as JSON and is loaded by a WP-CLI importer — never inlined into PHP files
 (roadmap §51). Datasets ship inside the plugin, because the plugin is what gets cloned and deployed per client.
@@ -108,7 +121,7 @@ WooCommerce runs with **HPOS enabled**, and the plugin declares `custom_order_ta
 through `wc_get_order()`, `wc_get_orders()` and the `WC_Order` CRUD — never `get_post()`, `get_post_meta()` or `$wpdb`
 against `wp_posts`. Direct reads work on a legacy install and silently return nothing here.
 
-Third-party providers (Yalidine, Zedair for shipping; Chargily for payments) sit behind adapters in `integrations/` —
+Third-party providers (Yalidine, ZR Express for shipping; Chargily for payments) sit behind adapters in `integrations/` —
 domain code must never call a provider SDK or endpoint directly. Do not implement an adapter from memory or guesswork;
 work from the provider's current official docs supplied in the prompt.
 
@@ -151,7 +164,8 @@ curl http://localhost:8090/wp-json/algerian-commerce/v1/health   # → {"success
 
 `.env` (gitignored) holds `DB_PASSWORD`, `DB_ROOT_PASSWORD`, `WP_PORT`, and provider credentials
 (`YALIDINE_API_ID`, `YALIDINE_API_TOKEN`, `YALIDINE_WEBHOOK_SECRET` — Yalidine authenticates with two headers,
-not a key/secret pair — plus `ZEDAIR_*`, `CHARGILY_*`, `SMTP_*`); `.env.example` mirrors those keys with blank values. One gap left to
+not a key/secret pair — plus `ZR_EXPRESS_TENANT_ID`, `ZR_EXPRESS_API_KEY`, `ZR_EXPRESS_WEBHOOK_SECRET`,
+`CHARGILY_*`, `SMTP_*`); `.env.example` mirrors those keys with blank values. One gap left to
 fix when touching config: `compose.yaml` hardcodes port `8090` instead of using `${WP_PORT}`, so changing `WP_PORT`
 currently does nothing.
 

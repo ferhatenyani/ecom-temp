@@ -130,7 +130,7 @@ final class SyncDestinationsCommand
                 if ($type === DestinationSyncPlan::MATCHED_BY_CODE) {
                     // Both names, because the pair is the whole point: someone
                     // has to decide whether they are the same place.
-                    $line .= sprintf(' → %s (code %s)', (string) ($gap['name'] ?? ''), (string) ($gap['provider_id'] ?? ''));
+                    $line .= sprintf(' → %s (code %s)', (string) ($gap['name'] ?? ''), (string) ($gap['code'] ?? ''));
                 } elseif (($gap['nearest'] ?? '') !== '') {
                     $line .= sprintf(' — nearest of ours: %s', (string) $gap['nearest']);
                 } elseif (isset($gap['reason'])) {

@@ -103,7 +103,12 @@ final class DestinationMatcher
             $matchedBy = 'name';
 
             if ($ours === null) {
-                $byCode = $ourWilayaById[$place->id] ?? null;
+                /*
+                 * The courier's own statement of the official code when it
+                 * makes one — ZR Express publishes `code: 16` for Alger — and
+                 * otherwise the id, which is the same number at Yalidine.
+                 */
+                $byCode = $ourWilayaById[$place->code !== '' ? $place->code : $place->id] ?? null;
 
                 // Only an unclaimed wilaya, so a courier that renumbers cannot
                 // quietly steal a place another of its wilayas already matched
@@ -118,6 +123,10 @@ final class DestinationMatcher
                         'provider_name' => $place->name,
                         'wilaya_id' => (int) $byCode['id'],
                         'name' => (string) ($byCode['name'] ?? ''),
+                        // The code the match was made on, which is the whole
+                        // claim being reported — not the courier's opaque id,
+                        // which at ZR Express is a UUID and says nothing.
+                        'code' => $place->code !== '' ? $place->code : $place->id,
                     ]);
                 }
             }
