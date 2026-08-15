@@ -1617,6 +1617,94 @@ the same job as reaching into what a gateway did with somebody's money. `POST /p
 rather than a GET because it calls a gateway and can settle an order; a GET that changes things is one browser
 prefetch from doing it by accident.
 
+## Courier webhooks (§60)
+
+The other half of §60, deferred by §56 and §57 until §55 produced a written rule.
+`ShippingProviderInterface` gained `handleWebhook()`; everything else about how an
+inbound endpoint behaves already existed and was reused rather than copied.
+
+```
+POST /webhooks/yalidine
+POST /webhooks/zrexpress     (§60 writes it "zr-express"; the route follows
+                              ZRExpressProvider::NAME, which is already in
+                              every ac_shipments row)
+POST /webhooks/manual        registered, and answers webhook_unsupported
+```
+
+### One rule, two very different couriers
+
+```
+ZR Express   Svix. HMAC-SHA256 over {svix-id}.{svix-timestamp}.{body},
+               base64, against the base64 key behind `whsec_`. Several
+               space-separated "v1,<sig>" values may arrive and any one
+               matching passes — that is how keys rotate. The timestamp
+               is signed material, so the 5-minute tolerance binds.
+Yalidine     `security_token` in the body. Compared with hash_equals(),
+               and that is the whole of it: it binds to nothing, so it
+               proves only that the sender once saw the token. **No
+               timestamp check** — nothing is signed, so a `date` field
+               in the body is attacker-controlled and checking it would
+               be theatre that reads like security.
+```
+
+Svix is implemented rather than added as a Composer package: fifteen lines of HMAC
+against a documented string, and the house rule is that a dependency needs a stated
+reason.
+
+### Both are re-fetched, and the signed one too
+
+`ShipmentWebhookResult` carries **no status**. For Yalidine that is docs/SECURITY.md's
+rule about a body secret. For ZR Express — which signs properly, and whose payload
+docs/SECURITY.md would allow acting on — it is a fact found by reading: the webhook
+reference documents `state.name` as a display string ("Out for Delivery"), while the
+live API returns the stable snake_case identifiers `ZRExpressStateMap` maps and the
+poller has read since §57. Two documented shapes for the field that decides a
+parcel's status is where believing a payload writes something nothing else can
+reason about.
+
+So every verified event ends in `getShipmentStatus()` — the poller's own path. A
+signature proves who sent the message; asking the courier proves where the parcel is.
+**A parcel's status still never moves the order**, webhook or not.
+
+### What an event can do
+
+```
+processed        verified, claimed, re-fetched, and the parcel moved
+unchanged        the courier reports what we already had
+duplicate        the claim was refused — and the courier is not asked again
+unknown_parcel   verified, but no such parcel here (created in their
+                   dashboard, typically). 200 and dropped
+finished         a late event about a delivered parcel. Refused before
+                   the courier call, so it costs nothing
+ignored          verified, and names no parcel at all
+```
+
+`ac_webhook_events` (migration 008) is shared with payments, keyed by provider, and
+`WebhookEventRepository` moved from `Payments/` to `Commerce/` when the second domain
+needed it — a `Shipping/` class reaching into `Payments/` would invent a dependency
+the business does not have.
+
+`AbstractWebhookController` holds everything a route does: raw bytes first, the header
+shape adapters expect, 401 with no detail, the warning line with the source IP and
+nothing else, `__return_true` with the comment saying why. The payments and shipping
+controllers are twelve lines each.
+
+### Two things this section found
+
+**`signature_url` is now in `Logger::SENSITIVE_EXACT`.** Yalidine's webhook carries a
+link to the customer's *handwritten signature* collected at the door — biometric-adjacent
+personal data attached to a name, a phone number and an address. It joins `label` and
+`labels` under the rule CLAUDE.md already stated for tokenised provider URLs.
+
+**The bundled PSR-4 autoloader is now registered for `src/` unconditionally**, behind
+Composer rather than instead of it. `optimize-autoloader` is on, so Composer dumps a
+classmap — a snapshot of the files that existed when somebody last ran
+`dump-autoload`. Moving one class between two directories under `src/` made every
+request fatal on a healthy checkout, because the map still pointed at the old path and
+nothing else was listening. The plugin bootstrap already carried exactly this reasoning
+for `integrations/`; it had never been applied to `src/`, where a classmap makes it
+more necessary rather than less.
+
 ## Security review (§55)
 
 §55 is a review rather than a feature: walk everything that ships — `Auth/`, `Security/`, `Permissions/`,

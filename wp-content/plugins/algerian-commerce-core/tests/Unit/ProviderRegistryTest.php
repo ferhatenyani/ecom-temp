@@ -11,6 +11,7 @@ use AlgerianCommerce\Shipping\ProviderRegistry;
 use AlgerianCommerce\Shipping\ShipmentRequest;
 use AlgerianCommerce\Shipping\ShipmentResult;
 use AlgerianCommerce\Shipping\ShipmentStatus;
+use AlgerianCommerce\Shipping\ShipmentWebhookResult;
 use AlgerianCommerce\Shipping\ShippingProviderInterface;
 use AlgerianCommerce\Shipping\StatusReport;
 use PHPUnit\Framework\TestCase;
@@ -56,6 +57,18 @@ final class FakeCourier implements ShippingProviderInterface
     public function getShippingRates(Destination $destination): array
     {
         return [];
+    }
+
+    /**
+     * A courier that signs nothing, so nothing verifies — which is what an
+     * unconfigured provider should do (§60).
+     *
+     * @param array<string, mixed>  $payload
+     * @param array<string, string> $headers
+     */
+    public function handleWebhook(array $payload, array $headers, string $rawBody = ''): ShipmentWebhookResult
+    {
+        throw new ApiException('webhook_unverified', 'This request could not be verified.', 401);
     }
 }
 

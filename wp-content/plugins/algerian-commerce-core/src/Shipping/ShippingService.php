@@ -7,6 +7,8 @@ namespace AlgerianCommerce\Shipping;
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Audit\AuditLogger;
 use AlgerianCommerce\Commerce\PaymentMethod;
+use AlgerianCommerce\Commerce\WebhookEventRepository;
+use AlgerianCommerce\Core\Logger;
 use AlgerianCommerce\Geography\GeoRepository;
 use AlgerianCommerce\Orders\OrderRepository;
 use AlgerianCommerce\Orders\OrderStatus;
@@ -56,8 +58,114 @@ final class ShippingService
         private readonly OrderRepository $orders,
         private readonly GeoRepository $geography,
         private readonly AuditLogger $audit,
-        private readonly ShippingRuleRepository $rules
+        private readonly ShippingRuleRepository $rules,
+        /*
+         * The webhook event claim — roadmap §60. Optional so that every existing
+         * construction of this service keeps working; a service built without it
+         * simply has no webhook pipeline, and the route is not registered
+         * either.
+         */
+        private readonly ?WebhookEventRepository $events = null,
+        private readonly ?Logger $logger = null
     ) {
+    }
+
+    /**
+     * One inbound courier event, end to end — docs/SECURITY.md → "Webhooks".
+     *
+     * ```
+     * verify signature/token   ← the adapter, on the raw bytes, before anything
+     * identify event
+     * claim                    ← a write-once insert, never a read-then-write
+     * re-fetch and act         ← getShipmentStatus(), the poller's own path
+     * respond
+     * ```
+     *
+     * **No permission check, and that is correct here.** There is no user: the
+     * signature — or, for Yalidine, the shared secret — is the authentication.
+     * Nothing in this method takes a status, a tracking number or an order from
+     * the caller: the only value ever written comes from asking the courier.
+     *
+     * **A parcel's status still never moves the order**, webhook or not
+     * (CLAUDE.md). This does exactly what a poll does, and nothing a poll would
+     * not — which is the point of ending both in the same call.
+     *
+     * @param array<string, mixed>  $payload
+     * @param array<string, string> $headers lower-cased header names
+     * @return array{status: string, event_id: string}
+     *
+     * @throws ApiException 401 `webhook_unverified`, or 500 so the courier retries
+     */
+    public function handleWebhook(string $providerName, array $payload, array $headers, string $rawBody): array
+    {
+        $provider = $this->providers->get($providerName);
+
+        // Throws 401 webhook_unverified on anything that does not verify, and
+        // says nothing about which check failed.
+        $result = $provider->handleWebhook($payload, $headers, $rawBody);
+
+        if ($this->events === null) {
+            // No claim store means no replay protection, and processing without
+            // it would be worse than not processing at all.
+            throw ApiException::internal('Webhook handling is not configured.');
+        }
+
+        if (!$this->events->claim($provider->name(), $result->eventId, $result->eventType)) {
+            // The unique key refused it: this event has already been handled.
+            // 200 and dropped, so the courier stops retrying.
+            return ['status' => 'duplicate', 'event_id' => $result->eventId];
+        }
+
+        if (!$result->identifiesAParcel()) {
+            return ['status' => 'ignored', 'event_id' => $result->eventId];
+        }
+
+        $shipment = $this->repository->findByProviderReference(
+            $provider->name(),
+            $result->providerShipmentId,
+            $result->trackingNumber
+        );
+
+        if ($shipment === null) {
+            // A verified event about a parcel this shop has no record of — a
+            // parcel created from the courier's own dashboard, typically. 200
+            // and dropped: retrying will not make the row appear.
+            $this->logger?->warning('Webhook for an unknown parcel', [
+                'provider' => $provider->name(),
+                'event_type' => $result->eventType,
+            ]);
+
+            return ['status' => 'unknown_parcel', 'event_id' => $result->eventId];
+        }
+
+        if (!$shipment->isLive()) {
+            // A finished parcel is not reopened by a late event, which is the
+            // same refusal ShipmentStatus::accepts() would make one line later —
+            // made here so it costs no courier call.
+            return ['status' => 'finished', 'event_id' => $result->eventId];
+        }
+
+        $report = $provider->getShipmentStatus($shipment->providerShipmentId);
+
+        if (!ShipmentStatus::accepts($shipment->status, $report->status)) {
+            // Most events find a parcel exactly where the last one left it.
+            return ['status' => 'unchanged', 'event_id' => $result->eventId];
+        }
+
+        $this->store(
+            $shipment->withReport($report, self::now()),
+            'shipment.status_changed',
+            [
+                'from' => $shipment->status,
+                'to' => $report->status,
+                'provider_status' => $report->providerStatus,
+                // Distinguishable from a manual update, a one-off sync and the
+                // poller, so "who moved this parcel" has an answer.
+                'source' => 'webhook',
+            ]
+        );
+
+        return ['status' => 'processed', 'event_id' => $result->eventId];
     }
 
     /** @return list<array{name: string, label: string, is_default: bool}> */

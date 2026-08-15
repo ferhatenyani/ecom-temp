@@ -90,4 +90,41 @@ interface ShippingProviderInterface
      * @throws ApiException
      */
     public function getShippingRates(Destination $destination): array;
+
+    /**
+     * Verify and translate one inbound event — roadmap §60.
+     *
+     * Added after the two courier adapters shipped, because §56 and §57 both
+     * deferred their webhooks until §55 produced a written rule. The rule is
+     * `docs/SECURITY.md` → "Webhooks" and it is not negotiable per provider:
+     * raw body before any JSON decode, `hash_equals()`, a 5-minute timestamp
+     * tolerance **where the timestamp is inside the signed material**, and an
+     * event id claimed rather than checked.
+     *
+     * The adapter does the verifying, because the scheme is a fact about the
+     * provider: ZR Express signs with Svix, and Yalidine puts a shared secret in
+     * the body — which binds to nothing, and is therefore a hint to go and look
+     * rather than something to believe.
+     *
+     * **Throw on anything that does not verify**, with code `webhook_unverified`
+     * and status 401, saying nothing about which check failed — a verifier that
+     * distinguishes "bad timestamp" from "bad signature" is an oracle for
+     * building a valid one.
+     *
+     * `ShipmentWebhookResult` deliberately carries **no status**: every verified
+     * event ends in `getShipmentStatus()`, which is the path the poller already
+     * takes. See that class for why that holds even for a properly signed one.
+     *
+     * A courier that receives no webhooks at all — in-house delivery — throws
+     * `webhook_unsupported` rather than pretending to have handled something.
+     *
+     * @param array<string, mixed>  $payload the decoded body, for reading
+     * @param array<string, string> $headers lower-cased header names
+     * @param string                $rawBody the bytes as received — what the
+     *                                       signature is actually over, since
+     *                                       decoding and re-encoding changes them
+     *
+     * @throws ApiException 401 `webhook_unverified` when verification fails
+     */
+    public function handleWebhook(array $payload, array $headers, string $rawBody = ''): ShipmentWebhookResult;
 }

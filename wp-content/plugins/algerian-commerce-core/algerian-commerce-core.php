@@ -47,16 +47,26 @@ define('AC_CORE_PATH', plugin_dir_path(__FILE__));
 define('AC_CORE_URL', plugin_dir_url(__FILE__));
 
 /*
- * Composer is optional. When vendor/autoload.php is present it wins; otherwise
- * the bundled PSR-4 autoloader covers src/, so the plugin activates on a host
- * that has never run `composer install`.
+ * Composer is optional. When vendor/autoload.php is present it wins; the
+ * bundled PSR-4 autoloader is registered behind it either way, so the plugin
+ * activates on a host that has never run `composer install`.
+ *
+ * **Behind it either way, not only in the else branch** — §60 found out why.
+ * `optimize-autoloader` is on, so Composer dumps a *classmap*: a snapshot of
+ * the files that existed when somebody last ran `dump-autoload`. Moving one
+ * class between two directories under src/ made every request fatal on a
+ * perfectly healthy checkout, because the map still pointed at the old path and
+ * nothing else was listening. This is the same reasoning the Integrations\
+ * registration below already carried; it simply had not been applied to src/,
+ * where a classmap makes it *more* necessary rather than less. Composer is
+ * asked first, so nothing here can shadow it.
  */
 if (is_readable(AC_CORE_PATH . 'vendor/autoload.php')) {
     require_once AC_CORE_PATH . 'vendor/autoload.php';
-} else {
-    require_once AC_CORE_PATH . 'src/Core/Autoloader.php';
-    (new Autoloader('AlgerianCommerce\\', AC_CORE_PATH . 'src'))->register();
 }
+
+require_once AC_CORE_PATH . 'src/Core/Autoloader.php';
+(new Autoloader('AlgerianCommerce\\', AC_CORE_PATH . 'src'))->register();
 
 /*
  * Third-party adapters live outside src/ (roadmap §37), so that "which of this

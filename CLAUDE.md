@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53 and §55–§59 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53 and §55–§60 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
 ZR Express, the payment abstraction and Chargily — and its
@@ -15,12 +15,24 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53 and §55–§59 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53 and §55–§60 are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
 shipping rules, the Yalidine and ZR Express adapters, the security review, the payment abstraction and
-Chargily with PLAN §19's transaction table. **Next up is §60's remaining half**: the two couriers' webhooks,
-which §56 and §57 deferred until §55 produced a written rule and which now have a working implementation of
-that rule to copy in `Payments/PaymentWebhookController` and `integrations/Chargily`.
+Chargily with PLAN §19's transaction table, and §60's three webhooks. **Next up is §61, the CMS.**
+
+All three inbound endpoints now exist — `/webhooks/chargily`, `/webhooks/yalidine`, `/webhooks/zrexpress`
+(§60 writes the last one `zr-express`; the route follows `ZRExpressProvider::NAME`, which is already in every
+`ac_shipments` row). Everything a webhook route does lives once, in `API/AbstractWebhookController`, and the
+event claim is `Commerce/WebhookEventRepository` — it moved out of `Payments/` when shipping needed it too,
+because a `Shipping/` class reaching into `Payments/` would invent a dependency the business does not have.
+**Both couriers re-fetch rather than believe the payload**, including ZR Express, which signs properly: its
+webhook reference documents `state.name` as a display string while the live API returns the snake_case
+identifiers `ZRExpressStateMap` maps, and two documented shapes for the field that decides a parcel's status
+is where believing a payload writes something nothing else can reason about. So `ShipmentWebhookResult`
+carries no status at all and every verified event ends in `getShipmentStatus()` — the poller's own path. A
+parcel's status still never moves the order. Yalidine's `security_token` gets **no timestamp check**: nothing
+is signed, so a `date` in the body is attacker-controlled and checking it would be theatre.
+`signature_url` — a link to the customer's handwritten signature — joined `Logger::SENSITIVE_EXACT`.
 
 **That rule is `docs/SECURITY.md` → "Webhooks", and it is not negotiable per provider.** The short form:
 the secret is `.env`-only and reaches the verifier through the bootstrap, as API credentials do; a webhook
@@ -167,6 +179,12 @@ Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `Al
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
 `tests/`, plus `integrations/ZRExpress/` and `integrations/Chargily/`. Still to come: `Analytics/`, `CMS/`, …
+
+**The bundled PSR-4 autoloader is registered for `src/` behind Composer, not instead of it.** Composer runs
+with `optimize-autoloader`, so it dumps a *classmap* — a snapshot of the files present when somebody last ran
+`dump-autoload` — and moving one class between two directories under `src/` made every request fatal on a
+healthy checkout. The bootstrap already carried that reasoning for `integrations/`; §60 applied it to `src/`,
+where a classmap makes it more necessary rather than less.
 
 Bulk reference data lives in `data/` as JSON and is loaded by a WP-CLI importer — never inlined into PHP files
 (roadmap §51). Datasets ship inside the plugin, because the plugin is what gets cloned and deployed per client.
