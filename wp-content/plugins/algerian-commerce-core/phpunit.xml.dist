@@ -16,6 +16,9 @@
     <source>
         <include>
             <directory>src</directory>
+            <!-- Provider adapters are ours to keep working too, even though
+                 their shape is somebody else's API. -->
+            <directory>integrations</directory>
         </include>
     </source>
 </phpunit>

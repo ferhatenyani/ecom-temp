@@ -34,8 +34,16 @@ final class Config
     {
         $keys = [
             ...self::FLAGS,
-            'YALIDINE_API_KEY',
-            'YALIDINE_API_SECRET',
+            /*
+             * Yalidine authenticates with two headers, X-API-ID and
+             * X-API-TOKEN (roadmap §56) — not a key/secret pair. Named for what
+             * the provider calls them, because a credential renamed on the way
+             * in is a credential nobody can match against the dashboard it came
+             * from.
+             */
+            'YALIDINE_API_ID',
+            'YALIDINE_API_TOKEN',
+            'YALIDINE_WEBHOOK_SECRET',
             'ZEDAIR_API_KEY',
             'ZEDAIR_API_SECRET',
             'CHARGILY_SECRET_KEY',

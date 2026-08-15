@@ -45,7 +45,7 @@ fi
 if run_stage syntax; then
   banner "syntax"
   docker compose exec -T wordpress sh -c \
-    "cd ${PLUGIN} && find src migrations tests -name '*.php' -exec php -l {} \; | grep -v '^No syntax errors' || true" \
+    "cd ${PLUGIN} && find src integrations migrations tests -name '*.php' -exec php -l {} \; | grep -v '^No syntax errors' || true" \
     | tee /tmp/ac-syntax.log
   [[ -s /tmp/ac-syntax.log ]] && record "syntax" 1 || record "syntax" 0
 fi

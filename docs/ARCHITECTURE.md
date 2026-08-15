@@ -60,7 +60,8 @@ Inside `wp-content/plugins/algerian-commerce-core/`:
 
 ```
 algerian-commerce-core.php     bootstrap: constants, autoload, container, hooks
-composer.json                  PSR-4  AlgerianCommerce\  →  src/
+composer.json                  PSR-4  AlgerianCommerce\              →  src/
+                                      AlgerianCommerce\Integrations\  →  integrations/
 src/
   Core/          container, plugin lifecycle, activation, config, logging
   API/           REST bootstrap, response envelope, error mapping, pagination, CORS
@@ -69,7 +70,10 @@ src/
   Commerce/      value objects shared across commerce domains (addresses)
   Products/      Customers/  Orders/  Inventory/   commerce domains
   COD/           cash-on-delivery state machine and risk signals
-  Shipping/      ShippingService + ShippingProviderInterface
+  Shipping/      ShippingService + ShippingProviderInterface, the destination
+                 sync and the status poller — both provider-agnostic
+  Http/          the transport seam an adapter is injected with, so a provider
+                 client is testable against recorded responses
   Payments/      PaymentService + PaymentProviderInterface
   Analytics/     aggregation and reporting
   CMS/  Marketing/  Notifications/  Settings/  ImportExport/
@@ -135,6 +139,26 @@ codebase serves multiple clients without forking.
 Each adapter owns, for its provider alone: authentication, endpoint URLs, payload shapes, destination-ID
 mapping, error mapping to our error codes, timeouts, retries, and idempotency keys. Adapters are written from
 the provider's **current official documentation**, never from memory or from this repository's prose.
+
+### What a courier's map is, and is not
+
+A courier's coverage is **data it gives us**, held in `ac_geo_provider_destinations` and loaded by
+`wp algerian-commerce sync-destinations` — never a table of names, ids or unsupported wilayas compiled into
+an adapter. Both go stale, both do so invisibly, and both are per-account facts pretending to be constants.
+An adapter reads the map through `DestinationDirectoryInterface`, which is also what lets it be tested with
+half a dozen rows in memory.
+
+Two capabilities are optional and deliberately separate from `ShippingProviderInterface`, because they are
+not part of being a courier: `DestinationCatalogueInterface` (a provider that will publish where it delivers
+— in-house delivery has nothing to publish) and a network transport, injected as `Http\HttpClientInterface`
+so that authentication, quota handling and payload shapes are exercised against recorded responses rather
+than a live account.
+
+Status synchronisation is provider-agnostic too. `Shipping\ShipmentPoller` asks every configured courier
+about its live parcels; an adapter that cannot answer says so with `sync_unsupported` and is skipped. Polling
+comes before webhooks on purpose: a webhook is an unauthenticated request from the internet that moves data
+in this shop, and it needs signature verification, replay protection and idempotency (docs/SECURITY.md)
+before it is wired to anything — while the poll is also what a webhook payload gets verified against.
 
 ## 5. Data flow
 

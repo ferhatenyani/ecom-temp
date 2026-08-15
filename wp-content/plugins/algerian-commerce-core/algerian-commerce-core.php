@@ -44,6 +44,21 @@ if (is_readable(AC_CORE_PATH . 'vendor/autoload.php')) {
     (new Autoloader('AlgerianCommerce\\', AC_CORE_PATH . 'src'))->register();
 }
 
+/*
+ * Third-party adapters live outside src/ (roadmap §37), so that "which of this
+ * code is ours and which is shaped by somebody else's API" is a directory
+ * rather than a convention.
+ *
+ * Registered even when Composer's autoloader is present, unlike src/. A dumped
+ * autoloader is a snapshot: a site that pulls a release adding an adapter and
+ * does not re-run `composer dump-autoload` has a vendor/ map with no
+ * Integrations\ prefix in it, and the failure is a fatal error on every request
+ * rather than a missing courier. This costs one spl_autoload_register and
+ * cannot shadow Composer, which is asked first.
+ */
+require_once AC_CORE_PATH . 'src/Core/Autoloader.php';
+(new Autoloader('AlgerianCommerce\\Integrations\\', AC_CORE_PATH . 'integrations'))->register();
+
 /**
  * Schema version for custom tables — see docs/ARCHITECTURE.md §7.
  *

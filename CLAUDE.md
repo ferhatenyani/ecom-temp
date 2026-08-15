@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53 and §56 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
-REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD and shipping — and its
+REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping and Yalidine — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -14,10 +14,11 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53 are done** — orders, notes, timeline, customers,
-the Algerian geography mechanism, cash on delivery, and the shipping abstraction. **Next up is §56, Yalidine —
-which cannot start until that provider's current official API documentation is supplied in the prompt (§54).**
-§14 (shipping rules: zones, wilaya pricing, free-shipping thresholds) is also still open.
+milestones, and section 29 the per-feature loop. **§50–§53 and §56 are done** — orders, notes, timeline,
+customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's shipping rules
+and the Yalidine adapter. **Next up is §57, ZR Express** (the section formerly called "Zedair" — no such
+courier exists; rename `ENABLE_ZEDAIR`/`ZEDAIR_*` when building it), and Yalidine's webhook, which §56
+deliberately deferred until §55's security review.
 
 COD state is order meta plus audit events, never new order statuses (PLAN §8) and never a table of its own.
 A COD outcome does not change the order's status; the order's cancellation closes the COD state through
@@ -27,8 +28,31 @@ that module — it gates what checkout offers, which is §58.
 Shipping follows the same rule: a parcel's status never moves the order. `ac_shipments` is migration 004.
 Providers implement `Shipping\ShippingProviderInterface` and are registered in
 `Plugin::shippingProviders()`, which is the only place a courier's credentials and feature flag are read;
-`ManualProvider` (in-house delivery) is the working implementation that ships today. Everything crossing the
-provider boundary is one of our value objects — an adapter never sees a `WC_Order`.
+`ManualProvider` (in-house delivery) and `Integrations\Yalidine\YalidineProvider` both ship today. Everything
+crossing the provider boundary is one of our value objects — an adapter never sees a `WC_Order`.
+
+Yalidine (§56) was written with no merchant account, from three agreeing implementations rather than from
+memory (§54 forbids memory, not working code), and **verified against the live API on 2026-08-14** with
+another project's credentials. What is still unproven is marked `ASSUMPTION (unverified)` in
+`integrations/Yalidine/` — `grep -rn ASSUMPTION integrations/Yalidine` — and what was proven says so with the
+date. Do not delete either kind of marker without evidence. Three assumptions were **wrong** and the code
+now reflects reality: `GET parcels/{tracking}` is wrapped in `{data:[…]}` (a missing parcel is a 200 with
+`total_data: 0`, not a 404); `order_id` is **not** an idempotency key, so the adapter runs
+`GET parcels/?order_id=` before creating; and `DELETE parcels/{tracking}` exists, so cancellation works.
+The quota is published on every response (`second/minute/hour/day-quota-left`, 5/50/1000/10000), which is
+why the poller batches 25.
+A courier's coverage is **data it publishes**, loaded by `wp algerian-commerce sync-destinations` into
+`ac_geo_provider_destinations`, including its own spelling of every wilaya and commune, because Yalidine
+matches those names exactly. Never hard-code a wilaya-name table or a set of unsupported wilayas. Commune
+matching is by accent-folded name and never fuzzy — the report names the nearest candidate for a person to
+judge. A **wilaya** may also match on its official code, which the live run showed identical to the
+courier's id in 54 of 54 cases: name first, code only as a tie-break, and every such row reports itself.
+Two known coverage gaps are data, not bugs: ~338 communes are transliteration variance, and 95 sit in the
+11 wilayas created after 2019 that Yalidine still files under their old parent.
+Status sync is a poll (`wp algerian-commerce sync-shipments`, plus an hourly cron);
+the webhook waits for §55's review, since Yalidine's `security_token` is a shared secret in the body rather
+than a signature. Per-client settings are the `ac_yalidine_settings` option — origin wilaya, insurance,
+parcel defaults — never `.env` and never constants, because the plugin is cloned per client.
 
 What the shop *charges* is separate from what a courier quotes: `ac_shipping_rates` (migration 005,
 `Schema::VERSION` is 5) holds the tariff, and `RateResolver` picks the narrowest matching rule — commune beats
@@ -68,8 +92,10 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `COD/`, `Shipping/`, `Geography/`, `CLI/`, alongside `data/`, `migrations/` and `tests/`. Still to
-come: `Payments/`, `Analytics/`, `CMS/`, … and `integrations/{Yalidine,Zedair,Chargily}/`.
+`Customers/`, `COD/`, `Shipping/`, `Geography/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
+`AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
+autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
+`tests/`. Still to come: `Payments/`, `Analytics/`, `CMS/`, … and `integrations/{ZRExpress,Chargily}/`.
 
 Bulk reference data lives in `data/` as JSON and is loaded by a WP-CLI importer — never inlined into PHP files
 (roadmap §51). Datasets ship inside the plugin, because the plugin is what gets cloned and deployed per client.
@@ -124,7 +150,8 @@ curl http://localhost:8090/wp-json/algerian-commerce/v1/health   # → {"success
 ```
 
 `.env` (gitignored) holds `DB_PASSWORD`, `DB_ROOT_PASSWORD`, `WP_PORT`, and provider credentials
-(`YALIDINE_*`, `ZEDAIR_*`, `CHARGILY_*`, `SMTP_*`); `.env.example` mirrors those keys with blank values. One gap left to
+(`YALIDINE_API_ID`, `YALIDINE_API_TOKEN`, `YALIDINE_WEBHOOK_SECRET` — Yalidine authenticates with two headers,
+not a key/secret pair — plus `ZEDAIR_*`, `CHARGILY_*`, `SMTP_*`); `.env.example` mirrors those keys with blank values. One gap left to
 fix when touching config: `compose.yaml` hardcodes port `8090` instead of using `${WP_PORT}`, so changing `WP_PORT`
 currently does nothing.
 

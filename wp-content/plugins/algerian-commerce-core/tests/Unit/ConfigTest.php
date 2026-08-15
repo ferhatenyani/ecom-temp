@@ -33,7 +33,7 @@ final class ConfigTest extends TestCase
 
         // Null rather than '' so callers cannot send a blank credential.
         self::assertNull($config->secret('CHARGILY_SECRET_KEY'));
-        self::assertNull($config->secret('YALIDINE_API_KEY'));
+        self::assertNull($config->secret('YALIDINE_API_TOKEN'));
     }
 
     public function testSecretReturnsConfiguredValue(): void
