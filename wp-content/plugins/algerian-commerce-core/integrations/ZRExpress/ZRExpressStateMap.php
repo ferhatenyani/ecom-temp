@@ -35,6 +35,29 @@ use AlgerianCommerce\Shipping\ShipmentStatus;
  *    cash collected, then paid out to the merchant — and the parcel arrived in
  *    all three. COD reconciliation is a separate question (§52), and inventing
  *    shipment statuses for it would be exactly what PLAN §8 forbids.
+ *
+ * ## Checked against a real shop's book, 2026-08-15
+ *
+ * Every `state.name` on **707 live parcels** of a working merchant account, and
+ * all six that occur are mapped here:
+ *
+ * ```
+ * 611  recouvert                  delivered
+ *  77  recupere_par_fournisseur   returned
+ *   9  pret_a_expedier            created
+ *   7  encaisse                   delivered
+ *   2  confirme_au_bureau         in_transit
+ *   1  vers_wilaya                in_transit
+ * ```
+ *
+ * The sample also settles the format question §60 had to reason around: these
+ * are **stable snake_case identifiers**, never display strings. ZR Express's
+ * *webhook* reference prints `"name": "Out for Delivery"` in its example
+ * payload, which is now known to be illustrative rather than a second real
+ * shape — no live response has ever produced it. That does not make a webhook
+ * payload safe to act on, because no webhook from this courier has been
+ * observed at all; it means the discrepancy is in their documentation rather
+ * than in their API.
  */
 final class ZRExpressStateMap
 {

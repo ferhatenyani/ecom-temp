@@ -29,11 +29,15 @@ use InvalidArgumentException;
  *    log, a support ticket — can forge any event with it. docs/SECURITY.md is
  *    explicit that such a payload is a hint and never a source of truth.
  *  - **ZR Express signs properly, with Svix, and is still re-fetched.** Its
- *    webhook reference documents `state.name` as a display string ("Out for
- *    Delivery"); the live API returns stable snake_case identifiers, which is
- *    what `ZRExpressStateMap` maps and what the poller has been reading since
- *    §57. Two documented shapes for one field is exactly the situation where
- *    believing the payload writes a status nothing else can reason about.
+ *    webhook reference prints `"name": "Out for Delivery"` in the example
+ *    payload, while the live API returns stable snake_case identifiers —
+ *    confirmed on 2026-08-15 across 707 real parcels, every one of them
+ *    snake_case (see `ZRExpressStateMap`). So the display string is a
+ *    documentation artefact rather than a second real shape. What is still
+ *    unobserved is **a webhook from this courier at all**: no account reachable
+ *    from here has one registered, so nothing has ever confirmed that the
+ *    pushed payload matches the pulled one. Believing it would be trusting the
+ *    one document already known to be wrong about this field.
  *
  * So both end the same way: `ShippingService::handleWebhook()` claims the event
  * and then calls `getShipmentStatus()`, which is the code path the poller
