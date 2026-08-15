@@ -2,7 +2,7 @@ services:
 
   # Versions are pinned to the exact builds this stack was verified against —
   # WordPress 7.0.4, WP-CLI 2.12.0, MySQL 8.0.46, with WooCommerce 11.0.1 and
-  # PHP 8.3. `latest` meant a routine `docker compose pull` could swap a major
+  # PHP 8.4. `latest` meant a routine `docker compose pull` could swap a major
   # version underneath the plugin with no changelog review, which is precisely
   # what CLAUDE.md's "pin versions once the environment is known-good" forbids.
   # Upgrade one image at a time, on a branch, and re-run the suites.
@@ -28,7 +28,7 @@ services:
       - db_data:/var/lib/mysql
 
   wordpress:
-    image: wordpress:7.0.4-apache
+    image: wordpress:7.0.4-php8.4-apache
     restart: unless-stopped
     depends_on:
       - db
@@ -55,7 +55,7 @@ services:
       - ./docker/apache-wordpress.conf:/etc/apache2/conf-enabled/zz-wordpress.conf:ro
 
   wpcli:
-    image: wordpress:cli-2.12.0
+    image: wordpress:cli-2.12.0-php8.4
     # The two images disagree about who www-data is: the Debian `wordpress`
     # image uses uid 33, the Alpine `wordpress:cli` image uses uid 82. The
     # volume is owned 33:33, so WP-CLI could read everything and write nothing —
