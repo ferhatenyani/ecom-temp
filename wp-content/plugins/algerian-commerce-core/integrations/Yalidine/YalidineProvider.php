@@ -14,6 +14,7 @@ use AlgerianCommerce\Shipping\ProviderDestination;
 use AlgerianCommerce\Shipping\RateQuote;
 use AlgerianCommerce\Shipping\ShipmentRequest;
 use AlgerianCommerce\Shipping\ShipmentResult;
+use AlgerianCommerce\Shipping\ShipmentWebhookResult;
 use AlgerianCommerce\Shipping\ShipmentStatus;
 use AlgerianCommerce\Shipping\ShippingProviderInterface;
 use AlgerianCommerce\Shipping\StatusReport;
@@ -84,7 +85,17 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
         private readonly DestinationDirectoryInterface $directory,
         private readonly YalidineSettings $settings,
         private readonly Logger $logger,
-        ?YalidineDestinations $catalogue = null
+        ?YalidineDestinations $catalogue = null,
+        /*
+         * Only `handleWebhook()` reads this, which is why it arrives after the
+         * catalogue rather than beside the client: §60 added it to an adapter
+         * that had shipped without it, and moving the existing parameters would
+         * have been a rename dressed as a feature. It is optional because a shop
+         * may run this courier on the poller alone — and then the webhook route
+         * verifies nothing and rejects everything, which is the correct
+         * behaviour for an unconfigured secret.
+         */
+        private readonly ?YalidineCredentials $credentials = null
     ) {
         $this->catalogue = $catalogue ?? new YalidineDestinations($client);
     }
@@ -668,5 +679,98 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
         }
 
         return null;
+    }
+
+    /**
+     * Verify one inbound event — docs/SECURITY.md → "Webhooks", roadmap §60.
+     *
+     * ```
+     * security_token present   → else unverified
+     * hash_equals() against the configured secret
+     * an event id derived by hashing the body, since Yalidine sends none
+     * ```
+     *
+     * **This is the weak shape, and the rule says so.** `security_token` is a
+     * shared secret *in the body*, not a signature: it binds to nothing, so it
+     * proves only that the sender once saw the token, and anyone who has ever
+     * seen one — a proxy log, a support ticket, a misrouted delivery — can forge
+     * any event with it. A verified Yalidine event therefore means "go and look
+     * at this parcel", never "believe this payload", which is why
+     * `ShipmentWebhookResult` carries no status for anybody.
+     *
+     * **No timestamp check, deliberately.** docs/SECURITY.md permits the
+     * 5-minute tolerance only where the timestamp sits inside the signed
+     * material; here nothing is signed, so a `date` field in the body is
+     * attacker-controlled and checking it would be theatre that reads like
+     * security. Replay is stopped by the event id claim and by the fact that
+     * acting on the event means re-fetching the parcel — replaying a delivery
+     * notification a hundred times still gets whatever `GET parcels/{tracking}`
+     * says today.
+     *
+     * The id is the SHA-256 of the body, because Yalidine sends no event id.
+     * That is stable across a genuine retransmission and distinct between real
+     * events, which each carry their own `updated_at`.
+     *
+     * @param array<string, mixed>  $payload
+     * @param array<string, string> $headers
+     */
+    public function handleWebhook(array $payload, array $headers, string $rawBody = ''): ShipmentWebhookResult
+    {
+        $secret = $this->credentials?->webhookSecret ?? '';
+        $token = isset($payload['security_token']) && is_scalar($payload['security_token'])
+            ? (string) $payload['security_token']
+            : '';
+
+        if ($secret === '' || $token === '' || $rawBody === '') {
+            throw $this->unverified();
+        }
+
+        // hash_equals, never == or ===: a timing-variable comparison leaks the
+        // token one byte at a time to anyone willing to send enough requests.
+        if (!hash_equals($secret, $token)) {
+            throw $this->unverified();
+        }
+
+        $tracking = isset($payload['tracking_number']) && is_scalar($payload['tracking_number'])
+            ? trim((string) $payload['tracking_number'])
+            : '';
+        $event = isset($payload['event']) && is_scalar($payload['event']) ? trim((string) $payload['event']) : '';
+
+        return new ShipmentWebhookResult(
+            hash('sha256', $rawBody),
+            // Yalidine identifies a parcel by its tracking number and by nothing
+            // else — there is no second id — so it is both fields here.
+            $tracking,
+            $tracking,
+            $event,
+            /*
+             * Nothing from the body is carried further. It is unauthenticated
+             * data by the standard above, and the handler is about to ask the
+             * courier the same questions properly. `signature_url` in
+             * particular is a link to a customer's handwritten signature and is
+             * in Logger::SENSITIVE_EXACT for that reason.
+             */
+            []
+        );
+    }
+
+    /**
+     * One answer for every verification failure.
+     *
+     * Logged at warning with the provider and nothing else — never the body,
+     * never the token, never the tracking number, which at this point is
+     * unverified attacker input (docs/SECURITY.md). The route logs the source
+     * IP, which is the one useful fact about a forgery attempt.
+     */
+    private function unverified(): ApiException
+    {
+        $this->logger->warning('Yalidine webhook failed verification', ['provider' => self::NAME]);
+
+        return new ApiException(
+            'webhook_unverified',
+            'This request could not be verified.',
+            401,
+            ['provider' => self::NAME]
+        );
     }
 }

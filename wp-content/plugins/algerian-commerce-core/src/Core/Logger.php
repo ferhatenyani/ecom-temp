@@ -48,7 +48,7 @@ final class Logger
      * mask those too — the same over-matching that already redacts a hashed
      * rate-limit bucket into uselessness.
      */
-    private const SENSITIVE_EXACT = ['label', 'labels'];
+    private const SENSITIVE_EXACT = ['label', 'labels', 'signature_url'];
 
     public const MASK = '[redacted]';
 

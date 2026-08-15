@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace AlgerianCommerce\Payments;
+namespace AlgerianCommerce\Commerce;
 
 use wpdb;
 
@@ -19,9 +19,12 @@ use wpdb;
  * Nothing here reads the table to decide anything. A `has()` method would be the
  * defect wearing the fix's clothes, so there is not one.
  *
- * Lives in `Payments/` because payments are what needs it today, and is keyed by
- * provider so the courier webhooks unblocked by the same §55 review can claim
- * into the same table without a second one.
+ * Lives in `Commerce/` because two domains need it and neither owns it. §59 put
+ * it in `Payments/` on the reasoning that payments were the only caller; §60
+ * gave the couriers webhooks too, and a `Shipping/` class reaching into
+ * `Payments/` would invent a dependency the business does not have — a parcel
+ * has nothing to do with a gateway. This is the same rule that put `AddressInput`
+ * here rather than in whichever domain got there first.
  */
 final class WebhookEventRepository
 {

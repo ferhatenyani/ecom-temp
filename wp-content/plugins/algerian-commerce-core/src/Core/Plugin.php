@@ -49,7 +49,7 @@ use AlgerianCommerce\Payments\PaymentProviderRegistry;
 use AlgerianCommerce\Payments\PaymentService;
 use AlgerianCommerce\Payments\PaymentWebhookController;
 use AlgerianCommerce\Payments\TransactionRepository;
-use AlgerianCommerce\Payments\WebhookEventRepository;
+use AlgerianCommerce\Commerce\WebhookEventRepository;
 use AlgerianCommerce\Permissions\Roles;
 use AlgerianCommerce\Security\RateLimiter;
 use AlgerianCommerce\Security\RateLimitGuard;
@@ -76,6 +76,7 @@ use AlgerianCommerce\Shipping\ShipmentRepository;
 use AlgerianCommerce\Shipping\ShippingController;
 use AlgerianCommerce\Shipping\ShippingRuleRepository;
 use AlgerianCommerce\Shipping\ShippingService;
+use AlgerianCommerce\Shipping\ShippingWebhookController;
 use AlgerianCommerce\Products\ProductCategoryController;
 use AlgerianCommerce\Products\ProductController;
 use AlgerianCommerce\Products\ProductRepository;
@@ -323,6 +324,11 @@ final class Plugin
                 $this->paymentProviders(),
                 $this->paymentService()
             ),
+            new ShippingWebhookController(
+                $this->logger(),
+                $this->shippingProviders(),
+                $this->shippingService()
+            ),
         ]);
     }
 
@@ -387,7 +393,10 @@ final class Plugin
                 ),
                 $this->destinationDirectory(),
                 $settings,
-                $this->logger()
+                $this->logger(),
+                null,
+                // Only the webhook verifier reads this — roadmap §60.
+                $credentials
             );
         }
 
@@ -408,7 +417,10 @@ final class Plugin
                     $this->logger()
                 ),
                 $this->destinationDirectory(),
-                $this->logger()
+                $this->logger(),
+                null,
+                // Only the webhook verifier reads this — roadmap §60.
+                $zrExpress
             );
         }
 
@@ -497,7 +509,9 @@ final class Plugin
             $this->orderRepository(),
             $this->geoRepository(),
             $this->auditLogger(),
-            $this->shippingRuleRepository()
+            $this->shippingRuleRepository(),
+            $this->webhookEventRepository(),
+            $this->logger()
         );
     }
 

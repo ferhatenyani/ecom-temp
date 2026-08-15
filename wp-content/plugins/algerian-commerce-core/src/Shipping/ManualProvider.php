@@ -113,4 +113,26 @@ final class ManualProvider implements ShippingProviderInterface
     {
         return [];
     }
+
+    /**
+     * Nobody sends us webhooks about a van we own.
+     *
+     * Throwing rather than returning an empty result, and mirroring how
+     * `getShipmentStatus()` refuses a poll it cannot answer: a request arriving
+     * here means something is misrouted, and quietly returning "nothing to do"
+     * would hide that for as long as it took someone to notice parcels were not
+     * moving.
+     *
+     * @param array<string, mixed>  $payload
+     * @param array<string, string> $headers
+     */
+    public function handleWebhook(array $payload, array $headers, string $rawBody = ''): ShipmentWebhookResult
+    {
+        throw new ApiException(
+            'webhook_unsupported',
+            'In-house delivery does not receive webhooks.',
+            400,
+            ['provider' => self::NAME]
+        );
+    }
 }

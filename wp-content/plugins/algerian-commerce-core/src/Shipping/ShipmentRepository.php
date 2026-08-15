@@ -125,6 +125,57 @@ final class ShipmentRepository
         return is_array($row) ? Shipment::fromRow($row) : null;
     }
 
+    /**
+     * The parcel a courier is talking about — roadmap §60.
+     *
+     * Scoped by provider, because an identifier is only unique inside the
+     * courier that issued it, and this is the lookup a webhook uses: a collision
+     * between two couriers would apply an event to the wrong parcel.
+     *
+     * Either identifier will do, and both are tried, because the two couriers
+     * disagree about how many a parcel has. Yalidine has one — the tracking
+     * number *is* the id — while ZR Express issues a UUID at creation and a
+     * tracking number afterwards, which §57 records as genuinely separate
+     * things. The provider id is tried first: it exists from the moment the
+     * parcel does, where a tracking number can still be empty.
+     */
+    public function findByProviderReference(
+        string $provider,
+        string $providerShipmentId = '',
+        string $trackingNumber = ''
+    ): ?Shipment {
+        $provider = trim($provider);
+        $providerShipmentId = trim($providerShipmentId);
+        $trackingNumber = trim($trackingNumber);
+
+        if ($provider === '') {
+            return null;
+        }
+
+        foreach ([['provider_shipment_id', $providerShipmentId], ['tracking_number', $trackingNumber]] as [$column, $value]) {
+            if ($value === '') {
+                continue;
+            }
+
+            $row = $this->wpdb->get_row(
+                $this->wpdb->prepare(
+                    "SELECT * FROM {$this->table()}
+                     WHERE provider = %s AND {$column} = %s
+                     ORDER BY id DESC LIMIT 1",
+                    $provider,
+                    $value
+                ),
+                ARRAY_A
+            );
+
+            if (is_array($row)) {
+                return Shipment::fromRow($row);
+            }
+        }
+
+        return null;
+    }
+
     /** @return list<Shipment> newest first */
     public function forOrder(int $orderId): array
     {

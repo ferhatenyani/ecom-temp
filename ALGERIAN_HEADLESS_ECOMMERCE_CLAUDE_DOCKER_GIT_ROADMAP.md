@@ -3613,6 +3613,74 @@ order transition
 notification
 ```
 
+## What was built
+
+Chargily's endpoint landed with §59. This section is the two couriers, which
+§56 and §57 deferred until §55 had produced a written rule.
+
+``` text
+ShippingProviderInterface::handleWebhook()  + ShipmentWebhookResult
+ShippingService::handleWebhook()            verify → claim → re-fetch → act
+ShippingWebhookController                   one route per registered courier
+API/AbstractWebhookController               everything a webhook route does,
+                                              extracted from §59's copy
+Commerce/WebhookEventRepository             moved out of Payments/ once a
+                                              second domain needed the claim
+```
+
+**The route for ZR Express is `/webhooks/zrexpress`**, not the `zr-express`
+written above. `ZRExpressProvider::NAME` is `zrexpress` and that string is
+already in every `ac_shipments` row this plugin has written; a route spelled
+differently would be a second name for one thing, with the mapping between them
+living wherever somebody remembered to put it.
+
+## The two shapes, and why both are re-fetched
+
+``` text
+ZR Express   Svix, from their published docs: HMAC-SHA256 over
+               {svix-id}.{svix-timestamp}.{body}, base64, against the
+               base64 key behind `whsec_`; several space-separated
+               "v1,<sig>" values may arrive and any one matching passes.
+               The timestamp is signed material, so the tolerance binds.
+Yalidine     `security_token` in the body, hash_equals(), and no
+               timestamp check at all — nothing is signed, so a date
+               field is attacker-controlled and checking it would be
+               theatre that reads like security.
+```
+
+docs/SECURITY.md permits acting on a real signature directly, and this section
+still does not — for a reason found by reading rather than by caution. ZR
+Express's webhook reference documents `state.name` as a display string ("Out for
+Delivery"); the live API returns the stable snake_case identifiers
+`ZRExpressStateMap` maps and the poller has read since §57. Two documented
+shapes for the field that decides a parcel's status is exactly where believing a
+payload writes a state nothing else can reason about. So every verified event
+ends in `getShipmentStatus()` — the poller's own path — and a parcel's status
+still never moves the order.
+
+## §65's two security tests, as promised
+
+Forgery and replay, at both levels: `tests/Unit/CourierWebhookTest` covers
+tampering, a wrong key, a swapped `svix-id`, a stale timestamp, an unconfigured
+secret and that every rejection is byte-identical across both couriers;
+`tests/Api/shipping-webhooks.php` covers the same through the route and the
+service against a real database, including that a replayed delivery does not
+ask the courier a second time.
+
+## Two things this section found
+
+``` text
+signature_url   Yalidine's webhook links to the customer's handwritten
+                  signature. Now in Logger::SENSITIVE_EXACT beside the
+                  label URLs, under the rule CLAUDE.md already stated.
+the autoloader  `optimize-autoloader` dumps a classmap, so moving one
+                  class between directories under src/ made every request
+                  fatal. The bundled PSR-4 autoloader is now registered
+                  behind Composer unconditionally — the reasoning the
+                  bootstrap already carried for integrations/, never
+                  applied to src/ where a classmap needs it more.
+```
+
 ------------------------------------------------------------------------
 
 # 61. CMS

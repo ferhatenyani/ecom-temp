@@ -13,6 +13,7 @@ use AlgerianCommerce\Shipping\ProviderDestination;
 use AlgerianCommerce\Shipping\RateQuote;
 use AlgerianCommerce\Shipping\ShipmentRequest;
 use AlgerianCommerce\Shipping\ShipmentResult;
+use AlgerianCommerce\Shipping\ShipmentWebhookResult;
 use AlgerianCommerce\Shipping\ShipmentStatus;
 use AlgerianCommerce\Shipping\ShippingProviderInterface;
 use AlgerianCommerce\Shipping\StatusReport;
@@ -51,13 +52,27 @@ final class ZRExpressProvider implements ShippingProviderInterface, DestinationC
 {
     public const NAME = 'zrexpress';
 
+    /** docs/SECURITY.md → "Webhooks": five minutes, in either direction. */
+    public const TIMESTAMP_TOLERANCE = 300;
+
+    /** Svix labels its signing secrets; the key is the base64 after this. */
+    private const SECRET_PREFIX = 'whsec_';
+
     private readonly ZRExpressTerritories $catalogue;
 
     public function __construct(
         private readonly ZRExpressClient $client,
         private readonly DestinationDirectoryInterface $directory,
         private readonly Logger $logger,
-        ?ZRExpressTerritories $catalogue = null
+        ?ZRExpressTerritories $catalogue = null,
+        /*
+         * Only `handleWebhook()` reads this — §60 added it to an adapter that
+         * had already shipped, and reordering the existing parameters would have
+         * been a rename dressed as a feature. Optional: a shop may run this
+         * courier on the poller alone, and an unconfigured secret then makes the
+         * webhook route reject everything, which is what it should do.
+         */
+        private readonly ?ZRExpressCredentials $credentials = null
     ) {
         $this->catalogue = $catalogue ?? new ZRExpressTerritories($client);
     }
@@ -569,5 +584,130 @@ final class ZRExpressProvider implements ShippingProviderInterface, DestinationC
     private static function str(array $row, string $key): string
     {
         return isset($row[$key]) && is_scalar($row[$key]) ? trim((string) $row[$key]) : '';
+    }
+
+    /**
+     * Verify one inbound event — docs/SECURITY.md → "Webhooks", roadmap §60.
+     *
+     * ZR Express delivers through **Svix**, whose scheme is published, so §57
+     * was right that this slice had nothing left to invent:
+     *
+     * ```
+     * svix-id          the event id — claimed, never checked
+     * svix-timestamp   seconds; inside the signed material, so the 5-minute
+     *                    tolerance actually binds
+     * svix-signature   one or more space-separated "v1,<base64>" values, any
+     *                    one matching is a pass — that is how they rotate keys
+     * secret           whsec_<base64>; the base64 *after* the prefix is the
+     *                    key, and using the prefixed string verifies nothing
+     * signed material  {svix-id}.{svix-timestamp}.{raw body}
+     * ```
+     *
+     * Implemented here rather than by adding the Svix SDK as a Composer
+     * dependency: it is fifteen lines of HMAC against a documented string, the
+     * house rule is that a package needs a stated reason, and a verifier this
+     * codebase can read is worth more than one it cannot.
+     *
+     * **A real signature may be acted on — and this one still is not.** The
+     * webhook reference documents `state.name` as a display string ("Out for
+     * Delivery"); the live API returns stable snake_case identifiers, which is
+     * what `ZRExpressStateMap` maps and the poller has read since §57. Two
+     * documented shapes for the field that decides a parcel's status is exactly
+     * where believing a payload writes something nothing else can reason about.
+     * So the result carries no status and the handler re-fetches — see
+     * `ShipmentWebhookResult`.
+     *
+     * @param array<string, mixed>  $payload
+     * @param array<string, string> $headers lower-cased header names
+     */
+    public function handleWebhook(array $payload, array $headers, string $rawBody = ''): ShipmentWebhookResult
+    {
+        $secret = $this->credentials?->webhookSecret ?? '';
+        $id = trim($headers['svix-id'] ?? '');
+        $timestamp = trim($headers['svix-timestamp'] ?? '');
+        $signatures = trim($headers['svix-signature'] ?? '');
+
+        if ($secret === '' || $id === '' || $timestamp === '' || $signatures === '' || $rawBody === '') {
+            throw $this->unverified();
+        }
+
+        // The timestamp is signed material, so this tolerance binds rather than
+        // being theatre — the case docs/SECURITY.md distinguishes.
+        if (!ctype_digit(ltrim($timestamp, '-')) || abs(time() - (int) $timestamp) > self::TIMESTAMP_TOLERANCE) {
+            throw $this->unverified();
+        }
+
+        $key = base64_decode(self::stripPrefix($secret), true);
+
+        if ($key === false || $key === '') {
+            throw $this->unverified();
+        }
+
+        $expected = base64_encode(hash_hmac('sha256', "{$id}.{$timestamp}.{$rawBody}", $key, true));
+        $matched = false;
+
+        foreach (explode(' ', $signatures) as $candidate) {
+            // "v1,<base64>". A version this adapter does not know is skipped
+            // rather than refused: Svix adds versions, and every existing one
+            // keeps being sent alongside.
+            [$version, $value] = array_pad(explode(',', trim($candidate), 2), 2, '');
+
+            if ($version !== 'v1' || $value === '') {
+                continue;
+            }
+
+            // hash_equals, never == or ===, and no early break — comparing every
+            // candidate keeps the work constant whichever one matches.
+            if (hash_equals($expected, $value)) {
+                $matched = true;
+            }
+        }
+
+        if (!$matched) {
+            throw $this->unverified();
+        }
+
+        $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
+
+        return new ShipmentWebhookResult(
+            // Svix's own id. It is stable across their retries, which is what
+            // makes the claim the right idempotency mechanism here.
+            $id,
+            isset($data['id']) && is_scalar($data['id']) ? trim((string) $data['id']) : '',
+            isset($data['trackingNumber']) && is_scalar($data['trackingNumber'])
+                ? trim((string) $data['trackingNumber'])
+                : '',
+            isset($payload['eventType']) && is_scalar($payload['eventType'])
+                ? trim((string) $payload['eventType'])
+                : '',
+            []
+        );
+    }
+
+    /** `whsec_` is a label on the secret, not part of the key. */
+    private static function stripPrefix(string $secret): string
+    {
+        return str_starts_with($secret, self::SECRET_PREFIX)
+            ? substr($secret, strlen(self::SECRET_PREFIX))
+            : $secret;
+    }
+
+    /**
+     * One answer for every verification failure.
+     *
+     * Logged at warning with the provider and nothing else — never the body,
+     * never the headers, never the secret, and never the event id, which at
+     * this point is unverified attacker input (docs/SECURITY.md).
+     */
+    private function unverified(): ApiException
+    {
+        $this->logger->warning('ZR Express webhook failed verification', ['provider' => self::NAME]);
+
+        return new ApiException(
+            'webhook_unverified',
+            'This request could not be verified.',
+            401,
+            ['provider' => self::NAME]
+        );
     }
 }
