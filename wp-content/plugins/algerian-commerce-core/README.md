@@ -1501,11 +1501,121 @@ to a check whose entire job is refusing.
 
 ### Deliberately not here
 
-No transaction table and no REST controller. docs/PLAN.md §19 owns the `payment_transactions` record and
-roadmap §59 lands it with Chargily, the first provider with anything worth storing — designing those columns
-against an imagined provider is precisely what §56 says not to do. `PaymentService` therefore resolves
-providers, builds requests, delegates and audits; it performs the amount re-check but cannot yet persist the
-outcome, and its docblock says so rather than implying completeness.
+No transaction table and no REST controller — **both landed in §59 below**, with Chargily, the first provider
+with anything worth storing. Designing those columns against an imagined provider is precisely what §56 says
+not to do, and the delay paid: the amount is `decimal`, not an integer of minor units, because Chargily turned
+out to quote in dinars.
+
+## Chargily (§59)
+
+Chargily Pay V2, behind the interface above without a line changing over it — the standard ZR Express met on
+the shipping side.
+
+```
+createPayment   POST checkouts        → ULID + checkout_url, status "pending"
+verifyPayment   GET  checkouts/{id}   → the authoritative answer about money
+handleWebhook   `signature` header    → HMAC-SHA256 hex over the raw body
+```
+
+Written from [dev.chargily.com](https://dev.chargily.com/llms.txt) and cross-checked against Chargily's own
+**MIT-licensed** WooCommerce plugin and PHP SDK — read for facts, never copied, exactly as §56 handled
+Createk's Yalidine plugin. Their plugin is not usable here for a reason that has nothing to do with quality:
+it is a WooCommerce *checkout gateway*, entered through `process_payment()` from a rendered checkout form with
+a cart and a browser cookie, and a headless backend never calls it. It also keeps its API key in
+`wp_options`, acts on the webhook payload's `status` without re-fetching, and claims no idempotency — three
+things this plugin may not do.
+
+### Verified live, 2026-08-15
+
+Chargily hands out test keys to anyone with an email address, so unlike §56 nothing here had to stay a guess.
+`grep -rn ASSUMPTION integrations/Chargily` is **empty**, and should stay that way or say why. Four things the
+run settled that the reference does not say:
+
+```
+expired        a real status, absent from the documented enum — POST
+                 checkouts/{id}/expire then read back gives "expired"
+1500.50        a fractional amount is accepted, despite the type being
+                 documented `integer`; nothing is rounded here either way
+checkout_url   comes back as http://, though the docs write https:// —
+                 the scheme is corrected, since that URL is where a
+                 shopper types card details
+account{…}     every response embeds the merchant's own record: company
+                 name, trade register, NIS, NIF, satim_credentials —
+                 which is why the stored metadata is an allowlist
+```
+
+### One key, not two
+
+`.env` used to carry `CHARGILY_WEBHOOK_SECRET` beside `CHARGILY_SECRET_KEY`, written before anyone had read
+the documentation and assuming ZR Express's shape. **Chargily signs webhooks with the API secret key
+itself.** The second variable had nothing that could correctly go in it, and anything anyone did put there
+would have failed every signature check in silence, so it was removed rather than left to be filled in
+wrongly.
+
+The key also **picks the environment**: `test_sk_…` is Test Mode, anything else is Live. Two settings that
+must agree are one setting that eventually will not, and a live key pointed at the test URL is a shop that
+takes no money and says nothing about it.
+
+### Payments are re-fetched, never believed
+
+A verified signature proves who sent a message. It does not prove the money, and here it *cannot*: the
+checkout object inside a webhook has **no `currency` field** — a different shape from the API's, also calling
+`checkout_url` plain `url` — so docs/SECURITY.md's "amount and currency are re-checked" is unsatisfiable from
+the payload. Every path therefore ends in `verifyPayment()`:
+
+```
+verify()        an operator or the storefront asks
+webhook()       Chargily says so, with a signature → claim → re-fetch
+PaymentPoller   nobody said anything for a while, so we ask
+```
+
+`PaymentReport::matches()` was tightened here as a result: a report with **no** currency no longer passes a
+check that was given one. The lenient reading answered "matches" on a payload where the currency comparison
+had simply not run, which is the shape the rule exists to refuse.
+
+### sync-payments
+
+`wp algerian-commerce sync-payments`, plus an hourly cron, is the safety net under the five-minute replay
+window. Chargily does not document its retry schedule, so a late retry is refused on purpose — and this is
+what stops that costing a payment. It also covers the shop being down for the whole retry window, the
+customer closing the tab before the redirect, and a checkout expiring quietly, which no gateway need announce.
+A payment still `pending` after 24 hours is closed as `expired`; a checkout lives thirty minutes, so there is
+no state in which it could still be paid, and polling a dead row hourly forever starves the live ones.
+
+### Transactions (PLAN §19)
+
+`ac_payment_transactions` is migration 007. **Several rows per order is the design** — a card is refused, the
+customer tries again, and both attempts are facts — and the row is written **before** the gateway is called,
+because docs/SECURITY.md wants every attempt recorded and the attempt worth having is the one where a gateway
+may have taken money on a request this side then dropped. A create that throws closes its row as `failed`.
+
+There is deliberately **no** mirror of migration 006's "one live per order" index. A duplicated parcel is a
+van driving somewhere; a duplicated checkout is a link nobody clicks, which expires by itself in thirty
+minutes. What protects the money needs no lock: a settled transaction refuses a second payment for the order,
+`PaymentStatus::accepts()` refuses to un-pay a paid one, and the webhook event claim refuses to apply an event
+twice.
+
+`ac_webhook_events` is migration 008: `UNIQUE (provider, event_id)`, and the insert **is** the idempotency
+test. There is no `has()` method, because a read-then-write races exactly when a gateway retries in parallel —
+the defect migration 006 fixed for shipments, arriving through a different door.
+
+### Endpoints
+
+```
+GET    /payments/methods              what this shop can take money with
+POST   /orders/{id}/payments          open a checkout
+GET    /orders/{id}/payments          attempts for one order
+POST   /payments/{id}/verify          ask the gateway, write down the answer
+GET    /payments/{id}                 one attempt
+GET    /payments                      filter by provider, status, dates
+POST   /webhooks/chargily             signature-verified, registered only
+                                        when the provider is
+```
+
+All of them carry `ac_manage_payments`, which **Manager does not have** — running the shop day to day is not
+the same job as reaching into what a gateway did with somebody's money. `POST /payments/{id}/verify` is a POST
+rather than a GET because it calls a gateway and can settle an order; a GET that changes things is one browser
+prefetch from doing it by accident.
 
 ## Security review (§55)
 

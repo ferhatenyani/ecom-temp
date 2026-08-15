@@ -52,8 +52,14 @@ final class Config
             'ZR_EXPRESS_TENANT_ID',
             'ZR_EXPRESS_API_KEY',
             'ZR_EXPRESS_WEBHOOK_SECRET',
+            /*
+             * One key, not two. Chargily signs its webhooks with the API secret
+             * key itself, so `CHARGILY_WEBHOOK_SECRET` was removed at §59 rather
+             * than left as a slot nothing could correctly fill — see
+             * `Integrations\Chargily\ChargilyCredentials` and docs/SECURITY.md.
+             * The key also picks the environment: `test_sk_…` is Test Mode.
+             */
             'CHARGILY_SECRET_KEY',
-            'CHARGILY_WEBHOOK_SECRET',
             'SMTP_HOST',
             'SMTP_USERNAME',
             'SMTP_PASSWORD',

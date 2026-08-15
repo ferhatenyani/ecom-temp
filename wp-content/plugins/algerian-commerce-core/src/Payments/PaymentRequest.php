@@ -21,9 +21,12 @@ namespace AlgerianCommerce\Payments;
  *
  * **The amount is a decimal string**, like every other amount in this codebase,
  * and never a float — a fee that arrives as a float has lost the last centime
- * before it reaches a total. Providers want minor units (Chargily quotes in
- * centimes); converting is the adapter's job, because the size of a minor unit
- * is a fact about a provider and a currency, not about an order.
+ * before it reaches a total. Whatever unit a provider wants it in is the
+ * adapter's business, because the size of a minor unit is a fact about a
+ * provider and a currency, not about an order. (This docblock used to assert
+ * that Chargily quotes in centimes. §59 read their documentation: it quotes in
+ * **dinars**. The guess is left recorded here because it is exactly the kind
+ * §54 forbids — an integration written from memory before anybody checked.)
  */
 final class PaymentRequest
 {

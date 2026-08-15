@@ -340,6 +340,29 @@ final class OrderRepository
     }
 
     /**
+     * Record that this order has been paid for — roadmap §59.
+     *
+     * `payment_complete()` rather than a status write, because it is
+     * WooCommerce's own supported API for exactly this and does several things a
+     * `set_status()` would silently skip: it stamps the date paid and the
+     * transaction id, reduces stock if that has not happened, empties held
+     * stock, and chooses between `processing` and `completed` according to what
+     * the order contains — a virtual, downloadable basket completes, a physical
+     * one goes to processing to be packed. Reimplementing that here would be
+     * forking a data model, which CLAUDE.md forbids outright.
+     *
+     * It is idempotent on WooCommerce's side: an order that is already paid
+     * keeps its original paid date. The caller has already established that this
+     * payment is confirmed *server-side* — never from a client callback.
+     */
+    public function markPaid(WC_Order $order, string $transactionId = ''): WC_Order
+    {
+        $order->payment_complete($transactionId);
+
+        return $this->find($order->get_id()) ?? $order;
+    }
+
+    /**
      * Whether WooCommerce has already taken this order's stock.
      *
      * A flag on the order, not a derivation from its status: WooCommerce

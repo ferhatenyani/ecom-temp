@@ -59,6 +59,12 @@ services:
       # Add feature flags (ENABLE_COD, ...) here the same way when needed.
       AC_CORS_ORIGINS: ${AC_CORS_ORIGINS:-}
       AC_LOG_LEVEL: ${AC_LOG_LEVEL:-}
+      # Chargily — roadmap §59. One key: it authenticates API calls *and* signs
+      # the webhooks, so there is no separate webhook secret. A key beginning
+      # test_sk_ selects Chargily's test environment by itself.
+      ENABLE_CHARGILY: ${ENABLE_CHARGILY:-}
+      CHARGILY_SECRET_KEY: ${CHARGILY_SECRET_KEY:-}
+      ENABLE_COD: ${ENABLE_COD:-}
     volumes:
       - wordpress_data:/var/www/html
       - ./wp-content/plugins/algerian-commerce-core:/var/www/html/wp-content/plugins/algerian-commerce-core
@@ -97,6 +103,12 @@ services:
       # Add feature flags (ENABLE_COD, ...) here the same way when needed.
       AC_CORS_ORIGINS: ${AC_CORS_ORIGINS:-}
       AC_LOG_LEVEL: ${AC_LOG_LEVEL:-}
+      # Chargily — roadmap §59. One key: it authenticates API calls *and* signs
+      # the webhooks, so there is no separate webhook secret. A key beginning
+      # test_sk_ selects Chargily's test environment by itself.
+      ENABLE_CHARGILY: ${ENABLE_CHARGILY:-}
+      CHARGILY_SECRET_KEY: ${CHARGILY_SECRET_KEY:-}
+      ENABLE_COD: ${ENABLE_COD:-}
     volumes:
       - wordpress_data:/var/www/html
       - ./wp-content/plugins/algerian-commerce-core:/var/www/html/wp-content/plugins/algerian-commerce-core
