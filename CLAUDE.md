@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53 and §55–§57 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53 and §55–§58 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
-REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine and
-ZR Express — and its
+REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
+ZR Express and the payment abstraction — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -15,11 +15,11 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53 and §55–§57 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53 and §55–§58 are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
-shipping rules, the Yalidine and ZR Express adapters, and the security review. **Next up is §58, the payment
-abstraction**, plus the two couriers' webhooks, which §56 and §57 deferred until §55 — and which are now
-unblocked, because §55 ended with a written webhook rule.
+shipping rules, the Yalidine and ZR Express adapters, the security review and the payment abstraction.
+**Next up is §59, Chargily**, which brings PLAN §19's transaction table with it. The two couriers' webhooks
+are also unblocked now that §55 has ended with a written rule; §56 and §57 deferred them for exactly that.
 
 **That rule is `docs/SECURITY.md` → "Webhooks", and it is not negotiable per provider.** The short form:
 the secret is `.env`-only and reaches the verifier through the bootstrap, as API credentials do; a webhook
@@ -39,7 +39,20 @@ log. A provider field holding a tokenised URL joins that list when its adapter i
 COD state is order meta plus audit events, never new order statuses (PLAN §8) and never a table of its own.
 A COD outcome does not change the order's status; the order's cancellation closes the COD state through
 `CodSubscriber`, which is the direction that keeps `Orders/` unaware of `COD/`. `ENABLE_COD` is not read by
-that module — it gates what checkout offers, which is §58.
+that module — it gates what checkout offers, and **that is now `Payments/`**: `Plugin::paymentProviders()`
+registers `CashOnDeliveryProvider` only when the flag is on. The two never overlap — `COD/` is the phone
+call before dispatch, `Payments/` is how an order is paid for — and neither reads the other.
+
+Payments follow the shipping rule exactly (§58): providers implement `Payments\PaymentProviderInterface`
+and are registered in `Plugin::paymentProviders()`, the only place a gateway's credentials and feature flag
+are read. Everything crossing the boundary is one of our value objects — `PaymentRequest` in,
+`PaymentResult` / `PaymentReport` / `WebhookResult` out — and **an adapter never sees a `WC_Order`.**
+`CashOnDeliveryProvider` is the `ManualProvider` of this layer: no HTTP, no credentials, a method real shops
+actually use, and proof the seam works before §59 puts a network call behind it.
+`PaymentStatus::accepts()` carries the one rule that protects money: from `paid`, **only `refunded`** —
+providers send late `pending` events and webhooks arrive out of order, and without it one of them un-pays a
+settled order. There is **no transaction table yet**; PLAN §19 owns it and it lands with Chargily in §59,
+because designing its columns against an imagined provider is exactly what §56 forbids.
 
 Shipping follows the same rule: a parcel's status never moves the order. `ac_shipments` is migration 004.
 **One live shipment per order is enforced by the schema, not by a check** (migration 006):
@@ -131,7 +144,7 @@ Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `Al
 `Customers/`, `COD/`, `Shipping/`, `Geography/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
-`tests/`, plus `integrations/ZRExpress/`. Still to come: `Payments/`, `Analytics/`, `CMS/`, … and
+`tests/`, plus `integrations/ZRExpress/` and `Payments/`. Still to come: `Analytics/`, `CMS/`, … and
 `integrations/Chargily/`.
 
 Bulk reference data lives in `data/` as JSON and is loaded by a WP-CLI importer — never inlined into PHP files

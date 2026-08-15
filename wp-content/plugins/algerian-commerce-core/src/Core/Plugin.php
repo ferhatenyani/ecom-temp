@@ -41,6 +41,9 @@ use AlgerianCommerce\Orders\OrderController;
 use AlgerianCommerce\Orders\OrderRepository;
 use AlgerianCommerce\Orders\OrderService;
 use AlgerianCommerce\Orders\OrderStockSubscriber;
+use AlgerianCommerce\Payments\CashOnDeliveryProvider;
+use AlgerianCommerce\Payments\PaymentProviderRegistry;
+use AlgerianCommerce\Payments\PaymentService;
 use AlgerianCommerce\Permissions\Roles;
 use AlgerianCommerce\Security\RateLimiter;
 use AlgerianCommerce\Security\RateLimitGuard;
@@ -132,6 +135,8 @@ final class Plugin
     private ?CodRepository $codRepository = null;
     private ?CodService $codService = null;
     private ?CodSubscriber $codSubscriber = null;
+    private ?PaymentProviderRegistry $paymentProviders = null;
+    private ?PaymentService $paymentService = null;
     private ?GeoRepository $geoRepository = null;
     private ?GeoService $geoService = null;
     private ?GeoImporter $geoImporter = null;
@@ -455,6 +460,54 @@ final class Plugin
     public function codSubscriber(): CodSubscriber
     {
         return $this->codSubscriber ??= new CodSubscriber($this->codRepository());
+    }
+
+    /**
+     * The payment methods this shop offers, in preference order — the first is
+     * the default (roadmap §58).
+     *
+     * The only place a payment provider's credentials and feature flag are read,
+     * exactly as `shippingProviders()` is for couriers (docs/ARCHITECTURE.md §4).
+     *
+     * **This is where `ENABLE_COD` finally does something.** CLAUDE.md records
+     * that `COD/` deliberately does not read it — that module is the
+     * confirmation queue, and its state is order meta plus audit events. The
+     * flag gates what checkout may *offer*, which is this list.
+     *
+     * A registry can legitimately be empty: a shop that has turned COD off and
+     * not configured a gateway cannot take money, and `PaymentProviderRegistry`
+     * answers 409 rather than pretending otherwise. That is a real
+     * configuration, not a broken one — an operator midway through setup.
+     *
+     * Chargily joins here at §59, on the same three conditions Yalidine has: the
+     * feature flag, and credentials that are actually present.
+     */
+    public function paymentProviders(): PaymentProviderRegistry
+    {
+        if ($this->paymentProviders !== null) {
+            return $this->paymentProviders;
+        }
+
+        $providers = [];
+
+        if ($this->config()->isEnabled('ENABLE_COD')) {
+            $providers[] = new CashOnDeliveryProvider();
+        }
+
+        return $this->paymentProviders = new PaymentProviderRegistry($providers);
+    }
+
+    /**
+     * Takes the order repository: a payment is *for* an order, and the
+     * dependency runs one way — nothing in `Orders/` knows payments exist.
+     */
+    public function paymentService(): PaymentService
+    {
+        return $this->paymentService ??= new PaymentService(
+            $this->paymentProviders(),
+            $this->orderRepository(),
+            $this->auditLogger()
+        );
     }
 
     public function geoRepository(): GeoRepository
