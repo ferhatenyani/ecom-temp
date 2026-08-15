@@ -3437,6 +3437,32 @@ PaymentService
       +-- ChargilyProvider
 ```
 
+## What §55 already decided for this section
+
+`handleWebhook()` is in the interface, so **`docs/SECURITY.md` → "Webhooks"
+applies from the first line of §58** — it is not a §60 concern to be bolted on
+later. Chargily signs its webhooks, which is the shape that may be acted on
+directly, unlike Yalidine's body secret.
+
+Credentials come from `.env` through `Config::secret()` and are read in **one
+place**, the way `Plugin::shippingProviders()` reads a courier's — never an
+option, never a constant. `CHARGILY_SECRET_KEY` and `CHARGILY_WEBHOOK_SECRET`
+already exist in `.env.example` and in `Config::FLAGS`' key list.
+
+Keep the boundary the shipping abstraction proved: **an adapter never sees a
+`WC_Order`.** Everything crossing `PaymentProviderInterface` is one of our value
+objects, which is what made adding a second courier change nothing above the
+interface.
+
+**This is where `ENABLE_COD` finally does something.** CLAUDE.md records that the
+COD module deliberately does not read that flag — COD state is order meta and
+audit events, and the flag gates *what checkout offers*. Offering payment
+methods is this section.
+
+A payment's status is **never** taken from a client callback, and the amount and
+currency are re-checked server-side against the order before anything is marked
+paid (§59, SECURITY.md → Payments).
+
 ------------------------------------------------------------------------
 
 # 59. Chargily
@@ -3469,33 +3495,59 @@ The backend verifies the transaction.
 # 60. Webhooks
 
 
+**`docs/SECURITY.md` → "Webhooks" is the binding rule, settled by §55 before any
+inbound endpoint existed so the three providers are not each argued out
+separately.** Read it first; what follows is the shape, not the specification.
+
 Use:
 
 ``` text
 /wp-json/algerian-commerce/v1/webhooks/chargily
 /wp-json/algerian-commerce/v1/webhooks/yalidine
-/wp-json/algerian-commerce/v1/webhooks/zedair
+/wp-json/algerian-commerce/v1/webhooks/zr-express
 ```
+
+(The courier is **ZR Express** — §57. Earlier drafts of this file called it
+"zedair"; the adapter, the provider name and the route all use `zr-express`.)
 
 Each webhook:
 
 ``` text
 receive
   ↓
-verify signature/authentication
-  ↓
+verify signature/authentication   ← raw body, before any JSON decode,
+  ↓                                 with hash_equals()
 validate payload
   ↓
 identify event
   ↓
-check idempotency
-  ↓
+claim idempotency                 ← NOT "check": a write-once insert whose
+  ↓                                 duplicate-key failure IS the answer
 process
-  ↓
-store event
   ↓
 respond
 ```
+
+**"Claim", not "check", is load-bearing.** A read-then-write idempotency test
+races exactly when a provider retries in parallel, which is the one case it
+exists for — the same defect migration 006 fixed for shipments. Let the unique
+key refuse the duplicate and treat that refusal as "already handled".
+
+Three more things §55 settled, all of them in SECURITY.md with the reasoning:
+
+``` text
+route exists only when its provider is registered — an unconfigured
+  secret is a 404, never an endpoint that accepts what it cannot check
+a signature (Svix, Chargily) may be acted on directly
+a body secret that binds to nothing (Yalidine's security_token) is a
+  hint to re-fetch and NEVER a source of truth
+an unverified request gets 401 webhook_unverified and is told nothing
+  about which check failed — a specific error is an oracle
+```
+
+§65's security tests for **webhook forgery** and **replay** land with this
+section, not after it: they are the only proof the rule above is implemented
+rather than merely written down.
 
 Duplicate webhook delivery must not duplicate:
 
