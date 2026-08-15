@@ -112,6 +112,48 @@ final class ShippingService
         $input = ShipmentInput::fromPayload($payload);
         $provider = $this->providers->get($input->provider);
 
+        /*
+         * From here to the `finally`, this order belongs to this request.
+         *
+         * `guardNoLiveShipment()` is a read, and a read cannot enforce
+         * "one live shipment per order" on its own: two requests arriving
+         * together both find none, both hand a parcel to the courier, and the
+         * customer receives two while the shop pays twice. Migration 006's
+         * unique index refuses the second row — but only after the second
+         * parcel is already real, which is the outcome worth preventing rather
+         * than recording.
+         *
+         * So the claim is taken before the read and held across the courier
+         * call, and a second request is told no immediately instead of
+         * queueing behind a call that may take a minute.
+         */
+        if (!$this->repository->claimOrder($orderId)) {
+            throw ApiException::conflict(
+                'A shipment for this order is already being created.',
+                ['order_id' => $orderId]
+            );
+        }
+
+        try {
+            return $this->createClaimed($orderId, $order, $input, $provider);
+        } finally {
+            $this->repository->releaseOrder($orderId);
+        }
+    }
+
+    /**
+     * The body of `create()`, with this order's claim already held.
+     *
+     * Split out so the claim is released by exactly one `finally` on every
+     * path — a return, a provider refusal, a failed write — rather than by a
+     * reader remembering that a long method has an exit halfway down.
+     */
+    private function createClaimed(
+        int $orderId,
+        WC_Order $order,
+        ShipmentInput $input,
+        ShippingProviderInterface $provider
+    ): Shipment {
         $this->guardOrderIsShippable($order);
         $this->guardNoLiveShipment($orderId);
 

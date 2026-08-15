@@ -1040,10 +1040,43 @@ the number can still be saved.
 
 ### Storage
 
-`ac_shipments` (migration 004, `Schema::VERSION` 4) holds PLAN.md §15's field list and nothing more.
-What is particular to one courier — pickup desks, label URLs, parcel dimensions — goes in `metadata`
-as JSON, so a third provider is a data change rather than a migration. Nothing in the core may read a
-key out of that JSON, or the abstraction has leaked.
+`ac_shipments` (migration 004, extended by 006; `Schema::VERSION` 6) holds PLAN.md §15's field list and
+nothing more. What is particular to one courier — pickup desks, label URLs, parcel dimensions — goes in
+`metadata` as JSON, so a third provider is a data change rather than a migration. Nothing in the core may
+read a key out of that JSON, or the abstraction has leaked. (A label URL is a credential, not a link —
+see [Security review](#security-review-55).)
+
+**One live shipment per order is the schema's job, not a check's.** It used to be a read:
+`ShippingService::create()` looked for a live shipment, found none, called the courier, then wrote the
+row. Two requests arriving together — a double-clicked button, a retrying client, a future bulk-ship —
+both read "none", both handed over a parcel, and the customer got two while the shop paid twice.
+
+Two pieces close it, and they do different jobs:
+
+```
+claimOrder()   MySQL GET_LOCK on the order, held across the whole of
+               create() including the courier call. The second request
+               is refused immediately with 409 and never calls anyone.
+               → this is what stops the second parcel existing
+
+live_order_id  the order id while the parcel is live, NULL once it is
+               finished, with a UNIQUE index. A unique index ignores
+               NULLs, so it reads as "one live shipment per order, any
+               number of finished ones" — a re-send after a failed
+               delivery still works, which is what 004 was protecting.
+               → this is what holds when something bypasses the lock
+```
+
+The index alone would not have been enough: it refuses the duplicate *row*, and by then the duplicate
+*parcel* is already real — a tidy table and a van carrying the order twice, which is the failure §53's
+"call the provider last" rule exists to avoid, arriving through a different door. The lock alone would
+not be enough either, since it only covers code paths that remember to take it.
+
+`live_order_id` is derived in `Shipment::toRow()` from `ShipmentStatus::isLive()`, never passed in, so the
+live/finished vocabulary stays in the one class that owns it — §56 added `returning` to it and will not be
+the last change. Migration 006 backfills existing rows; an install that somehow already has two live
+shipments on one order keeps the newest claim and releases the older ones, which are left live, visible and
+pollable rather than deleted — a constraint can only honestly promise about data it arrived before.
 
 Unlike the stock ledger these rows are **updated**: a shipment is one parcel whose status changes, not
 a history of events. The history is in the audit trail (`shipment.created`, `shipment.status_changed`,

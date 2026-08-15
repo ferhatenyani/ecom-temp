@@ -124,9 +124,19 @@ final class Shipment
     }
 
     /**
-     * Row for $wpdb->insert()/update(), matching migration 004.
+     * Row for $wpdb->insert()/update(), matching migrations 004 and 006.
      *
-     * @return array<string, string|int>
+     * `live_order_id` is derived, never passed in: the order id while the
+     * parcel is still in the air, NULL once it is finished. Migration 006 puts
+     * a unique index on it, and a unique index ignores NULLs — so the column
+     * *is* the rule "one live shipment per order, any number of finished ones",
+     * enforced by the database rather than by whoever remembered to check.
+     *
+     * Derived from `isLive()` rather than restated here, so the live/finished
+     * vocabulary stays in `ShipmentStatus` where the rest of the system reads
+     * it. A status added there is covered by this the moment it exists.
+     *
+     * @return array<string, string|int|null>
      */
     public function toRow(): array
     {
@@ -136,6 +146,7 @@ final class Shipment
             'provider_shipment_id' => $this->providerShipmentId,
             'tracking_number' => $this->trackingNumber,
             'status' => $this->status,
+            'live_order_id' => $this->isLive() ? $this->orderId : null,
             'metadata' => $this->encodedMetadata(),
             'created_at' => $this->createdAt,
             'updated_at' => $this->updatedAt,
@@ -149,7 +160,7 @@ final class Shipment
      */
     public function rowFormats(): array
     {
-        return ['%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s'];
+        return ['%d', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s'];
     }
 
     /**
