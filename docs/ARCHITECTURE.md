@@ -80,7 +80,7 @@ src/
   Audit/         audit event recording
   Security/      validation, sanitization, rate limiting, webhook verification
 integrations/
-  Yalidine/  Zedair/  Chargily/     provider adapters only
+  Yalidine/  ZRExpress/  Chargily/  provider adapters only
 migrations/      001_*.php, 002_*.php … gated by AC_DB_VERSION
 tests/
 ```
@@ -103,7 +103,7 @@ The whole point is that the core never learns a provider's name.
 ShippingService                       PaymentService
       |                                     |
       +-- YalidineProvider                  +-- ChargilyProvider
-      +-- ZedairProvider                    +-- (future provider)
+      +-- ZRExpressProvider                 +-- (future provider)
       +-- (future provider)
 ```
 
@@ -133,7 +133,7 @@ interface PaymentProviderInterface
 ```
 
 The order service says *create shipment*, never *call the Yalidine endpoint*. Provider selection comes from
-configuration and feature flags (`ENABLE_YALIDINE`, `ENABLE_ZEDAIR`, `ENABLE_CHARGILY`, `ENABLE_COD`), so one
+configuration and feature flags (`ENABLE_YALIDINE`, `ENABLE_ZR_EXPRESS`, `ENABLE_CHARGILY`, `ENABLE_COD`), so one
 codebase serves multiple clients without forking.
 
 Each adapter owns, for its provider alone: authentication, endpoint URLs, payload shapes, destination-ID
@@ -214,7 +214,7 @@ Namespace `algerian-commerce/v1`. One envelope everywhere:
   `enum` and `pattern` unenforced.
 
 Planned surface: `/products`, `/orders`, `/customers`, `/inventory`, `/analytics/*`, `/shipping/shipments`,
-`/payments/checkout`, `/cms/*`, `/webhooks/{chargily,yalidine,zedair}`, `/health`.
+`/payments/checkout`, `/cms/*`, `/webhooks/{chargily,yalidine,zrexpress}`, `/health`.
 
 ## 7. Database architecture
 

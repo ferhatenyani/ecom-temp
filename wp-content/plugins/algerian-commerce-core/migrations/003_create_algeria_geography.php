@@ -19,7 +19,7 @@ use AlgerianCommerce\Core\Migrations\Migration;
  * for a table of our own.
  *
  * **Provider destination ids live in their own table** (roadmap §51: "Store
- * mappings required by shipping providers separately"). Yalidine and Zedair
+ * mappings required by shipping providers separately"). Yalidine and ZR Express
  * renumber their destinations on their own schedule; keeping their ids in a
  * column on ac_geo_communes would make a provider's churn a migration of the
  * canonical Algerian data, and adding a third provider a schema change.

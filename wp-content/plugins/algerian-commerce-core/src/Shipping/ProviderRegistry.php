@@ -12,7 +12,7 @@ use AlgerianCommerce\API\ApiException;
  * Pure — no WordPress — so provider selection is unit-testable without a
  * container. Providers are handed in already constructed, because deciding
  * *whether* a courier is configured means reading credentials and feature flags
- * (`ENABLE_YALIDINE`, `ENABLE_ZEDAIR`), and that belongs in Plugin's wiring
+ * (`ENABLE_YALIDINE`, `ENABLE_ZR_EXPRESS`), and that belongs in Plugin's wiring
  * where every other environment decision is made (docs/ARCHITECTURE.md §4).
  * This class only knows what it was given.
  *

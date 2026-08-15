@@ -16,9 +16,9 @@ the migration runner, roles and capabilities, and audit recording.
 
 Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (authentication), §50
 (orders and customers), §51 (Algerian geography), §52 (COD), §53 (the shipping abstraction), §4
-step 28b (shipping rules and pricing, PLAN §14) and §56 (the Yalidine adapter) are in, along with rate
-limiting. Not implemented yet: 2FA, customer sessions, Yalidine's webhook (it needs §55's security
-review first — the adapter polls), the ZR Express adapter (§57), payments, analytics, CMS.
+step 28b (shipping rules and pricing, PLAN §14), §56 (Yalidine) and §57 (ZR Express) are in, along
+with rate limiting. Not implemented yet: 2FA, customer sessions, the couriers' webhooks (they need
+§55's security review first — the adapters poll), payments, analytics, CMS.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -58,6 +58,9 @@ src/Http/                    HttpClientInterface, HttpResponse, WpHttpClient,
 integrations/Yalidine/       YalidineProvider, YalidineClient, YalidineParcel,
                              YalidineStatusMap, YalidineDestinations,
                              YalidineSettings, YalidineCredentials
+integrations/ZRExpress/      ZRExpressProvider, ZRExpressClient, ZRExpressParcel,
+                             ZRExpressStateMap, ZRExpressTerritories,
+                             ZRExpressSettings, ZRExpressCredentials
 src/Geography/               LocationController, GeoService, GeoDataset, GeoSlug,
                              GeoRepository, GeoImporter
 data/algeria/                wilayas.json, communes.json, provider-destinations.json,
@@ -939,9 +942,12 @@ strand exactly the orders that most need finishing.
 
 ## Shipping
 
-Roadmap §53, docs/PLAN.md §13. The abstraction, in-house delivery, and **Yalidine** (§56). ZR Express
-is still to come in §57, and nothing above `ShippingProviderInterface` changed when Yalidine arrived —
-which is the property §53 existed to establish, now demonstrated rather than asserted.
+Roadmap §53, docs/PLAN.md §13. The abstraction, in-house delivery, **Yalidine** (§56) and **ZR
+Express** (§57). Nothing above `ShippingProviderInterface` changed when either courier arrived — which
+is the property §53 existed to establish, now demonstrated twice rather than asserted. The second one
+is the real evidence: two couriers that disagree about almost everything — names against UUIDs,
+inline recipients against customer records, one identifier against two — fit the same interface
+unmodified.
 
 ```php
 interface ShippingProviderInterface
@@ -1324,6 +1330,90 @@ reports its own, both should be re-derived from `ac_shipments`. Whether a delive
 the order is still deferred: that is an automatic order transition triggered by a third party, and it
 wants the replay design the webhook slice brings.
 
+## ZR Express
+
+Roadmap §57, in [`integrations/ZRExpress/`](integrations/ZRExpress/). The second courier, and the
+test of whether §53's abstraction was real: **nothing above `ShippingProviderInterface` changed to
+add it.** The destination sync, the status poller, `shipping-check` and the CLI it all runs through
+were written for Yalidine without knowing this provider existed, and they took it unmodified.
+
+The section was called "Zedair" in the original plan. No such courier exists — `ENABLE_ZEDAIR` and
+`ZEDAIR_*` are now `ENABLE_ZR_EXPRESS`, `ZR_EXPRESS_TENANT_ID`, `ZR_EXPRESS_API_KEY` and
+`ZR_EXPRESS_WEBHOOK_SECRET`.
+
+```bash
+wp algerian-commerce sync-destinations --provider=zrexpress
+wp algerian-commerce shipping-check
+```
+
+### Written from a specification, then verified
+
+Unlike Yalidine, this one is documented: ZR Express publishes an OpenAPI definition per endpoint
+under `docs.zrexpress.app/reference/*.md`, which is where every field name here comes from. It was
+then **verified against the live API on 2026-08-15** with a merchant account — read-only calls, then
+one test parcel created, retried, polled, deleted and confirmed gone.
+
+That closed both gaps §57 recorded as open:
+
+- **The parcel states.** Not published, and the reference implementation guesses them with substring
+  matching on French labels. They are not labels at all: `state.name` is a stable snake_case
+  identifier with a separate human `description`, which is far safer to map — an identifier does not
+  change because somebody fixed an accent. Twelve were observed across real parcels' state histories
+  and are mapped in `ZRExpressStateMap`; anything else raises rather than guessing.
+- **The webhook signature.** It is **Svix** — a published scheme (`svix-id`, `svix-timestamp`,
+  `svix-signature`, HMAC-SHA256 over `id.timestamp.body`), not something to invent. The webhook still
+  waits for §55, as Yalidine's does, but it is no longer a design question.
+
+### Three ways it differs from Yalidine
+
+| | Yalidine | ZR Express |
+| --- | --- | --- |
+| Destination | wilaya and commune **names**, matched exactly | `cityTerritoryId` and `districtTerritoryId`, **UUIDs** |
+| Recipient | inline on the parcel | a **customer record** — search by phone, create if absent, then the parcel carries the UUID |
+| Handles | the tracking number is the only id | the parcel id and the tracking number are **different strings** (`16-F51X9VP5QT-ZR`) |
+
+That third row is why `ShipmentResult` has carried both since §53, on the theory that some courier
+would eventually disagree. This is that courier.
+
+`externalId` — our `"42-2"` — **is** an idempotency key here: a repeat is refused with a 409, unlike
+Yalidine, which cheerfully makes a second parcel. The adapter recovers the existing one instead of
+failing.
+
+### Two defects found in the reference implementation
+
+Both are in production code that this adapter was written from, and both were caught by testing
+against the live API rather than by reading:
+
+- **`filters` is silently ignored.** `parcels/search` accepts a `filters` object and pays no
+  attention to it — filtering by `externalId` returned all 706 parcels on the account. The reference
+  implementation recovers duplicate parcels that way, so it takes whichever parcel happens to be
+  first and treats it as the customer's. Here the search uses `keyword`, which does match, **and the
+  returned row's `externalId` is checked anyway** before it is accepted. The same care applies one
+  step earlier: a customer is only reused when a phone number matches exactly, because a near miss
+  puts a stranger's name on somebody's delivery.
+- **A read-back can lose a parcel.** `POST parcels` answers with an id alone, so the tracking number
+  needs a second call — and on the first live run that second call timed out. The parcel existed at
+  the courier and this shop reported the whole create as failed. Now nothing after the parcel exists
+  is allowed to throw: a shipment with an id and no tracking number is recoverable, one with neither
+  is a parcel nobody knows about.
+
+### Coverage, and what the account may quote
+
+A live sync mapped **1,485 destinations** — 54 wilayas, 1,531 communes and 77 pickup points as ZR
+Express publishes them. Four wilayas matched on the official code rather than the name (`MSila` →
+our `M'Sila`, `Alger` → `Algiers`), and about 100 communes are the same transliteration variance
+Yalidine shows.
+
+Coverage is `delivery.canSend`, published per territory: 11 wilayas this account may not send to, and
+four it does not list at all — Illizi, Tindouf, Bordj Badji Mokhtar and Djanet, which is exactly the
+`UNSUPPORTED_WILAYAS` set the reference hard-codes. §57 forbids copying that list, and the reason is
+visible here: it is a per-account fact the API already states.
+
+Rates come from `delivery-pricing/rates/{territoryId}`, asked of the commune first and the wilaya
+when there is no commune-level price. ZR Express restricts rate lookups to the supplier's own origin
+wilaya and says so in a sentence; that comes back as no quote and a logged explanation rather than an
+error, because `GET /shipping/rates` asks every courier at once.
+
 ## Algerian geography
 
 Roadmap §51, docs/PLAN.md §10. Wilayas, communes, postal codes, and the shipping providers'
@@ -1438,7 +1528,7 @@ dataset is deactivated, because a delivered order may still point at it.
 
 ### Provider ids live in their own table
 
-Roadmap §51 asks for them to be stored separately, and the reason is churn. Yalidine and Zedair
+Roadmap §51 asks for them to be stored separately, and the reason is churn. Yalidine and ZR Express
 renumber their destinations on their own schedule; holding their ids in a column on `ac_geo_communes`
 would make a provider's housekeeping a migration of the canonical Algerian data, and adding a third
 provider a schema change. `ac_geo_provider_destinations` carries one row per `(provider, wilaya,
@@ -1511,7 +1601,7 @@ wp algerian-commerce roles [--list]             # install / re-sync capabilities
 wp algerian-commerce unlock <ip|login>          # lift a brute-force lockout
 wp algerian-commerce import-algeria [--dry-run] # §51 geography
 wp algerian-commerce shipping-check             # can this store ship anything?
-wp algerian-commerce sync-destinations --provider=yalidine [--dry-run] [--gaps=<n>]
+wp algerian-commerce sync-destinations --provider=<name> [--dry-run] [--gaps=<n>]
 wp algerian-commerce sync-shipments [--provider=] [--limit=] [--min-age=]
 ```
 
@@ -1553,7 +1643,7 @@ the regression it exists to catch.
 ## Configuration
 
 Secrets come from environment variables only — never the options table, never code. Feature flags
-(`ENABLE_COD`, `ENABLE_CHARGILY`, `ENABLE_YALIDINE`, `ENABLE_ZEDAIR`, …) all default to off so one
+(`ENABLE_COD`, `ENABLE_CHARGILY`, `ENABLE_YALIDINE`, `ENABLE_ZR_EXPRESS`, …) all default to off so one
 codebase can serve multiple clients. `AC_LOG_LEVEL` sets the log floor (`debug`, `info`, `warning`,
 `error`); it defaults to `debug` when `WP_DEBUG` is on, otherwise `info`.
 

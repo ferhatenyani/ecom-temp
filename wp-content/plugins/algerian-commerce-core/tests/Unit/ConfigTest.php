@@ -78,9 +78,9 @@ final class ConfigTest extends TestCase
 
     public function testFeatureFlagIsEnabledWhenEnvironmentSaysSo(): void
     {
-        $config = new Config(['ENABLE_COD' => 'true', 'ENABLE_ZEDAIR' => 'false']);
+        $config = new Config(['ENABLE_COD' => 'true', 'ENABLE_ZR_EXPRESS' => 'false']);
 
         self::assertTrue($config->isEnabled('ENABLE_COD'));
-        self::assertFalse($config->isEnabled('ENABLE_ZEDAIR'));
+        self::assertFalse($config->isEnabled('ENABLE_ZR_EXPRESS'));
     }
 }

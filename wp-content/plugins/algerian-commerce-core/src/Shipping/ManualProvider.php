@@ -10,7 +10,7 @@ use AlgerianCommerce\API\ApiException;
  * In-house delivery — the shop's own driver, or a courier arranged off-system.
  *
  * Not a placeholder. A large share of Algerian shops deliver inside their own
- * wilaya themselves and hand only the distant orders to Yalidine or Zedair, so
+ * wilaya themselves and hand only the distant orders to Yalidine or ZR Express, so
  * this is a courier a real client uses. It also means the abstraction ships
  * with one working implementation rather than none: the whole path — create,
  * track, cancel, status — is exercisable today, and the seam is proven before
