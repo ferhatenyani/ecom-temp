@@ -177,6 +177,12 @@ uid — `compose.yaml` pins `user: "33:33"` on the `wpcli` service — not to lo
 
 When a permission error appears, fix who is running the command. Do not widen the mode.
 
+One trap when repairing this: **`wp-content` contains a bind mount of the plugin source**, so a recursive
+`chown` inside the container reaches out of the container and rewrites ownership in the Git working tree —
+which then refuses to let the host user edit its own files. Scope the repair, or repair the host side after.
+The plugin directory needs to be *readable* by the web server and nothing more; nothing in it is written at
+runtime.
+
 ## File uploads
 
 Validate real MIME type and extension against an allowlist, cap size, strip metadata, store outside

@@ -169,6 +169,10 @@ images disagree about who `www-data` is**: uid 33 in the Debian `wordpress` imag
 writes nothing, and the tempting fix — `chmod 777 wp-content` — was in place here and has been removed. Do
 not put it back: a world-writable plugin directory is arbitrary code execution waiting for one other bug.
 
+WordPress's bundled Akismet and Hello Dolly are **deleted**, not deactivated — neither does anything on a
+headless backend and unused code still has to be patched. They live in the volume, so a fresh install brings
+them back; deleting them belongs in §66's `setup.sh` when it exists.
+
 **`db` is past end of life.** MySQL 8.0 ended on 2026-04-30 and 8.0.46 is the last release of the line, so
 no further security patch will ever exist. Moving to 8.4 LTS (supported to 2032) is outstanding and is a
 data-bearing upgrade, not a tag change; note that 8.4 removes `mysql_native_password` entirely.

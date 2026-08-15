@@ -18,7 +18,11 @@
     "autoload-dev": {
         "psr-4": {
             "AlgerianCommerce\\Tests\\": "tests/"
-        }
+        },
+        "_comment_exclude_from_classmap": "tests/Api holds scripts, not classes: they run through wp eval-file against a booted WordPress, so their helpers are deliberately global and unnamespaced. Composer scans the whole PSR-4 root and warns about them. Excluding the directory states that, rather than renaming a class to satisfy a rule that does not apply to a script.",
+        "exclude-from-classmap": [
+            "tests/Api/"
+        ]
     },
     "scripts": {
         "test": "phpunit"
