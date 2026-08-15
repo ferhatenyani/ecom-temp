@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\Core\Logger;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class LoggerTest extends TestCase
@@ -26,7 +27,7 @@ final class LoggerTest extends TestCase
         ];
     }
 
-    /** @dataProvider sensitiveKeyProvider */
+    #[DataProvider('sensitiveKeyProvider')]
     public function testSensitiveKeysAreMasked(string $key): void
     {
         $redacted = Logger::redact([$key => 'super-secret-value']);

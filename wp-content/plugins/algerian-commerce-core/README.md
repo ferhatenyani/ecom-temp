@@ -1688,7 +1688,10 @@ wp algerian-commerce sync-shipments [--provider=] [--limit=] [--min-age=]
 
 ```bash
 # install dev dependencies (from this directory)
-docker run --rm -v "$PWD":/app -w /app composer:2 install
+# -u matters: without it composer runs as root and leaves the working tree
+# owned by root, after which you cannot edit your own files.
+docker run --rm -u "$(id -u):$(id -g)" -e COMPOSER_HOME=/tmp/composer \
+  -v "$PWD":/app -w /app composer:2 install
 
 # run the unit suite
 docker compose exec wordpress sh -c \
@@ -1698,6 +1701,11 @@ docker compose exec wordpress sh -c \
 docker compose exec wordpress sh -c \
   'find /var/www/html/wp-content/plugins/algerian-commerce-core -name "*.php" -exec php -l {} \;'
 ```
+
+**Test metadata is attributes, never doc-comments.** PHPUnit 13 ignores `@dataProvider` entirely — it does
+not warn, it simply does not wire the provider, and the test then fails with `ArgumentCountError` because it
+was called with no arguments. Write `#[DataProvider('nameProvider')]` with
+`use PHPUnit\Framework\Attributes\DataProvider;`, and note that a provider method must be `static`.
 
 Unit tests must run without booting WordPress. The full WP integration suite arrives with §65.
 

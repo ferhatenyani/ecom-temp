@@ -6,6 +6,7 @@ namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Inventory\InventorySettingsInput;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class InventorySettingsInputTest extends TestCase
@@ -103,7 +104,7 @@ final class InventorySettingsInputTest extends TestCase
         ];
     }
 
-    /** @dataProvider booleanProvider */
+    #[DataProvider('booleanProvider')]
     public function testAcceptsTheUsualBooleanSpellings(mixed $value): void
     {
         self::assertTrue(InventorySettingsInput::fromPayload(['manage_stock' => $value])->get('manage_stock'));
@@ -137,7 +138,7 @@ final class InventorySettingsInputTest extends TestCase
         ];
     }
 
-    /** @dataProvider badThresholdProvider */
+    #[DataProvider('badThresholdProvider')]
     public function testRejectsAnInvalidThreshold(mixed $value): void
     {
         self::assertArrayHasKey('low_stock_amount', $this->reject(['low_stock_amount' => $value])->details()['fields']);

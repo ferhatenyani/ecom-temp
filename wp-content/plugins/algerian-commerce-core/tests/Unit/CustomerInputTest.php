@@ -6,6 +6,7 @@ namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Customers\CustomerInput;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class CustomerInputTest extends TestCase
@@ -55,7 +56,7 @@ final class CustomerInputTest extends TestCase
         ];
     }
 
-    /** @dataProvider privilegeFieldProvider */
+    #[DataProvider('privilegeFieldProvider')]
     public function testCredentialAndRoleFieldsAreRefusedByName(string $field): void
     {
         $errors = $this->fieldErrors([$field => 'administrator']);

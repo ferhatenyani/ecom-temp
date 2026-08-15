@@ -7,6 +7,7 @@ namespace AlgerianCommerce\Tests\Unit;
 use AlgerianCommerce\Audit\AuditEvent;
 use AlgerianCommerce\Core\Logger;
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class AuditEventTest extends TestCase
@@ -71,9 +72,8 @@ final class AuditEventTest extends TestCase
     /**
      * MySQL in strict mode rejects an over-length value, which would turn a
      * long field into a failed audit write.
-     *
-     * @dataProvider widthProvider
      */
+    #[DataProvider('widthProvider')]
     public function testFieldsAreTruncatedToTheirColumnWidth(string $property, int $limit): void
     {
         $long = str_repeat('x', $limit + 50);

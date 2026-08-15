@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\COD\CodStatus;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class CodStatusTest extends TestCase
@@ -79,7 +80,7 @@ final class CodStatusTest extends TestCase
         ];
     }
 
-    /** @dataProvider allowedProvider */
+    #[DataProvider('allowedProvider')]
     public function testAllowedTransitions(string $from, string $to): void
     {
         self::assertTrue(CodStatus::canTransition($from, $to));
@@ -103,7 +104,7 @@ final class CodStatusTest extends TestCase
         ];
     }
 
-    /** @dataProvider refusedProvider */
+    #[DataProvider('refusedProvider')]
     public function testRefusedTransitions(string $from, string $to): void
     {
         self::assertFalse(CodStatus::canTransition($from, $to));

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\Geography\GeoSlug;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class GeoSlugTest extends TestCase
@@ -30,7 +31,7 @@ final class GeoSlugTest extends TestCase
         ];
     }
 
-    /** @dataProvider nameProvider */
+    #[DataProvider('nameProvider')]
     public function testSlugging(string $name, string $expected): void
     {
         self::assertSame($expected, GeoSlug::make($name));

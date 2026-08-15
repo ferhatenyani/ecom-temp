@@ -6,6 +6,7 @@ namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Products\ProductInput;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class ProductInputTest extends TestCase
@@ -69,7 +70,7 @@ final class ProductInputTest extends TestCase
         ];
     }
 
-    /** @dataProvider badPriceProvider */
+    #[DataProvider('badPriceProvider')]
     public function testRejectsInvalidPrices(mixed $price): void
     {
         self::assertArrayHasKey('regular_price', $this->fieldErrors(['name' => 'X', 'regular_price' => $price]));
@@ -122,7 +123,7 @@ final class ProductInputTest extends TestCase
         ];
     }
 
-    /** @dataProvider enumProvider */
+    #[DataProvider('enumProvider')]
     public function testRejectsValuesOutsideTheEnum(string $field, string $bad): void
     {
         self::assertArrayHasKey($field, $this->fieldErrors(['name' => 'X', $field => $bad]));
@@ -231,9 +232,8 @@ final class ProductInputTest extends TestCase
     /**
      * A client that does GET → edit → PATCH sends back the fields we emit.
      * Rejecting our own output would make the obvious usage pattern fail.
-     *
-     * @dataProvider readOnlyFieldProvider
      */
+    #[DataProvider('readOnlyFieldProvider')]
     public function testFieldsWeEmitButDoNotAcceptAreIgnoredNotRejected(string $field): void
     {
         $input = ProductInput::forUpdate(['name' => 'X', $field => 'anything']);

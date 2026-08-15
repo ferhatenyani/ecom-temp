@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Tests\Unit;
 
 use AlgerianCommerce\API\ErrorNormalizer;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class ErrorNormalizerTest extends TestCase
@@ -79,7 +80,7 @@ final class ErrorNormalizerTest extends TestCase
         ];
     }
 
-    /** @dataProvider codeProvider */
+    #[DataProvider('codeProvider')]
     public function testCodeMapping(string $wordpressCode, string $expected): void
     {
         self::assertSame($expected, ErrorNormalizer::mapCode($wordpressCode));
