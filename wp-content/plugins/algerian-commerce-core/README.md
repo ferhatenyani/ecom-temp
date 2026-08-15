@@ -1447,6 +1447,66 @@ when there is no commune-level price. ZR Express restricts rate lookups to the s
 wilaya and says so in a sentence; that comes back as no quote and a logged explanation rather than an
 error, because `GET /shipping/rates` asks every courier at once.
 
+## Payments (§58)
+
+The abstraction only. `PaymentProviderInterface` is the same shape
+`ShippingProviderInterface` is, for the same reason: one codebase serves several Algerian clients, and a
+gateway is added by writing an adapter without a line changing above the interface.
+
+```php
+interface PaymentProviderInterface
+{
+    public function name(): string;
+    public function label(): string;
+    public function createPayment(PaymentRequest $request): PaymentResult;
+    public function verifyPayment(string $providerPaymentId): PaymentReport;
+    public function handleWebhook(array $payload, array $headers, string $rawBody = ''): WebhookResult;
+}
+```
+
+Roadmap §58 sketches `createPayment(array $order)` and `verifyPayment(): PaymentStatus`. Both became typed
+objects, exactly as §53's `array $order` became `ShipmentRequest`: with bare arrays every adapter re-derives
+what a valid request looks like and the second one gets it subtly wrong. `PaymentStatus` stayed the name of
+the *vocabulary* — a set of constants like `ShipmentStatus` — so the thing coming back is `PaymentReport`.
+
+**`CashOnDeliveryProvider` is the `ManualProvider` of this layer.** COD is how most Algerian e-commerce is
+actually paid for, so it is a real method rather than a placeholder, and it means the whole seam is
+exercisable before §59 puts a network call behind it. It starts `pending` and stays there: money moves at
+the door, and a COD provider reporting `paid` at checkout would mark every unpaid order settled. It refuses
+webhooks outright, the way `ManualProvider` refuses a status poll — a request arriving there means something
+is misrouted, and returning "nothing to do" would hide that.
+
+This is where **`ENABLE_COD` finally does something.** `COD/` owns the confirmation queue and deliberately
+never reads that flag; it gates what checkout may *offer*, and `Plugin::paymentProviders()` is the gate.
+`COD/` and `Payments/` do not read each other.
+
+### The rules that protect money
+
+```
+amount comes from the order, never from the caller — PaymentInput has
+  no amount field, and one sent is refused as an unknown field
+amount + currency are re-checked against the order before anything is
+  marked paid; a mismatch is a 409 and an audited event, because it is
+  either an attack or a bug and both need a human
+from `paid`, only `refunded` — PaymentStatus::accepts()
+return_url must be an https URL, or this endpoint is an open redirect
+  wearing a payment provider's credibility
+```
+
+`PaymentStatus::accepts()` earns its place on the third of those. Providers send late `pending` events and
+webhooks arrive out of order; without the rule one of them silently un-pays a settled order, and the shop
+holds the customer's money while shipping nothing. A `PaymentReport` with no amount **never** matches —
+reading `''` as zero would compare equal to nothing and pass silently, which is the worst outcome available
+to a check whose entire job is refusing.
+
+### Deliberately not here
+
+No transaction table and no REST controller. docs/PLAN.md §19 owns the `payment_transactions` record and
+roadmap §59 lands it with Chargily, the first provider with anything worth storing — designing those columns
+against an imagined provider is precisely what §56 says not to do. `PaymentService` therefore resolves
+providers, builds requests, delegates and audits; it performs the amount re-check but cannot yet persist the
+outcome, and its docblock says so rather than implying completeness.
+
 ## Security review (§55)
 
 §55 is a review rather than a feature: walk everything that ships — `Auth/`, `Security/`, `Permissions/`,
