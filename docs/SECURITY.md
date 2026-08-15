@@ -56,6 +56,12 @@ Use WordPress's own security APIs (nonces, capabilities, `sanitize_*`, `esc_*`, 
   endpoints and must be justified in a comment.
 - Authorization is enforced again in the service layer for object-level access — a valid capability does not
   imply access to *that* order or *that* customer. This is the IDOR defence.
+- **The database cannot help with this, and database row-level security is not an option.** RLS is a
+  PostgreSQL feature; MySQL has none, and 8.4 did not add one — `CREATE POLICY` is a syntax error. Even on a
+  database that had it, it would be inert here: WordPress opens **one** connection as **one** database user
+  for every request, so admin, shopper and cron are indistinguishable to the server and there is no identity
+  for a policy to key on. Emulating it with `SQL SECURITY DEFINER` views has the same problem. Object-level
+  authorization belongs in `Permissions::assertOwnsOr()`, at the only layer that knows who is asking.
 - Capability checks use named capabilities, not role-name comparisons.
 - Never rely on the frontend hiding a control.
 - Privileged users require 2FA.
