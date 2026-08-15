@@ -59,6 +59,18 @@ services:
       # Add feature flags (ENABLE_COD, ...) here the same way when needed.
       AC_CORS_ORIGINS: ${AC_CORS_ORIGINS:-}
       AC_LOG_LEVEL: ${AC_LOG_LEVEL:-}
+      # Rate limits and the media size cap. Unset means the built-in defaults;
+      # they are listed here for the same reason the credentials below are —
+      # Config reads getenv(), so a value in .env that is not passed through
+      # is a knob that turns nothing.
+      AC_RATE_LIMIT_READS: ${AC_RATE_LIMIT_READS:-}
+      AC_RATE_LIMIT_WRITES: ${AC_RATE_LIMIT_WRITES:-}
+      AC_RATE_LIMIT_UPLOADS: ${AC_RATE_LIMIT_UPLOADS:-}
+      AC_RATE_LIMIT_AUTH_FAILURES: ${AC_RATE_LIMIT_AUTH_FAILURES:-}
+      AC_RATE_LIMIT_TRUSTED_IPS: ${AC_RATE_LIMIT_TRUSTED_IPS:-}
+      # The upload cap in bytes. docker/php-uploads.ini raises PHP's own limit
+      # to match; UploadPolicy takes the lower of the two.
+      AC_MEDIA_MAX_BYTES: ${AC_MEDIA_MAX_BYTES:-}
       # Provider credentials and feature flags. Config reads getenv(), so a
       # variable in .env reaches the plugin only if it is listed here — an
       # adapter whose keys are not passed through simply never registers, and
@@ -84,6 +96,9 @@ services:
       - wordpress_data:/var/www/html
       - ./wp-content/plugins/algerian-commerce-core:/var/www/html/wp-content/plugins/algerian-commerce-core
       - ./docker/apache-wordpress.conf:/etc/apache2/conf-enabled/zz-wordpress.conf:ro
+      # The base image caps uploads at 2 MB, below this plugin's media cap and
+      # below one photograph — see the file for why both numbers move together.
+      - ./docker/php-uploads.ini:/usr/local/etc/php/conf.d/zz-uploads.ini:ro
 
   wpcli:
     image: wordpress:cli-2.12.0-php8.4
@@ -118,6 +133,12 @@ services:
       # Add feature flags (ENABLE_COD, ...) here the same way when needed.
       AC_CORS_ORIGINS: ${AC_CORS_ORIGINS:-}
       AC_LOG_LEVEL: ${AC_LOG_LEVEL:-}
+      AC_RATE_LIMIT_READS: ${AC_RATE_LIMIT_READS:-}
+      AC_RATE_LIMIT_WRITES: ${AC_RATE_LIMIT_WRITES:-}
+      AC_RATE_LIMIT_UPLOADS: ${AC_RATE_LIMIT_UPLOADS:-}
+      AC_RATE_LIMIT_AUTH_FAILURES: ${AC_RATE_LIMIT_AUTH_FAILURES:-}
+      AC_RATE_LIMIT_TRUSTED_IPS: ${AC_RATE_LIMIT_TRUSTED_IPS:-}
+      AC_MEDIA_MAX_BYTES: ${AC_MEDIA_MAX_BYTES:-}
       # Provider credentials and feature flags. Config reads getenv(), so a
       # variable in .env reaches the plugin only if it is listed here — an
       # adapter whose keys are not passed through simply never registers, and
@@ -142,6 +163,11 @@ services:
     volumes:
       - wordpress_data:/var/www/html
       - ./wp-content/plugins/algerian-commerce-core:/var/www/html/wp-content/plugins/algerian-commerce-core
+      # Mounted here as well as in `wordpress`, so the two containers agree
+      # about the upload cap. They are separate PHP installations, and the
+      # plugin's effective cap is the lower of its own and PHP's — a limit that
+      # differs depending on which container ran the code is not a limit.
+      - ./docker/php-uploads.ini:/usr/local/etc/php/conf.d/zz-uploads.ini:ro
 
 volumes:
   db_data:

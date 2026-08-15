@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53 and §55–§60 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53 and §55–§61 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
-ZR Express, the payment abstraction and Chargily — and its
+ZR Express, the payment abstraction, Chargily, the CMS and media — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -15,10 +15,49 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53 and §55–§60 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53 and §55–§61 are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
 shipping rules, the Yalidine and ZR Express adapters, the security review, the payment abstraction and
-Chargily with PLAN §19's transaction table, and §60's three webhooks. **Next up is §61, the CMS.**
+Chargily with PLAN §19's transaction table, §60's three webhooks, and §61's CMS and media endpoints.
+**Next up is §62, SEO and marketing.**
+
+§61 is `src/CMS/` and `src/Media/`, and it added **no migration and no table** — `Schema::VERSION` is still
+8. "WordPress stores content" was the instruction and it was taken literally: banners and FAQs are post
+types (`ac_banner`, `ac_faq`, grouped by the `ac_faq_category` taxonomy), menus are core nav menus assigned
+to the `primary`/`footer` locations the plugin registers, pages are pages addressed by **path** — `legal/terms`,
+because that is how WordPress addresses a hierarchical page and a bare slug would have to pick between two
+children called `terms`. The homepage is the one thing that is not a post: the `ac_cms_homepage` option, one
+document of §23's `{type, data}` sections, edited whole with `wp option update`. A malformed section is
+dropped **and reported** in the response `meta`, because an option is edited by hand and a section that
+vanishes silently is the one failure a content manager cannot diagnose. CMS is read-only, as §61 specifies;
+a write surface is PLAN §52's admin coverage, not this.
+
+**Map only the primitive post-type capabilities.** Registering a post type with
+`'edit_post' => 'ac_manage_content'` writes that name into WordPress's global `$post_type_meta_caps`, after
+which *every* check of `ac_manage_content` anywhere maps to `delete_post` with no post id and resolves to
+`do_not_allow` — every CMS and media route answered 403 to the exact capability being asked about,
+administrators included. `map_meta_cap => true` derives the three meta capabilities from the primitives.
+`tests/Api/cms.php` caught it.
+
+**`POST /media` is the highest-risk endpoint in this API** — the only one that writes a file a web server
+might later execute — and `docs/SECURITY.md` → "File uploads" is now the rule for it the way "Webhooks" is
+for inbound requests. Read the section, not this paragraph. The short form: four independent checks in a
+load-bearing order (size, filename, contents, extension), with `wp_handle_upload()`'s own as a fifth from an
+allowlist generated from ours; jpg/jpeg/png/webp only, each exclusion reasoned; the stored name is **ours**,
+with the extension taken from the sniffed type rather than the client's; and every accepted image is
+re-encoded from decoded pixels, which is what strips metadata and what makes a polyglot inert. All of it
+lives in one pure class, `Media\UploadPolicy`, so every §65 abuse case is a unit test.
+`ImageSanitizer` **pins the editor to GD**, measured rather than assumed: `WP_Image_Editor_Imagick::save()`
+keeps EXIF and JPEG comments, and the two containers in this stack disagreed about which editor WordPress
+picks — a security property that depends on which PHP process ran is not a property.
+A **Product Manager deliberately cannot upload**: PLAN §3 defines no media capability, and both ways of
+closing that gap are worse than naming it.
+
+Two environment changes came with it, and both are load-bearing: `docker/php-uploads.ini` raises
+`upload_max_filesize` from the image's 2 MB (PHP discards an oversized body before any application code
+runs, so the app cap and PHP's move together), and `docker/apache-wordpress.conf` makes
+`wp-content/uploads` non-executable — the layer that does not depend on the allowlist or the re-encode
+being right. `scripts/test-api.sh` asserts both.
 
 All three inbound endpoints now exist — `/webhooks/chargily`, `/webhooks/yalidine`, `/webhooks/zrexpress`
 (§60 writes the last one `zr-express`; the route follows `ZRExpressProvider::NAME`, which is already in every
@@ -152,7 +191,8 @@ national commune code, not a postal code.
 [docs/PLAN.md](docs/PLAN.md) — the functional specification — answers *what* we build.
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (layering, module map, provider abstraction, data/schema design) and
 [docs/SECURITY.md](docs/SECURITY.md) (read before touching auth, payments, webhooks, uploads, or any integration —
-its "Webhooks" section is the §55 rule every inbound endpoint follows) supersede the roadmap for their
+its "Webhooks" section is the §55 rule every inbound endpoint follows, and its "File uploads" section is the
+§61 rule every route that writes a file follows) supersede the roadmap for their
 topics. `docs/API.md` and `docs/DEPLOYMENT.md` do not exist yet.
 
 ## Architecture
@@ -175,10 +215,11 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
+`Customers/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
-`tests/`, plus `integrations/ZRExpress/` and `integrations/Chargily/`. Still to come: `Analytics/`, `CMS/`, …
+`tests/`, plus `integrations/ZRExpress/` and `integrations/Chargily/`. Still to come: `Analytics/`, `Marketing/`,
+`Notifications/`, …
 
 **The bundled PSR-4 autoloader is registered for `src/` behind Composer, not instead of it.** Composer runs
 with `optimize-autoloader`, so it dumps a *classmap* — a snapshot of the files present when somebody last ran
@@ -270,6 +311,9 @@ not a key/secret pair — plus `ZR_EXPRESS_TENANT_ID`, `ZR_EXPRESS_API_KEY`, `ZR
 those keys with blank values. `WP_PORT` is honoured — `compose.yaml` publishes `${WP_PORT:-8090}:80`.
 **A variable in `.env` reaches the plugin only if `compose.yaml` passes it into the container**, in both the
 `wordpress` and `wpcli` services — `Config` reads `getenv()`, and the containers get nothing by default.
+§61 found the whole `AC_RATE_LIMIT_*` group in exactly that state — documented in `.env.example`, read by
+`RateLimiter`, and passed through by nothing — and added them alongside `AC_RATE_LIMIT_UPLOADS` and
+`AC_MEDIA_MAX_BYTES`.
 
 `scripts/test.sh` runs every stage — `syntax`, `unit`, `rest` (in-process, `tests/Api/`) and `http`
 (`scripts/test-api.sh`). Pass a stage name to run just one. The `http` stage is not redundant:

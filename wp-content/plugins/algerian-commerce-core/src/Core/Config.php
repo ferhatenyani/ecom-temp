@@ -67,9 +67,17 @@ final class Config
             'AC_CORS_ORIGINS',
             'AC_RATE_LIMIT_READS',
             'AC_RATE_LIMIT_WRITES',
+            'AC_RATE_LIMIT_UPLOADS',
             'AC_RATE_LIMIT_AUTH_FAILURES',
             'AC_RATE_LIMIT_DISABLED',
             'AC_RATE_LIMIT_TRUSTED_IPS',
+            /*
+             * The upload size cap in bytes (roadmap §61). PHP's own
+             * `upload_max_filesize` still wins — `UploadPolicy::withCap()`
+             * takes the lower of the two, because a cap the web server refuses
+             * first is a number that lies.
+             */
+            'AC_MEDIA_MAX_BYTES',
         ];
 
         $env = [];
