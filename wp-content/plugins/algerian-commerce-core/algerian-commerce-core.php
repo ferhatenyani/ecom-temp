@@ -3,11 +3,25 @@
  * Plugin Name:       Algerian Commerce Core
  * Description:       Headless commerce application layer for WordPress/WooCommerce. Exposes the algerian-commerce/v1 REST API consumed by the Next.js storefront and admin.
  * Version:           0.1.0
- * Requires at least: 6.5
- * Requires PHP:      8.1
+ * Requires at least: 6.9
+ * Requires PHP:      8.3
  * Requires Plugins:  woocommerce
  * Text Domain:       algerian-commerce-core
  * License:           proprietary
+ *
+ * These two floors are support commitments, not syntax minimums — a client
+ * reads them and deploys accordingly, so they must not name a version nobody
+ * is patching any more.
+ *
+ * `Requires at least: 6.9` because `Requires Plugins: woocommerce` makes
+ * WooCommerce mandatory and WooCommerce 11 requires WordPress 6.9. The header
+ * said 6.5, which no install could satisfy while also running the WooCommerce
+ * this plugin needs — a promise with nothing behind it.
+ *
+ * `Requires PHP: 8.3` because 8.1 reached end of life on 2025-12-31 and 8.2
+ * follows on 2026-12-31; declaring either would tell a shop that an unpatched
+ * runtime is supported. 8.3 has security support until 2027-12-31 and is what
+ * the suite actually runs on.
  *
  * @package AlgerianCommerce
  */
