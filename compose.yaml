@@ -1,11 +1,20 @@
 services:
 
   # Versions are pinned to the exact builds this stack was verified against —
-  # WordPress 7.0.2, WP-CLI 2.12.0, MySQL 8.0.46, with WooCommerce 11.0.0 and
-  # PHP 8.3. `latest` meant a routine `docker compose pull` could swap a major
+  # WordPress 7.0.4, WP-CLI 2.12.0, MySQL 8.0.46, with WooCommerce 11.0.1 and
+  # PHP 8.4. `latest` meant a routine `docker compose pull` could swap a major
   # version underneath the plugin with no changelog review, which is precisely
   # what CLAUDE.md's "pin versions once the environment is known-good" forbids.
   # Upgrade one image at a time, on a branch, and re-run the suites.
+  #
+  # Bumping the `wordpress` tag updates a *fresh* volume only: the image
+  # entrypoint copies WordPress in solely when index.php and
+  # wp-includes/version.php are both absent, so an existing install is upgraded
+  # with `wp core update` and the tag is kept in step so the two never disagree.
+  #
+  # MySQL 8.0 reached end of life on 2026-04-30 and 8.0.46 is the last release
+  # of that line — no further security patches exist. Moving to 8.4 LTS
+  # (supported to 2032) is a separate, data-bearing upgrade.
 
   db:
     image: mysql:8.0.46
@@ -19,7 +28,7 @@ services:
       - db_data:/var/lib/mysql
 
   wordpress:
-    image: wordpress:7.0.2-apache
+    image: wordpress:7.0.4-php8.4-apache
     restart: unless-stopped
     depends_on:
       - db
@@ -46,11 +55,24 @@ services:
       - ./docker/apache-wordpress.conf:/etc/apache2/conf-enabled/zz-wordpress.conf:ro
 
   wpcli:
-    image: wordpress:cli-2.12.0
+    image: wordpress:cli-2.12.0-php8.4
+    # The two images disagree about who www-data is: the Debian `wordpress`
+    # image uses uid 33, the Alpine `wordpress:cli` image uses uid 82. The
+    # volume is owned 33:33, so WP-CLI could read everything and write nothing —
+    # `wp core update` failed on wp-admin while `wp plugin update` succeeded
+    # only because wp-content had been chmod 777 to work around this.
+    #
+    # Aligning the uid is the fix. Do not restore the 777: a world-writable
+    # plugin directory is arbitrary code execution waiting for one other bug.
+    user: "33:33"
     depends_on:
       - db
       - wordpress
     environment:
+      # uid 33 has no home directory in the Alpine image, so WP-CLI cannot
+      # create its default cache dir and warns on every command that downloads
+      # anything. Somewhere writable and disposable is all it wants.
+      WP_CLI_CACHE_DIR: /tmp/.wp-cli-cache
       WORDPRESS_DB_HOST: db:3306
       WORDPRESS_DB_USER: wordpress
       WORDPRESS_DB_PASSWORD: ${DB_PASSWORD}

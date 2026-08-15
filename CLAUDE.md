@@ -155,9 +155,27 @@ disk — a unit test enforces that. Migrations must never require deleting exist
 
 ## Environment
 
-Docker Compose (`compose.yaml`) runs three services: `db` (mysql:8.0), `wordpress`, and `wpcli` (run-on-demand).
+Docker Compose (`compose.yaml`) runs three services: `db` (mysql:8.0.46), `wordpress` (7.0.4, PHP 8.4) and
+`wpcli` (2.12.0, run-on-demand), with WooCommerce 11.0.1. Every tag is pinned to an exact build; upgrade one
+at a time on a branch and re-run the suites.
 `wp-content/plugins/algerian-commerce-core` is bind-mounted into both `wordpress` and `wpcli`; the rest of WordPress lives
 in the `wordpress_data` volume and is deliberately not version-controlled.
+
+Two things about that volume that cost an afternoon each if unknown. **Bumping the `wordpress` image tag does
+not upgrade an existing install** — the entrypoint copies WordPress in only when `index.php` and
+`wp-includes/version.php` are both absent, so use `wp core update` and keep the tag in step. And **the two
+images disagree about who `www-data` is**: uid 33 in the Debian `wordpress` image, uid 82 in the Alpine
+`wordpress:cli` image, which is why `wpcli` pins `user: "33:33"`. Without it WP-CLI reads everything and
+writes nothing, and the tempting fix — `chmod 777 wp-content` — was in place here and has been removed. Do
+not put it back: a world-writable plugin directory is arbitrary code execution waiting for one other bug.
+
+WordPress's bundled Akismet and Hello Dolly are **deleted**, not deactivated — neither does anything on a
+headless backend and unused code still has to be patched. They live in the volume, so a fresh install brings
+them back; deleting them belongs in §66's `setup.sh` when it exists.
+
+**`db` is past end of life.** MySQL 8.0 ended on 2026-04-30 and 8.0.46 is the last release of the line, so
+no further security patch will ever exist. Moving to 8.4 LTS (supported to 2032) is outstanding and is a
+data-bearing upgrade, not a tag change; note that 8.4 removes `mysql_native_password` entirely.
 
 ```bash
 docker compose up -d                  # start (WordPress at http://localhost:8090)
@@ -189,9 +207,8 @@ curl http://localhost:8090/wp-json/algerian-commerce/v1/health   # → {"success
 `.env` (gitignored) holds `DB_PASSWORD`, `DB_ROOT_PASSWORD`, `WP_PORT`, and provider credentials
 (`YALIDINE_API_ID`, `YALIDINE_API_TOKEN`, `YALIDINE_WEBHOOK_SECRET` — Yalidine authenticates with two headers,
 not a key/secret pair — plus `ZR_EXPRESS_TENANT_ID`, `ZR_EXPRESS_API_KEY`, `ZR_EXPRESS_WEBHOOK_SECRET`,
-`CHARGILY_*`, `SMTP_*`); `.env.example` mirrors those keys with blank values. One gap left to
-fix when touching config: `compose.yaml` hardcodes port `8090` instead of using `${WP_PORT}`, so changing `WP_PORT`
-currently does nothing.
+`CHARGILY_*`, `SMTP_*`); `.env.example` mirrors those keys with blank values. `WP_PORT` is honoured —
+`compose.yaml` publishes `${WP_PORT:-8090}:80`.
 
 `scripts/test.sh` runs every stage — `syntax`, `unit`, `rest` (in-process, `tests/Api/`) and `http`
 (`scripts/test-api.sh`). Pass a stage name to run just one. The `http` stage is not redundant:
