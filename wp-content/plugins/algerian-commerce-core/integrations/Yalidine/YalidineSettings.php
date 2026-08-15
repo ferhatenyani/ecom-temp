@@ -52,6 +52,17 @@ final class YalidineSettings
         'timeout' => 15,
     ];
 
+    /**
+     * The longest a courier call may hold a PHP worker — docs/SECURITY.md, §55.
+     *
+     * §55 asks for explicit timeouts, and a setting that can raise one to ten
+     * minutes removes the bound as surely as never setting it: a hung courier
+     * would hold a worker for that long on every request, checkout included.
+     * Sixty seconds is far beyond any answer worth waiting for and still short
+     * of a request that has effectively stopped.
+     */
+    public const MAX_TIMEOUT = 60;
+
     /** @var list<string> */
     private array $problems;
 
@@ -149,9 +160,28 @@ final class YalidineSettings
             $int('height', 0),
             $int('weight', 0),
             rtrim($baseUrl, '/') . '/',
-            $int('timeout', 1),
+            self::boundedTimeout($int('timeout', 1), $problems),
             $problems
         );
+    }
+
+    /**
+     * Clamp rather than reject: a client who asked for a long timeout wants
+     * patience, and the ceiling gives them as much of it as is safe. Reported
+     * like every other corrected value, so `wp algerian-commerce shipping-check`
+     * says what actually applies.
+     *
+     * @param list<string> $problems
+     */
+    private static function boundedTimeout(int $timeout, array &$problems): int
+    {
+        if ($timeout <= self::MAX_TIMEOUT) {
+            return $timeout;
+        }
+
+        $problems[] = sprintf('"timeout" is capped at %d seconds — using that.', self::MAX_TIMEOUT);
+
+        return self::MAX_TIMEOUT;
     }
 
     /** A shop that has not said where it ships from cannot create a parcel. */

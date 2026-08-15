@@ -2798,6 +2798,40 @@ full authentication headers
 unnecessary card/payment information
 ```
 
+## Done — the review, and what it changed
+
+Walked against everything that ships: `Auth/`, `Security/`, `Permissions/`, `Http/`, `COD/`, `Shipping/`,
+`integrations/Yalidine/`, `integrations/ZRExpress/`.
+
+Clean against the list: credentials are `.env`-only and read in one place; TLS is not switchable off and a
+non-`https://` base URL is refused; every REST arg pairs `sanitize_callback` with `validate_callback`; the
+one retry is 429-only and bounded, and `POST parcels/` is never retried blind; the provider is called last
+in a create, and every SQL statement is prepared.
+
+Four things it found, all fixed here:
+
+``` text
+label URLs      Yalidine's `label`/`labels` are URLs carrying an access
+                token — a credential to one customer's PII. Now masked by
+                Logger::SENSITIVE_EXACT and documented in SECURITY.md.
+timeout ceiling a per-client `timeout` had a floor and no cap, so an option
+                could hold a PHP worker for ten minutes. Capped at 60s in
+                both settings classes, clamped and reported.
+masked logs     Logger::redact() masks any key containing "key", which was
+                redacting the hashed rate-limit bucket and Yalidine's
+                "which parcel did you answer about" list into uselessness.
+                Renamed to `bucket` and `answered_for`.
+retry-after     RateLimitGuard read an absent array key on every 429 from
+                the WP_Error path.
+```
+
+**The webhook rule is the deliverable**, and it lives in `docs/SECURITY.md` under "Webhooks": where the
+secret lives, verification on the raw body with `hash_equals()`, the split between a real signature (Svix,
+Chargily) and a body secret that binds to nothing (Yalidine's `security_token`, which is a hint to re-fetch
+and never a source of truth), a 5-minute timestamp tolerance, an event id *claimed* by a write-once insert
+rather than checked, and 401 `webhook_unverified` saying nothing about which check failed. §56 and §57's
+webhooks are unblocked, and so is §58.
+
 ------------------------------------------------------------------------
 
 # 56. Yalidine

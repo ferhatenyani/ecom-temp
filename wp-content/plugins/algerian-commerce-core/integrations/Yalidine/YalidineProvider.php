@@ -173,7 +173,12 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
             $this->logger->error('Yalidine answered without the parcel we sent', [
                 'order_id' => $request->orderId,
                 'reference' => $reference,
-                'keys' => array_slice(array_keys($response), 0, 5),
+                // `answered_for`, not `keys`: Logger::redact() masks any key
+                // containing "key" — including "response_keys" — so the one
+                // diagnostic this line exists to produce was being written as
+                // [redacted] (docs/SECURITY.md, §55). These are the references
+                // Yalidine answered about, which is what the name now says.
+                'answered_for' => array_slice(array_keys($response), 0, 5),
             ]);
 
             throw new ApiException(

@@ -26,6 +26,13 @@ final class ZRExpressSettings
         'timeout' => 15,
     ];
 
+    /**
+     * The longest a courier call may hold a PHP worker — docs/SECURITY.md, §55.
+     * Same ceiling and same reasoning as `YalidineSettings::MAX_TIMEOUT`: an
+     * uncapped setting removes the explicit timeout §55 asks for.
+     */
+    public const MAX_TIMEOUT = 60;
+
     /** @var list<string> */
     private array $problems;
 
@@ -64,6 +71,13 @@ final class ZRExpressSettings
             }
 
             $timeout = self::DEFAULTS['timeout'];
+        }
+
+        if ((int) $timeout > self::MAX_TIMEOUT) {
+            // Clamped rather than refused: a client who asked for a long
+            // timeout wants patience, and this is as much as is safe to give.
+            $problems[] = sprintf('"timeout" is capped at %d seconds — using that.', self::MAX_TIMEOUT);
+            $timeout = self::MAX_TIMEOUT;
         }
 
         return new self(rtrim($baseUrl, '/') . '/', (int) $timeout, $problems);
