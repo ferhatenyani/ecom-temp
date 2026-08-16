@@ -297,6 +297,32 @@ rather than by moving it.
   "deleted" would not be true of the only thing anyone can reach — and these files are customer-supplied
   photographs as often as they are product shots.
 
+## Customer data sent to third parties
+
+Settled by §62b, which is the first integration that sends **customer data outward** rather than fetching
+or receiving something. Everything before it — couriers, gateways — sends what a parcel or a payment
+needs. An advertising integration sends who the customer *is*.
+
+- **Hash before the boundary, not inside the adapter.** `Marketing\UserData` has a private constructor and
+  hashes on the way in, so no object in the system holds a raw email on its way to an ad network. An
+  adapter cannot leak what it was never given, and neither can a queue table, a log line or a `var_dump`.
+- **Hashing is not anonymisation, and nothing here may pretend otherwise.** A SHA-256 of an email address
+  is a stable identifier for one person — that is the entire point of sending it — and the space of real
+  email addresses is small enough to brute force. Personal data sent this way is still personal data: the
+  shop needs a lawful basis and a privacy notice, and this section is not one.
+- **Send only what the server witnessed.** `Purchase` is a fact this database holds. `PageView`, `Search`
+  and `ViewContent` are browser facts, and a backend reporting them is guessing — a guessed conversion
+  event is worse than a missing one, because it silently reprices somebody's ad spend.
+- **A public id and a credential are not the same variable.** `META_PIXEL_ID` ships inside the
+  storefront's JavaScript and is served by `GET /marketing/config`; `META_CAPI_ACCESS_TOKEN` authorises
+  writing conversions into an ad account, lives in `.env` only, and appears in no response ever. A test
+  asserts the config endpoint's body does not contain it, because the compiler cannot.
+- **Never on the request path.** The outbound call is queued and drained on cron. A third party being
+  down must never fail or delay a customer's order.
+- **Fire once.** A conversion reported twice is a real financial distortion, not a duplicate log line.
+  The event id is derived from the order rather than from randomness, and claimed with a write-once
+  insert whose duplicate-key failure is the answer — the same mechanism as the webhook ledger.
+
 ## Audit logging
 
 Record actor, action, target, before/after where meaningful, timestamp, and source IP for every privileged

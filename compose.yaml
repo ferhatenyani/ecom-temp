@@ -92,6 +92,12 @@ services:
       ZR_EXPRESS_TENANT_ID: ${ZR_EXPRESS_TENANT_ID:-}
       ZR_EXPRESS_API_KEY: ${ZR_EXPRESS_API_KEY:-}
       ZR_EXPRESS_WEBHOOK_SECRET: ${ZR_EXPRESS_WEBHOOK_SECRET:-}
+      # Marketing pixels — roadmap §62b. META_PIXEL_ID is public (it ships in
+      # the storefront's JavaScript); META_CAPI_ACCESS_TOKEN authorises writing
+      # conversions into an ad account and appears in no response ever.
+      ENABLE_MARKETING_PIXELS: ${ENABLE_MARKETING_PIXELS:-}
+      META_PIXEL_ID: ${META_PIXEL_ID:-}
+      META_CAPI_ACCESS_TOKEN: ${META_CAPI_ACCESS_TOKEN:-}
     volumes:
       - wordpress_data:/var/www/html
       - ./wp-content/plugins/algerian-commerce-core:/var/www/html/wp-content/plugins/algerian-commerce-core
@@ -160,6 +166,12 @@ services:
       ZR_EXPRESS_TENANT_ID: ${ZR_EXPRESS_TENANT_ID:-}
       ZR_EXPRESS_API_KEY: ${ZR_EXPRESS_API_KEY:-}
       ZR_EXPRESS_WEBHOOK_SECRET: ${ZR_EXPRESS_WEBHOOK_SECRET:-}
+      # Marketing pixels — roadmap §62b. META_PIXEL_ID is public (it ships in
+      # the storefront's JavaScript); META_CAPI_ACCESS_TOKEN authorises writing
+      # conversions into an ad account and appears in no response ever.
+      ENABLE_MARKETING_PIXELS: ${ENABLE_MARKETING_PIXELS:-}
+      META_PIXEL_ID: ${META_PIXEL_ID:-}
+      META_CAPI_ACCESS_TOKEN: ${META_CAPI_ACCESS_TOKEN:-}
     volumes:
       - wordpress_data:/var/www/html
       - ./wp-content/plugins/algerian-commerce-core:/var/www/html/wp-content/plugins/algerian-commerce-core

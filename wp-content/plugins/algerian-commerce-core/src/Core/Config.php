@@ -19,6 +19,7 @@ final class Config
         'ENABLE_CHARGILY',
         'ENABLE_YALIDINE',
         'ENABLE_ZR_EXPRESS',
+        'ENABLE_MARKETING_PIXELS',
         'ENABLE_BLOG',
         'ENABLE_REVIEWS',
         'ENABLE_SMS',
@@ -78,6 +79,15 @@ final class Config
              * first is a number that lies.
              */
             'AC_MEDIA_MAX_BYTES',
+            /*
+             * Meta's two values, and they are not the same kind of thing
+             * (roadmap §62b). META_PIXEL_ID is public — it ships inside the
+             * storefront's JavaScript, so `GET /marketing/config` serves it.
+             * META_CAPI_ACCESS_TOKEN authorises writing conversions into an ad
+             * account and appears in no response ever.
+             */
+            'META_PIXEL_ID',
+            'META_CAPI_ACCESS_TOKEN',
         ];
 
         $env = [];

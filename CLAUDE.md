@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53 and §55–§62 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53 and §55–§62b are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
-ZR Express, the payment abstraction, Chargily, the CMS, media and SEO — and its
+ZR Express, the payment abstraction, Chargily, the CMS, media, SEO and the marketing event layer — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -15,11 +15,43 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53 and §55–§62 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53 and §55–§62b are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
 shipping rules, the Yalidine and ZR Express adapters, the security review, the payment abstraction and
 Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS and media endpoints, and
-§62's SEO. **Next up is §62b, the Meta Pixel and Conversions API.**
+§62's SEO and §62b's marketing event layer. **Next up is §63, analytics.**
+
+§62b is `src/Marketing/` plus `integrations/Meta/`, and `ac_marketing_events` is migration 009
+(`Schema::VERSION` is 9). The abstraction is §58's unchanged — `MarketingProviderInterface`,
+`Plugin::marketingProviders()` as the only place a pixel id, a token or `ENABLE_MARKETING_PIXELS` is
+read, our value objects across the boundary, no `WC_Order` in an adapter. **This repository owns the
+server half only**: `fbevents.js` and `fbq()` belong to the Next.js storefront, and a WooCommerce pixel
+plugin cannot do it because those inject through template hooks that never run headless — inert, and
+looking installed.
+
+**Deduplication is the whole problem, and the id goes one way.** Meta discards the browser's copy only
+when both carry the same `event_name` *and* `event_id`, so the backend mints it
+(`MarketingEvent::idFor()`, derived from the order and hashed so a sequential order number is not handed
+to an ad network) and `POST /marketing/events/purchase` tells the storefront. A retried request, a
+refreshed page and a second tab therefore produce **one** conversion. Only what the server witnessed is
+sent — `PageView`, `Search` and `ViewContent` are browser facts, and a server reporting them is guessing.
+
+**Nothing is sent on the checkout path.** The request claims a row and returns; `wp algerian-commerce
+sync-marketing` (and a five-minute cron) drains it. The claim and the queue are deliberately **one
+table** with `UNIQUE (provider, event_id)` — a claim in one table and a job in another can disagree, and
+the disagreement is a conversion sent twice or never. `payload` is frozen at claim time, so a refund
+between the sale and the send cannot change the reported value.
+
+**`Marketing\UserData` is where PII stops.** Private constructor, hashes on the way in, so no object
+holds a customer's email en route to an ad network and neither does the queue, which outlives the
+request. Hashing is not anonymisation — this is still customer PII going to a third party. The Algerian
+trap: a shop stores `0551020304`, and Meta's "strip leading zeros, add the country code" read naively
+gives `551020304`, which is a phone number nowhere; the trunk prefix is **replaced** by `213`.
+
+Graph API **v26.0** is pinned in `MetaSettings` per §68. Everything came from Meta's documentation read
+2026-08-16 per §54, and **nothing has run against a live dataset** — no ad account, which is §56's
+situation. `grep -rn ASSUMPTION integrations/Meta src/Marketing`. When a token exists, set
+`test_event_code` in `ac_meta_settings` and watch Test Events.
 
 §62 is `src/SEO/`, and it is **a block on the payloads that already exist** rather than an endpoint:
 `seo` appears on `GET /products/{id}` and `GET /cms/pages/{path}`, and is written through the
@@ -233,11 +265,11 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
+`Customers/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
-`tests/`, plus `integrations/ZRExpress/` and `integrations/Chargily/`. Still to come: `Analytics/`, `Marketing/`,
-`Notifications/`, …
+`tests/`, plus `integrations/ZRExpress/`, `integrations/Chargily/` and `integrations/Meta/`. Still to come:
+`Analytics/`, `Notifications/`, …
 
 **The bundled PSR-4 autoloader is registered for `src/` behind Composer, not instead of it.** Composer runs
 with `optimize-autoloader`, so it dumps a *classmap* — a snapshot of the files present when somebody last ran
@@ -325,7 +357,10 @@ curl http://localhost:8090/wp-json/algerian-commerce/v1/health   # → {"success
 `.env` (gitignored) holds `DB_PASSWORD`, `DB_ROOT_PASSWORD`, `WP_PORT`, and provider credentials
 (`YALIDINE_API_ID`, `YALIDINE_API_TOKEN`, `YALIDINE_WEBHOOK_SECRET` — Yalidine authenticates with two headers,
 not a key/secret pair — plus `ZR_EXPRESS_TENANT_ID`, `ZR_EXPRESS_API_KEY`, `ZR_EXPRESS_WEBHOOK_SECRET`,
-`CHARGILY_SECRET_KEY` — **one key, which also signs the webhooks** — and `SMTP_*`); `.env.example` mirrors
+`CHARGILY_SECRET_KEY` — **one key, which also signs the webhooks** — plus `META_PIXEL_ID` and
+`META_CAPI_ACCESS_TOKEN`, which are **not the same kind of thing**: the pixel id ships in browser
+JavaScript and `/marketing/config` serves it, while the token authorises writing conversions into an ad
+account and appears in no response ever — and `SMTP_*`); `.env.example` mirrors
 those keys with blank values. `WP_PORT` is honoured — `compose.yaml` publishes `${WP_PORT:-8090}:80`.
 **A variable in `.env` reaches the plugin only if `compose.yaml` passes it into the container**, in both the
 `wordpress` and `wpcli` services — `Config` reads `getenv()`, and the containers get nothing by default.
