@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53 and §55–§61 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53 and §55–§62 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
-ZR Express, the payment abstraction, Chargily, the CMS and media — and its
+ZR Express, the payment abstraction, Chargily, the CMS, media and SEO — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -15,11 +15,29 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53 and §55–§61 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53 and §55–§62 are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
 shipping rules, the Yalidine and ZR Express adapters, the security review, the payment abstraction and
-Chargily with PLAN §19's transaction table, §60's three webhooks, and §61's CMS and media endpoints.
-**Next up is §62, SEO and marketing.**
+Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS and media endpoints, and
+§62's SEO. **Next up is §62b, the Meta Pixel and Conversions API.**
+
+§62 is `src/SEO/`, and it is **a block on the payloads that already exist** rather than an endpoint:
+`seo` appears on `GET /products/{id}` and `GET /cms/pages/{path}`, and is written through the
+resource's own PATCH, so SEO errors land in the same `fields` list as the rest of a product write. No
+migration, no table. Five stored overrides — title, description, canonical, robots, image — and
+everything else derived, so a shop that has never opened an SEO field still serves a sensible title,
+description and share image. `og` follows title/description rather than being stored twice, and
+anything unpublished defaults to **noindex** because this API serves a draft long before it is public.
+**A canonical URL is never derived**: WordPress's permalink points at this backend, the storefront is
+another origin, and a guessed canonical would tell Google the shop lives on the admin domain.
+`SEO/` contains no WooCommerce — a caller flattens a product or a post into a `SeoSubject`.
+
+**No SEO plugin was installed**, and PLAN §25 says to use one, so the reason is on the record: in a
+headless install the half of an SEO plugin that *renders* never runs, and its sitemap and `robots.txt`
+are emitted on the backend's domain where they are worse than absent. It is the argument §62b makes
+against "Meta for WooCommerce", applied to the same shape of problem. Rank Math remains the upgrade
+path — it publishes a `getHead` endpoint for headless installs — and taking it means writing a
+`RankMathSource` in place of `SeoRepository`, with nothing above `SeoResolver` changing.
 
 §61 is `src/CMS/` and `src/Media/`, and it added **no migration and no table** — `Schema::VERSION` is still
 8. "WordPress stores content" was the instruction and it was taken literally: banners and FAQs are post
@@ -215,7 +233,7 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
+`Customers/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
 `tests/`, plus `integrations/ZRExpress/` and `integrations/Chargily/`. Still to come: `Analytics/`, `Marketing/`,

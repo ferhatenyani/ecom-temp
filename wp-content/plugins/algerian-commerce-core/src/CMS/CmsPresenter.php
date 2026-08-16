@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace AlgerianCommerce\CMS;
 
 use AlgerianCommerce\Media\MediaPresenter;
+use AlgerianCommerce\SEO\SeoFields;
+use AlgerianCommerce\SEO\SeoResolver;
+use AlgerianCommerce\SEO\SeoSubject;
 use WP_Post;
 use WP_Term;
 
@@ -35,6 +38,17 @@ final class CmsPresenter
             'parent_id' => (int) $page->post_parent,
             'menu_order' => (int) $page->menu_order,
             'image' => MediaPresenter::image((int) get_post_thumbnail_id($page)),
+            'seo' => SeoResolver::resolve(new SeoSubject(
+                (int) $page->ID,
+                SeoSubject::TYPE_PAGE,
+                $page->post_title,
+                // The excerpt first: it is a summary somebody wrote, which is
+                // what a meta description is. The body is the fallback.
+                SeoFields::firstNonEmpty($page->post_excerpt, $page->post_content),
+                (int) get_post_thumbnail_id($page),
+                $page->post_name,
+                $page->post_status === 'publish'
+            )),
             'date_created' => mysql_to_rfc3339($page->post_date_gmt),
             'date_modified' => mysql_to_rfc3339($page->post_modified_gmt),
         ];

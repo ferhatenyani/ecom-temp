@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace AlgerianCommerce\Products;
 
+use AlgerianCommerce\SEO\SeoFields;
+use AlgerianCommerce\SEO\SeoResolver;
+use AlgerianCommerce\SEO\SeoSubject;
 use WC_Product;
 use WC_Product_Variation;
 
@@ -54,6 +57,7 @@ final class ProductPresenter
                 array_map('intval', $product->get_gallery_image_ids())
             ))),
             'permalink' => $product->get_permalink(),
+            'seo' => SeoResolver::resolve(self::seoSubject($product)),
             'date_created' => self::date($product->get_date_created()),
             'date_modified' => self::date($product->get_date_modified()),
         ];
@@ -63,6 +67,36 @@ final class ProductPresenter
     public static function toArrayList(array $products): array
     {
         return array_values(array_map([self::class, 'toArray'], $products));
+    }
+
+    /**
+     * Flatten a product to what `SEO/` needs — roadmap §62.
+     *
+     * Here rather than in `SEO/`, so that module never learns what a
+     * `WC_Product` is: a presenter already knows, and it is the layer whose job
+     * is translating one into a wire format.
+     *
+     * The description falls back to the short description first. A shop writes
+     * the short one *as* a summary, which is what a meta description is, while
+     * the long one opens with a heading or a table as often as with a sentence.
+     */
+    private static function seoSubject(WC_Product $product): SeoSubject
+    {
+        return new SeoSubject(
+            $product->get_id(),
+            SeoSubject::TYPE_PRODUCT,
+            $product->get_name(),
+            SeoFields::firstNonEmpty($product->get_short_description(), $product->get_description()),
+            (int) $product->get_image_id(),
+            $product->get_slug(),
+            $product->get_status() === 'publish',
+            [
+                'sku' => $product->get_sku(),
+                'price' => $product->get_price(),
+                'currency' => function_exists('get_woocommerce_currency') ? get_woocommerce_currency() : 'DZD',
+                'availability' => $product->get_stock_status(),
+            ]
+        );
     }
 
     /**

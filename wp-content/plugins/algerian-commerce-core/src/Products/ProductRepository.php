@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Products;
 
 use AlgerianCommerce\API\ApiException;
+use AlgerianCommerce\SEO\SeoInput;
+use AlgerianCommerce\SEO\SeoRepository;
 use WC_Product;
 use WC_Product_Attribute;
 use WC_Product_Simple;
@@ -94,6 +96,7 @@ final class ProductRepository
 
         $this->apply($product, $input);
         $product->save();
+        $this->applySeo($product, $input);
 
         return $product;
     }
@@ -102,6 +105,7 @@ final class ProductRepository
     {
         $this->apply($product, $input);
         $product->save();
+        $this->applySeo($product, $input);
 
         $type = $input->get('type');
 
@@ -110,6 +114,28 @@ final class ProductRepository
         }
 
         return $product;
+    }
+
+    /**
+     * SEO overrides, written **after** the save — roadmap §62.
+     *
+     * After, and not inside `apply()`, because on a create there is no post id
+     * to attach meta to until WooCommerce has written the row. The same call
+     * then serves both paths rather than the create silently dropping its SEO.
+     */
+    private function applySeo(WC_Product $product, ProductInput $input): void
+    {
+        $seo = $input->get('seo');
+
+        if (!$seo instanceof SeoInput || $seo->isEmpty()) {
+            return;
+        }
+
+        if ($seo->has('image_id')) {
+            $this->assertImageAttachment((int) $seo->get('image_id'), 'seo.image_id');
+        }
+
+        (new SeoRepository())->save($product->get_id(), $seo);
     }
 
     /**

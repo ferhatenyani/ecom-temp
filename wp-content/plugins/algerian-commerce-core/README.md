@@ -17,9 +17,9 @@ the migration runner, roles and capabilities, and audit recording.
 Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (authentication), §50
 (orders and customers), §51 (Algerian geography), §52 (COD), §53 (the shipping abstraction), §4
 step 28b (shipping rules and pricing, PLAN §14), §56 (Yalidine), §57 (ZR Express), §58 (the payment
-abstraction), §59 (Chargily), §60 (all three webhooks) and §61 (CMS and media) are in, along with
-rate limiting. Not implemented yet: 2FA, customer sessions, SEO and marketing, analytics,
-notifications, import/export.
+abstraction), §59 (Chargily), §60 (all three webhooks), §61 (CMS and media) and §62 (SEO) are in,
+along with rate limiting. Not implemented yet: 2FA, customer sessions, marketing pixels (§62b),
+analytics, notifications, import/export.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -71,6 +71,9 @@ src/Media/                   MediaController, MediaService, MediaRepository,
                              MediaPresenter, MediaInput, UploadedFile,
                              UploadPolicy (every rule POST /media enforces),
                              ImageSanitizer (the metadata strip)
+src/SEO/                     SeoFields (the rules, pure), SeoInput, SeoSubject,
+                             SeoRepository, SeoResolver — a block on the
+                             product and page payloads, not an endpoint
 data/algeria/                wilayas.json, communes.json, provider-destinations.json,
                              sources/ (the CSV they are built from)
 src/API/                     Response envelope, ApiException, ErrorNormalizer, Cors, OriginPolicy,
@@ -1851,6 +1854,69 @@ an array literal is a fatal `TypeError` — and only a legitimate upload reaches
 exactly the case no refusal test exercises. And a traversal filename never reaches the application
 over real HTTP at all: PHP's multipart parser applies `basename()` before `$_FILES` exists. Our check
 is the layer that does not depend on that being true.
+
+## SEO (§62)
+
+`seo` is a block on the resources that already exist — `GET /products/{id}` and `GET /cms/pages/{path}`
+— and it is written through the resource's own PATCH. No endpoint of its own, no table, no migration.
+
+```jsonc
+"seo": {
+  "title": "Tapis berbère — Boutique",
+  "description": "Fait main en laine naturelle.",
+  "canonical": "",                                  // only ever what somebody set
+  "robots": { "index": true, "follow": true, "directive": "index, follow" },
+  "og": { "title": "…", "description": "…", "type": "product", "image": { … } },
+  "image": { "id": 42, "src": "…", "thumbnail": "…", "alt": "…" },
+  "structured_data": { "@type": "Product", "offers": { "price": "7500", … } },
+  "overrides": ["title"]                            // which fields a person actually set
+}
+```
+
+### Correct by default
+
+Five stored overrides; everything else derived, so a shop that has never opened an SEO field still
+serves a sensible title, description and share image everywhere. `overrides` tells an admin UI which
+values were typed and which are placeholders — invisible otherwise.
+
+| Field | Derived from |
+| --- | --- |
+| `title` | `"Name — Site"`, trimmed at 60 on a word boundary, never `"Site — Site"` |
+| `description` | the short description, else the body — shortcodes and markup stripped, trimmed at 160 |
+| `robots` | `index, follow`, but **noindex for anything unpublished** — this API serves a draft long before it is public, and a storefront preview must not be why it gets indexed |
+| `image` | the featured image |
+| `og` | follows `title` / `description` rather than storing them twice, which is two fields that drift apart in the one case nobody notices |
+| `structured_data` | `Product` with an `Offer` where there is a price, `WebPage` otherwise. An offer is omitted rather than published with `price: ""`, which Google reads as malformed rather than absent. Nothing invents a rating, a review count or a brand |
+
+### A canonical URL is never derived
+
+The one hard rule. WordPress's permalink points at *this* backend, and the storefront is a different
+origin with its own routing — a canonical guessed here would confidently tell Google that the shop's
+pages live on the admin domain. It is the override or it is empty, and the payload carries the slug so
+the side that knows its own URL scheme builds it. Overrides must be absolute `https`.
+
+### No SEO plugin, and the door left open
+
+PLAN §25 says to use one. This was built without one, on the reasoning §62b applies to "Meta for
+WooCommerce": in a headless install the half that **renders** never runs, and its sitemap and
+`robots.txt` are emitted on the backend's domain, where they are worse than absent. What remains is a
+meta box over five fields, which is what `SEO/` is.
+
+Rank Math is an upgrade path rather than a rejection — it publishes a `getHead` endpoint built for
+headless installs. Taking it means writing a `RankMathSource` in place of `SeoRepository`; nothing
+above `SeoResolver` changes.
+
+### `SEO/` contains no WooCommerce
+
+A product and a page have a title, some text, a picture and a slug, and everything this module does is
+identical for both. The caller flattens either into a `SeoSubject`, so adding a third kind of content
+means building one more subject rather than teaching the resolver about a third class.
+
+Two bugs the tests caught, both in the same three lines: `strip_tags()` removes a `<script>` element's
+tags and keeps what is *between* them, so a body ending in an analytics snippet published `var x = 1;`
+as its meta description — and the first fix for it, whitespace around every tag, turned
+`les <strong>58 wilayas</strong>.` into `58 wilayas .`. Block boundaries become a space; inline tags
+do not.
 
 ## Security review (§55)
 
