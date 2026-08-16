@@ -638,6 +638,55 @@ ac_check('every shipment status has a bucket even when empty', ac_req('GET', '/a
     return true;
 });
 
+echo PHP_EOL, "=== an install these queries cannot read ===", PHP_EOL;
+
+/*
+ * The 501. AnalyticsRepository reads WooCommerce's order tables directly, and
+ * under legacy post storage the same query returns zero rows and no error — a
+ * dashboard reporting a trading shop as having taken nothing, which CLAUDE.md
+ * names as the worst possible failure shape. §63 answers it by refusing.
+ *
+ * HPOS is not switched off to prove it, and nothing is migrated:
+ * custom_orders_table_usage_is_enabled() reads an option, and every WordPress
+ * option can be short-circuited for the length of one request with
+ * `pre_option_*`. The filter is removed immediately and service is re-asserted
+ * below, so this section cannot leak into anything else.
+ *
+ * Last in the file for the same reason.
+ */
+$hposOff = static fn () => 'no';
+add_filter('pre_option_woocommerce_custom_orders_table_enabled', $hposOff);
+
+foreach (['overview', 'revenue', 'orders', 'shipping'] as $route) {
+    ac_check("/analytics/{$route} refuses rather than answering zero", ac_req('GET', "/analytics/{$route}"), 501,
+        function ($d) {
+            return ($d['error']['code'] ?? '') === 'analytics_unsupported'
+                ?: 'got ' . ($d['error']['code'] ?? 'no code');
+        });
+}
+
+ac_check('and the refusal names what is missing', ac_req('GET', '/analytics/overview'), 501, function ($d) {
+    return str_contains($d['error']['message'], 'High-Performance Order Storage')
+        ?: 'the message does not say what is wrong: ' . $d['error']['message'];
+});
+
+// Authorization still runs first: an install that cannot report must not become
+// one that reports to anybody.
+wp_set_current_user(0);
+ac_check('an unsupported install still refuses a stranger first', ac_req('GET', '/analytics/overview'), 401);
+wp_set_current_user($manager);
+
+remove_filter('pre_option_woocommerce_custom_orders_table_enabled', $hposOff);
+
+ac_check('service returns when the storage does', ac_req('GET', '/analytics/overview'), 200);
+
+ac_assert(
+    'and nothing was migrated to prove any of it',
+    (int) $GLOBALS['wpdb']->get_var(
+        "SELECT COUNT(*) FROM {$GLOBALS['wpdb']->prefix}wc_orders WHERE type = 'shop_order'"
+    ) > 0 ?: 'the order table is empty'
+);
+
 echo PHP_EOL;
 printf(
     "\033[1m%d passed, %d failed\033[0m%s",
