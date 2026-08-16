@@ -67,7 +67,22 @@ if run_stage rest; then
   for suite in wp-content/plugins/algerian-commerce-core/tests/Api/*.php; do
     [[ -e "$suite" ]] || continue
     name=$(basename "$suite" .php)
-    docker compose run --rm -T -e AC_RATE_LIMIT_DISABLED=1 wpcli wp eval-file - < "$suite" 2>&1 | grep -vE '^ Container|^\s*$'
+
+    # Per-suite environment. Only the marketing suite needs any: without a
+    # registered provider the claim, the queue and the dedup path are all
+    # skipped, and "a shop with no pixel" is the only case left. These
+    # credentials are deliberately fake and the suite never drains a row
+    # belonging to a registered provider, so nothing here reaches the network —
+    # what Meta is actually sent is covered against recorded responses in
+    # tests/Unit/MetaProviderTest.
+    extra=()
+    if [[ "$name" == "marketing" ]]; then
+      extra=(-e ENABLE_MARKETING_PIXELS=1
+             -e META_PIXEL_ID=000000000000000
+             -e META_CAPI_ACCESS_TOKEN=ac-test-token-not-real)
+    fi
+
+    docker compose run --rm -T -e AC_RATE_LIMIT_DISABLED=1 "${extra[@]}" wpcli wp eval-file - < "$suite" 2>&1 | grep -vE '^ Container|^\s*$'
     record "rest:${name}" "${PIPESTATUS[0]}"
   done
 fi

@@ -18,8 +18,8 @@ Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (au
 (orders and customers), §51 (Algerian geography), §52 (COD), §53 (the shipping abstraction), §4
 step 28b (shipping rules and pricing, PLAN §14), §56 (Yalidine), §57 (ZR Express), §58 (the payment
 abstraction), §59 (Chargily), §60 (all three webhooks), §61 (CMS and media) and §62 (SEO) are in,
-along with rate limiting. Not implemented yet: 2FA, customer sessions, marketing pixels (§62b),
-analytics, notifications, import/export.
+and §62b (the marketing event layer and Meta's Conversions API), along with rate limiting. Not
+implemented yet: 2FA, customer sessions, analytics, notifications, import/export.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -74,6 +74,13 @@ src/Media/                   MediaController, MediaService, MediaRepository,
 src/SEO/                     SeoFields (the rules, pure), SeoInput, SeoSubject,
                              SeoRepository, SeoResolver — a block on the
                              product and page payloads, not an endpoint
+src/Marketing/               MarketingProviderInterface, MarketingEvent,
+                             MarketingResult, MarketingProviderRegistry,
+                             MarketingService, MarketingEventRepository,
+                             MarketingController, UserData (the hashing —
+                             raw PII never leaves it)
+integrations/Meta/           MetaProvider, MetaClient, MetaCredentials,
+                             MetaSettings — the Conversions API, server half only
 data/algeria/                wilayas.json, communes.json, provider-destinations.json,
                              sources/ (the CSV they are built from)
 src/API/                     Response envelope, ApiException, ErrorNormalizer, Cors, OriginPolicy,
@@ -1918,6 +1925,90 @@ as its meta description — and the first fix for it, whitespace around every ta
 `les <strong>58 wilayas</strong>.` into `58 wilayas .`. Block boundaries become a space; inline tags
 do not.
 
+## Marketing and the Meta Conversions API (§62b)
+
+| Method | Route | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/marketing/config` | `ac_manage_marketing` | public ids only, for the storefront |
+| POST | `/marketing/events/purchase` | `ac_manage_marketing` | mint and queue the Purchase → `{ event_id, … }` |
+
+Plus `wp algerian-commerce sync-marketing [--provider=] [--limit=] [--summary]`, and a cron event every
+five minutes. `ac_marketing_events` is migration 009 (`Schema::VERSION` is 9).
+
+### This repository owns the server half only
+
+`fbevents.js` and the `fbq()` calls belong to the Next.js storefront, because WordPress renders no page
+here. **Do not reach for a WooCommerce pixel plugin**: those inject their script through WooCommerce
+template hooks, which never run in a headless install — the plugin is inert and looks installed, which
+is the worst of both. What this side owns is the Conversions API: an outbound HTTP call carrying order
+data and a long-lived token, which is a third-party integration like any other.
+
+### Deduplication is the whole problem
+
+The same Purchase reaches Meta twice, once from the browser and once from the server, and Meta discards
+the copy only when both carry the same `event_name` **and** the same `event_id`. Two systems cannot each
+invent that, so **the backend mints it and the storefront is told**:
+
+```
+POST /marketing/events/purchase {"order_id": 42}
+  → {"event_id": "9f2c…", "event_name": "Purchase", "queued": ["meta"]}
+
+storefront: fbq('track', 'Purchase', {...}, {eventID: '9f2c…'})
+```
+
+The id is **derived from the order**, so a retried request, a refreshed confirmation page and a second
+browser tab all produce the same string — and therefore one conversion rather than three. It is hashed
+rather than `purchase-42`, because that string goes to an ad network on every sale and a sequential id
+would publish the shop's order volume to anyone counting.
+
+Only what the server witnessed is sent from here. `PageView`, `Search` and `ViewContent` are browser
+facts; a server reporting them is guessing, and a guessed event silently reprices somebody's ad spend.
+
+### Never on the checkout path
+
+The request writes a row and returns; `sync-marketing` sends it. A Meta outage must never fail or delay
+an order — the same rule §57 applies when it refuses to let a read-back fail a parcel that already
+exists. The claim and the queue are deliberately **one table**: a claim in one and a job in another can
+disagree, and the disagreement is a conversion sent twice or never.
+
+`payload` is frozen at claim time rather than rebuilt at drain time, so a refund or an edited line item
+between the sale and the send cannot quietly change the reported value.
+
+### Where the PII stops
+
+`Marketing\UserData` has a private constructor and hashes on the way in, so no object in the system
+holds a customer's email on its way to an ad network — an adapter cannot leak what it was never given,
+and neither can the queue, which outlives the request. **Hashing is not anonymisation**: a SHA-256 of an
+email is a stable identifier for that person, which is the point of sending it. This is customer PII
+going to a third party and needs a lawful basis and a privacy notice.
+
+One Algerian detail that would have silently halved the match rate: a shop stores `0551020304`, and
+Meta's rule — "remove symbols, letters and leading zeros; include the country code" — read naively gives
+`551020304`, which is not a phone number anywhere. The trunk prefix is **replaced** by `213`.
+
+| Value | Kind | Where |
+| --- | --- | --- |
+| `META_PIXEL_ID` | **public** — it ships in browser JavaScript | `.env`, served by `/marketing/config` |
+| `META_CAPI_ACCESS_TOKEN` | **credential** | `.env` only, in no response ever |
+| Graph API version, `test_event_code` | per-client setting | `ac_meta_settings` option |
+
+### Written from the docs, not run against a dataset
+
+Field names, the endpoint shape, the hashing rules and the version pin come from Meta's current
+documentation read **2026-08-16** (§54 forbids memory). Graph API **v26.0** is pinned per §68 — released
+2026-07-29, and Meta changes payload requirements between versions while expiring each after about two
+years.
+
+Nothing here has touched a live dataset: that needs an ad account this project does not have, which is
+§56's situation. `grep -rn ASSUMPTION integrations/Meta src/Marketing` lists what is unproven — chiefly
+whether a 2xx can hide a partial failure, and whether a hyphen in a name is dropped or spaced. When a
+token exists, set `test_event_code`, run `sync-marketing` and watch Test Events; that exercises the whole
+path without polluting a client's attribution.
+
+The three-state `MarketingResult` is why a bad payload is not retried forever: `sent`, `retryable` (a
+timeout, a 5xx, a rate limit) and `rejected` (a malformed field, a refused token). An event retried
+hourly for a week burns the account's rate limit and buries the ones that would have worked.
+
 ## Security review (§55)
 
 §55 is a review rather than a feature: walk everything that ships — `Auth/`, `Security/`, `Permissions/`,
@@ -2155,6 +2246,8 @@ wp algerian-commerce import-algeria [--dry-run] # §51 geography
 wp algerian-commerce shipping-check             # can this store ship anything?
 wp algerian-commerce sync-destinations --provider=<name> [--dry-run] [--gaps=<n>]
 wp algerian-commerce sync-shipments [--provider=] [--limit=] [--min-age=]
+wp algerian-commerce sync-payments [--provider=] [--limit=] [--min-age=]
+wp algerian-commerce sync-marketing [--provider=] [--limit=] [--summary]
 ```
 
 ```bash

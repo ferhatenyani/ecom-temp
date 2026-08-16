@@ -42,6 +42,15 @@ use AlgerianCommerce\Geography\GeoService;
 use AlgerianCommerce\Geography\LocationController;
 use AlgerianCommerce\Customers\CustomerRepository;
 use AlgerianCommerce\Customers\CustomerService;
+use AlgerianCommerce\CLI\SyncMarketingCommand;
+use AlgerianCommerce\Marketing\MarketingController;
+use AlgerianCommerce\Marketing\MarketingEventRepository;
+use AlgerianCommerce\Marketing\MarketingProviderRegistry;
+use AlgerianCommerce\Marketing\MarketingService;
+use AlgerianCommerce\Integrations\Meta\MetaClient;
+use AlgerianCommerce\Integrations\Meta\MetaCredentials;
+use AlgerianCommerce\Integrations\Meta\MetaProvider;
+use AlgerianCommerce\Integrations\Meta\MetaSettings;
 use AlgerianCommerce\Media\ImageSanitizer;
 use AlgerianCommerce\Media\MediaController;
 use AlgerianCommerce\Media\MediaRepository;
@@ -118,11 +127,17 @@ final class Plugin
     /** Per-client Chargily configuration — roadmap §59, never the secret key. */
     public const CHARGILY_SETTINGS_OPTION = 'ac_chargily_settings';
 
+    /** Per-client Meta configuration — roadmap §62b, never the access token. */
+    public const META_SETTINGS_OPTION = 'ac_meta_settings';
+
     /** The hourly "where are my parcels" event. */
     public const POLL_EVENT = 'ac_poll_shipments';
 
     /** The hourly "did that payment ever arrive" event — roadmap §59. */
     public const PAYMENT_POLL_EVENT = 'ac_poll_payments';
+
+    /** The "send what the shop has already sold" drain — roadmap §62b. */
+    public const MARKETING_DRAIN_EVENT = 'ac_drain_marketing';
 
     private static ?self $instance = null;
 
@@ -177,6 +192,10 @@ final class Plugin
     private ?UploadPolicy $uploadPolicy = null;
     private ?MediaRepository $mediaRepository = null;
     private ?MediaService $mediaService = null;
+    private ?MarketingProviderRegistry $marketingProviders = null;
+    private ?MarketingEventRepository $marketingEventRepository = null;
+    private ?MarketingService $marketingService = null;
+    private ?MetaSettings $metaSettings = null;
     private bool $booted = false;
 
     private function __construct()
@@ -221,6 +240,7 @@ final class Plugin
         $this->contentTypes()->register();
         $this->registerShipmentPolling();
         $this->registerPaymentPolling();
+        $this->registerMarketingDrain();
         $this->registerCliCommands();
 
         $this->logger()->debug('Plugin booted', ['version' => VERSION]);
@@ -286,6 +306,44 @@ final class Plugin
         }
     }
 
+    /**
+     * The marketing queue drain — roadmap §62b.
+     *
+     * Registered exactly as the two polls are, and for the same pair of failure
+     * modes: a scheduled event with no listener runs nothing forever, and a
+     * listener with no schedule never runs at all.
+     *
+     * **Every outbound advertising call in this plugin happens here**, which is
+     * the design rather than a convenience: §62b forbids calling Meta on the
+     * checkout path, so an ad network being down costs a delay in reporting and
+     * never an order.
+     *
+     * Five minutes rather than hourly. A conversion reported late still
+     * attributes correctly, but Meta's own guidance is to report promptly, and
+     * a shop watching its ads dashboard after a launch should not wait an hour
+     * to see the first sale. WP-Cron still only fires when somebody visits, so
+     * a real deployment points a scheduler at `sync-marketing`.
+     */
+    private function registerMarketingDrain(): void
+    {
+        add_action(self::MARKETING_DRAIN_EVENT, function (): void {
+            $this->marketingService()->drain();
+        });
+
+        add_filter('cron_schedules', static function (array $schedules): array {
+            $schedules['ac_five_minutes'] ??= [
+                'interval' => 5 * MINUTE_IN_SECONDS,
+                'display' => 'Every five minutes (Algerian Commerce)',
+            ];
+
+            return $schedules;
+        });
+
+        if (!wp_next_scheduled(self::MARKETING_DRAIN_EVENT)) {
+            wp_schedule_event(time() + MINUTE_IN_SECONDS, 'ac_five_minutes', self::MARKETING_DRAIN_EVENT);
+        }
+    }
+
     private function registerCliCommands(): void
     {
         if (!defined('WP_CLI') || !WP_CLI) {
@@ -299,6 +357,7 @@ final class Plugin
         WP_CLI::add_command('algerian-commerce sync-destinations', new SyncDestinationsCommand($this->destinationSync()));
         WP_CLI::add_command('algerian-commerce sync-shipments', new SyncShipmentsCommand($this->shipmentPoller()));
         WP_CLI::add_command('algerian-commerce sync-payments', new SyncPaymentsCommand($this->paymentPoller()));
+        WP_CLI::add_command('algerian-commerce sync-marketing', new SyncMarketingCommand($this->marketingService()));
         WP_CLI::add_command('algerian-commerce shipping-check', new ShippingCheckCommand(
             $this->shippingProviders(),
             $this->geoRepository(),
@@ -353,7 +412,95 @@ final class Plugin
             ),
             new CmsController($this->logger(), $this->cmsService()),
             new MediaController($this->logger(), $this->mediaService()),
+            new MarketingController($this->logger(), $this->marketingService()),
         ]);
+    }
+
+    /**
+     * The advertising destinations this shop reports to — roadmap §62b.
+     *
+     * The only place a pixel id, an access token or `ENABLE_MARKETING_PIXELS`
+     * is read, exactly as `shippingProviders()` and `paymentProviders()` are for
+     * their own credentials (docs/ARCHITECTURE.md §4).
+     *
+     * **An empty registry is the normal case**, and the difference from
+     * payments matters: a shop with no gateway cannot take money and says so
+     * with a 409, while a shop with no ad account simply has no pixel.
+     * `GET /marketing/config` answers `enabled: false` and nothing errors.
+     *
+     * Both credentials are required, not either: a pixel id without a token
+     * would put a working browser pixel on the storefront with no server-side
+     * half at all — which looks configured and silently halves the match rate.
+     */
+    public function marketingProviders(): MarketingProviderRegistry
+    {
+        if ($this->marketingProviders !== null) {
+            return $this->marketingProviders;
+        }
+
+        $providers = [];
+        $meta = new MetaCredentials(
+            (string) $this->config()->secret('META_PIXEL_ID'),
+            (string) $this->config()->secret('META_CAPI_ACCESS_TOKEN')
+        );
+
+        if ($this->config()->isEnabled('ENABLE_MARKETING_PIXELS') && $meta->isComplete()) {
+            $settings = $this->metaSettings();
+
+            $providers[] = new MetaProvider(
+                new MetaClient(
+                    new WpHttpClient($settings->timeout),
+                    $meta,
+                    $settings,
+                    $this->logger()
+                ),
+                $meta,
+                $settings
+            );
+        }
+
+        return $this->marketingProviders = new MarketingProviderRegistry($providers);
+    }
+
+    /**
+     * Everything about a Meta dataset that is not a credential.
+     *
+     * An option rather than `.env`, on the line §56 drew: the Graph API version
+     * a shop is pinned to, and the `test_event_code` somebody is debugging with
+     * this afternoon, are configuration a person changes. A bad value falls back
+     * to the default and is reported by `problems()`.
+     */
+    public function metaSettings(): MetaSettings
+    {
+        if ($this->metaSettings !== null) {
+            return $this->metaSettings;
+        }
+
+        $stored = get_option(self::META_SETTINGS_OPTION, []);
+
+        return $this->metaSettings = MetaSettings::fromArray(is_array($stored) ? $stored : []);
+    }
+
+    public function marketingEventRepository(): MarketingEventRepository
+    {
+        global $wpdb;
+
+        return $this->marketingEventRepository ??= new MarketingEventRepository($wpdb);
+    }
+
+    /**
+     * Takes the order repository: a conversion is *about* an order, and the
+     * dependency runs one way — nothing in `Orders/` knows marketing exists.
+     */
+    public function marketingService(): MarketingService
+    {
+        return $this->marketingService ??= new MarketingService(
+            $this->marketingProviders(),
+            $this->marketingEventRepository(),
+            $this->orderRepository(),
+            $this->auditLogger(),
+            $this->logger()
+        );
     }
 
     public function contentTypes(): ContentTypes
@@ -981,9 +1128,10 @@ final class Plugin
     {
         // A deactivated plugin leaves no timer behind asking couriers about
         // parcels, or gateways about payments, for a shop that has stopped
-        // listening.
+        // listening — nor one reporting conversions to an ad account.
         wp_clear_scheduled_hook(self::POLL_EVENT);
         wp_clear_scheduled_hook(self::PAYMENT_POLL_EVENT);
+        wp_clear_scheduled_hook(self::MARKETING_DRAIN_EVENT);
 
         flush_rewrite_rules(false);
     }

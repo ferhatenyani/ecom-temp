@@ -100,10 +100,10 @@ the validation would let the two drift.
 The whole point is that the core never learns a provider's name.
 
 ```
-ShippingService                       PaymentService
-      |                                     |
-      +-- YalidineProvider                  +-- ChargilyProvider
-      +-- ZRExpressProvider                 +-- (future provider)
+ShippingService        PaymentService         MarketingService
+      |                      |                       |
+      +-- YalidineProvider   +-- ChargilyProvider    +-- MetaProvider
+      +-- ZRExpressProvider  +-- (future provider)   +-- (TikTok, Google Ads)
       +-- (future provider)
 ```
 
@@ -134,7 +134,9 @@ interface PaymentProviderInterface
 
 The order service says *create shipment*, never *call the Yalidine endpoint*. Provider selection comes from
 configuration and feature flags (`ENABLE_YALIDINE`, `ENABLE_ZR_EXPRESS`, `ENABLE_CHARGILY`, `ENABLE_COD`), so one
-codebase serves multiple clients without forking.
+codebase serves multiple clients without forking. `MarketingProviderInterface` (§62b) is the third
+instance of the same shape, and the one where an adapter must also never see raw customer data —
+`Marketing\UserData` hashes before the boundary, not inside the adapter.
 
 Each adapter owns, for its provider alone: authentication, endpoint URLs, payload shapes, destination-ID
 mapping, error mapping to our error codes, timeouts, retries, and idempotency keys. Adapters are written from
@@ -246,6 +248,7 @@ a parallel copy of it would have to be kept in step with the editor forever.
 | `ac_shipments` | provider shipment records and tracking state |
 | `ac_payment_transactions` | payment attempts, provider references, verification results |
 | `ac_webhook_events` | received event ids — the idempotency ledger |
+| `ac_marketing_events` | the conversion queue **and** its claim — one table, because a claim and a job that can disagree are a conversion sent twice or never |
 | `ac_notification_events` | queued/sent notifications |
 | `ac_analytics_aggregates` | pre-computed metrics; dashboards must not scan all orders per request |
 | `ac_geo_wilayas` / `ac_geo_communes` | canonical Algerian geography — no provider data in either |

@@ -4034,6 +4034,67 @@ provider registered and no outbound call at all, and `/marketing/config` says
 the pixel is off rather than erroring — a client without an ad account is the
 normal case, not a misconfiguration.
 
+## What was built
+
+``` text
+migrations/009_create_marketing_events.php   the queue *and* the claim
+src/Marketing/   MarketingProviderInterface, MarketingEvent, MarketingResult,
+                   MarketingProviderRegistry, MarketingService,
+                   MarketingEventRepository, MarketingController, UserData
+integrations/Meta/   MetaProvider, MetaClient, MetaCredentials, MetaSettings
+src/CLI/SyncMarketingCommand.php             wp algerian-commerce sync-marketing
+```
+
+`Schema::VERSION` is 9. The abstraction is §58's, unchanged: providers implement
+`MarketingProviderInterface`, `Plugin::marketingProviders()` is the only place a
+pixel id, a token or the flag is read, and everything crossing the boundary is
+one of our value objects. An adapter never sees a `WC_Order` — and, here, never
+sees a raw email either.
+
+## The queue and the claim are one table, on purpose
+
+A claim in one table and a job in another can disagree, and the disagreement is
+a conversion sent twice or never. So `ac_marketing_events` is both:
+`UNIQUE (provider, event_id)`, a write-once insert, and the duplicate-key
+failure *is* the answer — migration 008's mechanism, unchanged.
+
+`payload` freezes the event at claim time rather than rebuilding it at drain
+time. A refund, an edited line item or a changed address between the sale and
+the send must not quietly change the conversion value that gets reported.
+
+## Where the PII stops
+
+`Marketing\UserData` has a private constructor and hashes on the way in, so
+**no object in the system holds a customer's email on its way to an ad
+network** — an adapter cannot leak what it was never given, and neither can the
+queue, which outlives the request. `tests/Api/marketing.php` asserts the stored
+payload contains no raw address or phone number, and `tests/Unit/UserDataTest`
+asserts it of the bytes that leave the process.
+
+Hashing is not anonymisation, and the code says so where somebody will read it.
+This is still customer PII going to a third party.
+
+The Algerian detail that would have silently halved the match rate: a shop
+stores `0551020304`, and Meta's rule — "remove symbols, letters and leading
+zeros; include the country code" — read naively strips the zero to `551020304`,
+which is not a phone number anywhere. The trunk prefix is **replaced** by `213`.
+
+## Verified against the documentation, not against a dataset
+
+Every field name, the endpoint shape, the hashing rules and the version pin come
+from Meta's current documentation, read **2026-08-16**, per §54. Graph API
+**v26.0** is pinned in `MetaSettings` per §68 — it was released 2026-07-29, and
+Meta expires a version about two years after release while changing payload
+requirements between them.
+
+Nothing has been run against a live dataset: that needs an ad account and a
+token this project does not have, which is §56's situation exactly.
+`grep -rn ASSUMPTION integrations/Meta src/Marketing` lists what is still
+unproven — chiefly whether a 2xx can hide a partial failure, and whether a
+hyphen in a name is dropped or spaced. Set `test_event_code` in
+`ac_meta_settings`, run `sync-marketing`, and watch Test Events; that exercises
+the whole path without polluting a client's attribution.
+
 ------------------------------------------------------------------------
 
 # 63. Analytics
