@@ -68,18 +68,26 @@ if run_stage rest; then
     [[ -e "$suite" ]] || continue
     name=$(basename "$suite" .php)
 
-    # Per-suite environment. Only the marketing suite needs any: without a
-    # registered provider the claim, the queue and the dedup path are all
-    # skipped, and "a shop with no pixel" is the only case left. These
-    # credentials are deliberately fake and the suite never drains a row
-    # belonging to a registered provider, so nothing here reaches the network —
-    # what Meta is actually sent is covered against recorded responses in
+    # Per-suite environment. The marketing suite needs a registered provider:
+    # without one the claim, the queue and the dedup path are all skipped, and
+    # "a shop with no pixel" is the only case left. Those credentials are
+    # deliberately fake and the suite never drains a row belonging to a
+    # registered provider, so nothing here reaches the network — what Meta is
+    # actually sent is covered against recorded responses in
     # tests/Unit/MetaProviderTest.
+    #
+    # The analytics suite turns its response cache off, so an assertion made
+    # after placing an order sees the shop as it is rather than as it was a
+    # minute ago. What the cache itself guarantees — above all that a payload
+    # with money in it never shares a key with one without — is a unit test on
+    # the pure key function, in tests/Unit/AnalyticsCacheTest.
     extra=()
     if [[ "$name" == "marketing" ]]; then
       extra=(-e ENABLE_MARKETING_PIXELS=1
              -e META_PIXEL_ID=000000000000000
              -e META_CAPI_ACCESS_TOKEN=ac-test-token-not-real)
+    elif [[ "$name" == "analytics" ]]; then
+      extra=(-e AC_ANALYTICS_CACHE_TTL=0)
     fi
 
     docker compose run --rm -T -e AC_RATE_LIMIT_DISABLED=1 "${extra[@]}" wpcli wp eval-file - < "$suite" 2>&1 | grep -vE '^ Container|^\s*$'

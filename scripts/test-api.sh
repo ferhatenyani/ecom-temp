@@ -85,6 +85,13 @@ check "GET /auth/me reports the plugin capabilities" "ac_manage_inventory" \
   "$(curl -s -m 15 -u "$CRED" "${API}/auth/me" | grep -o 'ac_manage_inventory' | head -1)"
 check "GET /auth/me hides core WordPress capabilities" "" \
   "$(curl -s -m 15 -u "$CRED" "${API}/auth/me" | grep -o 'install_plugins' | head -1)"
+# Analytics is a private route like any other, and this stage is the only one
+# that can see an Authorization header at all. The capability *split* — who is
+# shown money and who is not — needs several accounts and lives in
+# tests/Api/analytics.php; the service account here is ac_admin and holds both.
+check "GET /analytics/overview without credentials" 401 "$(status "${API}/analytics/overview")"
+check "GET /analytics/overview with application password" 200 \
+  "$(status -u "$CRED" "${API}/analytics/overview")"
 echo
 
 # ------------------------------------------------------------------ media --

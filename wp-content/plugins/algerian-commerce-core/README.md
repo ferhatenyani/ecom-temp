@@ -18,8 +18,8 @@ Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (au
 (orders and customers), §51 (Algerian geography), §52 (COD), §53 (the shipping abstraction), §4
 step 28b (shipping rules and pricing, PLAN §14), §56 (Yalidine), §57 (ZR Express), §58 (the payment
 abstraction), §59 (Chargily), §60 (all three webhooks), §61 (CMS and media) and §62 (SEO) are in,
-and §62b (the marketing event layer and Meta's Conversions API), along with rate limiting. Not
-implemented yet: 2FA, customer sessions, analytics, notifications, import/export.
+and §62b (the marketing event layer and Meta's Conversions API) and §63 (analytics), along with
+rate limiting. Not implemented yet: 2FA, customer sessions, notifications, import/export.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -81,6 +81,10 @@ src/Marketing/               MarketingProviderInterface, MarketingEvent,
                              raw PII never leaves it)
 integrations/Meta/           MetaProvider, MetaClient, MetaCredentials,
                              MetaSettings — the Conversions API, server half only
+src/Analytics/               AnalyticsRange (the window, pure), Metrics,
+                             RevenueReport (PLAN §28, pure), AnalyticsCache,
+                             AnalyticsRepository (the aggregate SQL, all of it),
+                             AnalyticsService, AnalyticsController
 data/algeria/                wilayas.json, communes.json, provider-destinations.json,
                              sources/ (the CSV they are built from)
 src/API/                     Response envelope, ApiException, ErrorNormalizer, Cors, OriginPolicy,
@@ -155,6 +159,13 @@ tests/Unit/                  unit tests — no WordPress required
 | GET | `/media/{id}` | `ac_manage_content` | read |
 | PATCH | `/media/{id}` | `ac_manage_content` | alt text, title, caption — never the bytes |
 | DELETE | `/media/{id}` | `ac_manage_content` | permanent, file included |
+| GET | `/analytics/overview` | `ac_view_analytics` | the dashboard headline (`range`, `date_from`, `date_to`) |
+| GET | `/analytics/revenue` | + `ac_manage_orders` | PLAN §28's financial report |
+| GET | `/analytics/orders` | `ac_view_analytics` | counts by status, cancellations, refunds |
+| GET | `/analytics/products` | `ac_view_analytics` | best sellers and the low-stock count |
+| GET | `/analytics/customers` | `ac_view_analytics` | new against returning, and guest orders |
+| GET | `/analytics/shipping` | `ac_view_analytics` | delivery rate, provider performance, by wilaya |
+| GET | `/analytics/cod` | `ac_view_analytics` | the COD funnel over a window |
 
 ```bash
 curl http://localhost:8090/wp-json/algerian-commerce/v1/health
@@ -2009,6 +2020,137 @@ The three-state `MarketingResult` is why a bad payload is not retried forever: `
 timeout, a 5xx, a rate limit) and `rejected` (a malformed field, a refused token). An event retried
 hourly for a week burns the account's rate limit and buries the ones that would have worked.
 
+## Analytics (§63)
+
+Seven read-only endpoints over one set of window arguments, and **no migration** — `Schema::VERSION`
+stays 9.
+
+```
+GET /analytics/overview?range=30d
+GET /analytics/revenue?range=custom&date_from=2026-08-01&date_to=2026-08-16
+GET /analytics/{orders|products|customers|shipping|cod}?range=7d
+```
+
+`range` is `today`, `yesterday`, `7d`, `30d`, `90d` or `custom`; the three spans **include today**,
+because "the last 7 days" that hides this morning's orders is the one users report as a bug. A custom
+range needs both ends and covers at most **366 days** — an open `date_from` is the unbounded order-book
+scan §63 forbids, arriving by omission. Windows are the *shop's* calendar days: `AnalyticsRange`
+resolves them in the site timezone and hands the queries a UTC pair, because `date_created_gmt` stores
+UTC and an Algiers shop closes its day an hour before a UTC server does. The end bound is exclusive, so
+`yesterday` and `today` cannot both claim an order.
+
+### `ac_analytics_aggregates` was not built
+
+The table is planned in ARCHITECTURE §7 and §63 declined it, so the reason is on the record.
+
+WooCommerce Admin already ships this rollup — `wc_order_stats`, `wc_order_product_lookup`,
+`wc_customer_lookup` — filled by an importer scheduled through Action Scheduler. On this install those
+tables hold **0 rows against 912 orders**, with **1,426 `wc-admin_import_orders` jobs pending since
+2026-08-11** and no Action Scheduler action ever completed: nothing drives WP-Cron on a headless backend
+nobody browses. It is the argument §62b makes against "Meta for WooCommerce" and §62 against an SEO
+plugin — half of a WooCommerce feature that only runs when a page is rendered — and it is worse here,
+because the tables *exist*, so reading them returns zeros rather than failing. A dashboard would report
+a trading shop as having taken nothing.
+
+A rollup of our own inherits exactly that dependency, and a pre-computed number is a number that can be
+wrong and stay wrong — which is why `CustomerStatistics` is computed on read. So §63 uses bounded
+queries on WooCommerce's own `type_status_date` index plus `AnalyticsCache`, a response cache that holds
+an assembled payload for `AC_ANALYTICS_CACHE_TTL` seconds (60 by default, `0` off). A cache cannot drift
+further than its TTL, expires by itself and needs no scheduler; every response carries `generated_at`.
+
+The trigger for revisiting is named: `AnalyticsRepository::ordersByWilaya()`, the one query costing an
+index lookup per order rather than a single grouped pass. When a 90-day window there stops fitting a
+request, the rollup has earned its place — and it must ship with a driver that is **not** WP-Cron.
+
+### Aggregate SQL, and the one exception to the HPOS rule
+
+`Orders/OrderRepository` is still the only file allowed to touch an order *object*, and nothing in
+`Analytics/` loads a `WC_Order`. What reporting needs is `SUM`, `GROUP BY` and `ORDER BY`, and
+WooCommerce publishes no API for any of them — `wc_get_orders()` can count, which is how the COD funnel
+works, but it cannot sum or rank, and assembling revenue in PHP from `limit => -1` is the scan §63
+forbids.
+
+So `AnalyticsRepository` is the single file running aggregate SQL over the order tables, under four
+rules: no order object is loaded or returned; the table name comes from
+`OrderUtil::get_table_for_orders()` and is never a literal; **a legacy install is refused with 501
+rather than answered with zeros**, because the HPOS query against `wp_posts` returns no rows and no
+error; and every query is read-only, so the whole feature's SQL surface reviews in one sitting. The
+same file is the only place `ac_shipments` is read in aggregate — `ShipmentRepository` remains the only
+place a row is read or written *as a `Shipment`*.
+
+### Who is shown money
+
+`ac_view_analytics` is held by **every** role in PLAN §3, Support Agent included — an account whose job
+is `ac_manage_customers` and the telephone. Wiring turnover to it would hand the shop's revenue to every
+account in the building. The rule §63 adds, now in SECURITY.md → "Authorization":
+
+> Reporting may not disclose in aggregate what the caller cannot already read in detail.
+
+An order's total is readable through `GET /orders` with `ac_manage_orders`, so summing those totals for
+a caller who holds it discloses nothing new. Money therefore needs both capabilities; counts and rates
+need only `ac_view_analytics`. `/analytics/revenue` is money end to end and answers **403** without it;
+elsewhere the money block is simply absent and `meta.money_visible` plus `meta.money_requires` say why,
+so a client can disable a card rather than render an empty one.
+
+Super Admin, Admin, Manager and Order Manager see money; Product Manager, Marketing Manager and Support
+Agent see volumes and rates. **No new capability was invented** — §61's media gap set that precedent. A
+shop that wants its marketing manager to see revenue grants that account `ac_manage_orders`, which is a
+deliberate act with a visible consequence: they can then read the orders too.
+
+The cache key carries the money flag (`AnalyticsCache::key()`), or the cache would serve an
+administrator's figures to whoever asked next. That function is pure so the property is a unit test.
+
+### What this shop can honestly report
+
+PLAN §28 lists ten figures. Seven are real — `order_total`, `gross`, `net`, `collected`, `discounts`,
+`shipping_revenue`, `tax`, `refunds` and `average_order_value`. Three are named in `unavailable` with
+their reasons rather than emitted as zero:
+
+| Figure | Why not |
+| --- | --- |
+| `shipping_cost` | What a courier charges the shop is not recorded — migration 004 argues its own case for having no cost column. `shipping_revenue` is the separate figure of what the customer was charged. |
+| `payment_fees` | Migration 007 refused a fee column; Chargily's `fees`/`fees_on_merchant`/`fees_on_customer` land in per-transaction `metadata`, and a second gateway would shape them differently. |
+| `margin` | WooCommerce has no cost-of-goods field, and PLAN §28 says to calculate profit only where reliable cost data exists. |
+
+A dashboard rendering "Margin: 0.00 DZD" has told the shop something false; one rendering nothing, with
+a reason, has not.
+
+`gross` counts `processing`, `on-hold`, `completed` and `refunded` — WooCommerce Analytics' own default
+exclusion set, so a shop's other tools agree with this one. **`refunded` is counted on purpose:** a
+fully refunded order made a sale and gave it back, so it belongs in gross with its refund subtracted,
+netting to zero. Excluding the order while still counting the refund nets to *minus* the sale, and a
+shop that refunded everything would report negative revenue it never took. Refunds are keyed to the
+**parent order's** date, because `net = gross − refunds` is only a true sentence when both halves
+describe the same orders. `collected` is `completed` alone — for a COD shop the money arrives when the
+parcel does, which is the definition `CustomerStatistics` already uses.
+
+### Counts are of every order; only money has a currency
+
+WooCommerce records the currency **per order**, and this install holds 890 orders in `USD` from before
+anyone set `DZD`. Filtering whole queries to the store currency put "22 orders placed" on a dashboard
+beside a COD funnel reporting 615. So the currency lives in a `CASE` rather than a `WHERE`: an order
+count is a fact about the shop's activity, a sum belongs to one currency, and `excluded_currencies`
+reports what was left out instead of quietly shrinking the total. Money is summed as **integer minor
+units** — never floats, never bcmath, which is an extension the two images in this stack disagree about.
+
+### Revenue by wilaya comes off the shipment
+
+`ShipmentInput` already refuses to fuzzy-match "Ouled Fayet" into a commune: an order's `state` and
+`city` are free text in two languages, and getting it wrong sends a parcel to the wrong daira. A report
+must not make the guess the shipping module declined. The canonical `wilaya_id` is on the parcel,
+because an admin picked it from the §51 dropdowns, so orders with no shipment are reported as
+`unattributed` with the reason attached. A map with a stated gap beats a map that is quietly wrong.
+Where an order has been shipped twice — a re-send after a failed delivery, which migration 006 allows —
+the latest parcel decides, so a total is never counted once per parcel.
+
+### Delegation, not a second definition
+
+`/analytics/cod` calls `CodService` and the low-stock count calls `InventoryRepository`. Both already
+exist and are already served; a second definition of "confirmation rate" living here would eventually
+disagree with the first, and the shop would have two numbers and no way to tell which was right. The
+dependency runs one way — neither module has heard of analytics — and `tests/Api/analytics.php` asserts
+that `/analytics/cod` and `/cod/statistics` still agree.
+
 ## Security review (§55)
 
 §55 is a review rather than a feature: walk everything that ships — `Auth/`, `Security/`, `Permissions/`,
@@ -2309,6 +2451,10 @@ belongs to *one* client must never end up in code.
 `POST /media`. The size cap is only ever the **lower** of that value and PHP's `upload_max_filesize`,
 so raising it means raising `docker/php-uploads.ini` too — otherwise the web server refuses the body
 before this plugin can say anything about it.
+
+`AC_ANALYTICS_CACHE_TTL` (default 60, `0` to disable) is how long an analytics response may be reused.
+A value that is not a number falls back to the default rather than to zero: a typo in `.env` should not
+quietly turn a performance feature off. It is a cache and never a rollup — see "Analytics (§63)".
 
 **A variable reaches the plugin only if `compose.yaml` passes it into the container**, in both the
 `wordpress` and `wpcli` services. `Config` reads `getenv()`, and the containers get nothing by

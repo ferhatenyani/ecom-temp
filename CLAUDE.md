@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53 and §55–§62b are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53 and §55–§63 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
-ZR Express, the payment abstraction, Chargily, the CMS, media, SEO and the marketing event layer — and its
+ZR Express, the payment abstraction, Chargily, the CMS, media, SEO, the marketing event layer and analytics —
+and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -15,11 +16,57 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53 and §55–§62b are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53 and §55–§63 are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
 shipping rules, the Yalidine and ZR Express adapters, the security review, the payment abstraction and
-Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS and media endpoints, and
-§62's SEO and §62b's marketing event layer. **Next up is §63, analytics.**
+Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS and media endpoints,
+§62's SEO, §62b's marketing event layer and §63's analytics. **Next up is §64, import/export.**
+
+§63 is `src/Analytics/` — seven read-only endpoints (`overview`, `revenue`, `orders`, `products`,
+`customers`, `shipping`, `cod`) and **no migration**; `Schema::VERSION` is still 9.
+
+**`ac_analytics_aggregates` was deliberately not built, and the evidence is the argument.** WooCommerce
+Admin already ships that rollup (`wc_order_stats`, `wc_order_product_lookup`), filled by an Action
+Scheduler importer — and on this install those tables hold **0 rows against 912 orders**, with **1,426
+`wc-admin_import_orders` jobs pending since 2026-08-11** and no scheduled action ever completed, because
+nothing drives WP-Cron on a headless backend nobody browses. That is §62b's "Meta for WooCommerce"
+argument a third time, and worse: the tables *exist*, so reading them returns zeros rather than failing.
+Our own rollup inherits the same missing driver. So §63 is bounded queries on WooCommerce's
+`type_status_date` index, a window capped at **366 days**, and `AnalyticsCache` — a response cache
+(`AC_ANALYTICS_CACHE_TTL`, 60s, `0` off) that cannot drift past its TTL and needs no scheduler. The
+trigger for revisiting is named: `AnalyticsRepository::ordersByWilaya()`, and any rollup must ship with a
+driver that is **not** WP-Cron.
+
+**`AnalyticsRepository` is the one exception to "OrderRepository is the only file that touches an
+order", and it is narrow.** Reporting needs `SUM`/`GROUP BY` and WooCommerce publishes no API for either
+(`wc_get_orders()` counts, which is how the COD funnel works; it cannot sum or rank). Four rules bound
+it: no `WC_Order` is ever loaded or returned, the table name comes from
+`OrderUtil::get_table_for_orders()` and never a literal, **a legacy install answers 501 rather than
+zeros** (the HPOS query against `wp_posts` returns no rows and no error), and every query is read-only.
+It is also the only place `ac_shipments` is read *in aggregate*; `ShipmentRepository` is still the only
+place a row is read or written as a `Shipment`.
+
+**`ac_view_analytics` was already too wide** — every role in PLAN §3 holds it, Support Agent included.
+The rule, now in `docs/SECURITY.md` → "Authorization": **reporting may not disclose in aggregate what the
+caller cannot already read in detail.** Money additionally requires `ac_manage_orders`, the capability
+that already reads an order's total; counts and rates need only `ac_view_analytics`. `/analytics/revenue`
+answers 403 without it, elsewhere the money block is absent and `meta.money_visible` says so. **No new
+capability was invented** — §61's media gap set that precedent. The cache key carries the money flag, or
+the cache serves an administrator's figures to whoever asks next.
+
+Three things §63 settled about the numbers themselves. **Counts are of every order; only sums have a
+currency** — WooCommerce records it per order and this install holds 890 `USD` orders from before anyone
+set `DZD`, so filtering whole queries put "22 orders placed" beside a COD funnel reporting 615; the
+currency lives in a `CASE`, and `excluded_currencies` reports the rest. **`refunded` counts as a revenue
+status**: a fully refunded order belongs in gross with its refund subtracted, netting to zero, where
+excluding the order but counting the refund nets to *minus* the sale — and refunds are keyed to the
+parent order's date, because `net = gross − refunds` is only true of one set of orders. **A wilaya comes
+off the shipment, never the address**, because `ShipmentInput` already refuses to fuzzy-match a commune
+name and a report must not make the guess the shipping module declined; unshipped orders are reported as
+`unattributed` with the reason attached. Of PLAN §28's ten figures, **three are named as unavailable
+rather than emitted as zero** — shipping cost (migration 004 has no cost column), payment fees
+(migration 007 has none either) and margin (no cost of goods exists, and §28 says to calculate profit
+only where reliable data does).
 
 §62b is `src/Marketing/` plus `integrations/Meta/`, and `ac_marketing_events` is migration 009
 (`Schema::VERSION` is 9). The abstraction is §58's unchanged — `MarketingProviderInterface`,
@@ -265,11 +312,11 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
+`Customers/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`, `Analytics/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
 `tests/`, plus `integrations/ZRExpress/`, `integrations/Chargily/` and `integrations/Meta/`. Still to come:
-`Analytics/`, `Notifications/`, …
+`Notifications/`, `ImportExport/`, …
 
 **The bundled PSR-4 autoloader is registered for `src/` behind Composer, not instead of it.** Composer runs
 with `optimize-autoloader`, so it dumps a *classmap* — a snapshot of the files present when somebody last ran
@@ -374,7 +421,7 @@ those keys with blank values. `WP_PORT` is honoured — `compose.yaml` publishes
 `wordpress` and `wpcli` services — `Config` reads `getenv()`, and the containers get nothing by default.
 §61 found the whole `AC_RATE_LIMIT_*` group in exactly that state — documented in `.env.example`, read by
 `RateLimiter`, and passed through by nothing — and added them alongside `AC_RATE_LIMIT_UPLOADS` and
-`AC_MEDIA_MAX_BYTES`.
+`AC_MEDIA_MAX_BYTES`. `AC_ANALYTICS_CACHE_TTL` (§63) went in the same way.
 
 `scripts/test.sh` runs every stage — `syntax`, `unit`, `rest` (in-process, `tests/Api/`) and `http`
 (`scripts/test-api.sh`). Pass a stage name to run just one. The `http` stage is not redundant:

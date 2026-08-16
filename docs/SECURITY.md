@@ -68,6 +68,20 @@ Use WordPress's own security APIs (nonces, capabilities, `sanitize_*`, `esc_*`, 
 - Capability checks use named capabilities, not role-name comparisons.
 - Never rely on the frontend hiding a control.
 - Privileged users require 2FA.
+- **Reporting may not disclose in aggregate what the caller cannot already read in detail.** A capability
+  that grants a *summary* of a resource is not thereby a capability to read the resource, and the reverse
+  trap is the one that bites: `ac_view_analytics` is held by every role in PLAN §3, Support Agent included,
+  so wiring revenue to it alone would hand the shop's turnover to an account that cannot open a single
+  order. §63 resolves it by requiring `ac_manage_orders` for every money figure — the capability that
+  already reads an order's total through `GET /orders`, so summing those totals for a caller who holds it
+  discloses nothing new. Counts and rates need only `ac_view_analytics`. **No new capability was invented**
+  to draw the line; where PLAN §3's vocabulary genuinely has no answer, name the gap rather than widen the
+  list (§61's media capability is the worked example). A shop that wants a wider audience for revenue grants
+  that account `ac_manage_orders`, which is a deliberate act with a visible consequence.
+- **A response cache keyed without the caller's privileges is an authorization bug.** The same request from
+  two callers can legitimately produce two payloads; if the key does not distinguish them, the cache serves
+  the privileged one to whoever asks next. `Analytics\AnalyticsCache::key()` takes the money flag for exactly
+  this reason and is pure so the property is a unit test.
 
 ## Secrets
 

@@ -75,7 +75,8 @@ src/
   Http/          the transport seam an adapter is injected with, so a provider
                  client is testable against recorded responses
   Payments/      PaymentService + PaymentProviderInterface
-  Analytics/     aggregation and reporting
+  Analytics/     read-only aggregation and reporting; the one place aggregate
+                 SQL over WooCommerce's order tables lives (see §7)
   CMS/  Marketing/  Notifications/  Settings/  ImportExport/
   Audit/         audit event recording
   Security/      validation, sanitization, rate limiting, webhook verification
@@ -94,6 +95,11 @@ orders, while an order holds a `customer_id` — an integer — and never a cust
 domains need the same value object rather than one needing the other, it belongs in `Commerce/`;
 `AddressInput` lives there because orders and customers store the identical field set and duplicating
 the validation would let the two drift.
+
+`Analytics/` reads `COD/` and `Inventory/` on the same terms: the COD funnel and the low-stock count
+already exist and are already served, so the dashboard delegates rather than recomputing. Two
+definitions of "confirmation rate" would eventually disagree, and the shop would have two numbers and
+no way to tell which was right. Neither module has heard of analytics.
 
 ## 4. Provider abstraction
 
@@ -235,6 +241,21 @@ declaration is a promise with a concrete meaning: orders are reached only throug
 returns nothing on an HPOS one, which is the worst possible failure shape. `Orders/OrderRepository`
 is the only file allowed to touch an order object at all.
 
+**There is exactly one exception, and it is narrow: `Analytics/AnalyticsRepository`** (§63). Reporting
+needs `SUM`, `GROUP BY` and `ORDER BY` over a window, and WooCommerce publishes no API for any of
+them — `wc_get_orders()` can count, which is why `COD/CodRepository` builds its funnel out of counts,
+but it cannot sum or rank. The alternative is loading every order in the window into PHP, which is the
+order-book scan §63 forbids in so many words. The exception is bounded by four rules, all enforced in
+that one file: **no order object is ever loaded** and none is returned, so nothing in `Analytics/` sees
+a `WC_Order`; **the table name is never hard-coded** — it comes from
+`Automattic\WooCommerce\Utilities\OrderUtil::get_table_for_orders()`, WooCommerce's own public utility
+for the question; **a legacy install is refused, not guessed at** — `custom_orders_table_usage_is_enabled()`
+is checked and a false answers 501, because the HPOS query against `wp_posts` returns zero rows and no
+error, which is the silent-wrong-number shape this whole rule exists to prevent; and every query is
+read-only, so the whole feature's SQL surface is reviewable in one sitting. The same file is also the
+only place `ac_shipments` is read in aggregate — `Shipping/ShipmentRepository` remains the only place a
+row is read or written *as a `Shipment`*.
+
 Custom tables (prefix `{$wpdb->prefix}ac_`) only for genuinely custom, high-volume domains. **CMS content
 and media are the worked example of the other side of that rule** (§61): banners and FAQs are post types,
 menus are nav menus, uploads are attachments, and the homepage is a single option holding one document —
@@ -250,9 +271,38 @@ a parallel copy of it would have to be kept in step with the editor forever.
 | `ac_webhook_events` | received event ids — the idempotency ledger |
 | `ac_marketing_events` | the conversion queue **and** its claim — one table, because a claim and a job that can disagree are a conversion sent twice or never |
 | `ac_notification_events` | queued/sent notifications |
-| `ac_analytics_aggregates` | pre-computed metrics; dashboards must not scan all orders per request |
+| `ac_analytics_aggregates` | **deliberately not built at §63** — see below |
 | `ac_geo_wilayas` / `ac_geo_communes` | canonical Algerian geography — no provider data in either |
 | `ac_geo_provider_destinations` | per-provider destination ids, deliberately a separate table: providers renumber on their own schedule, and that churn must not touch the canonical geography or need a schema change per provider |
+
+### `ac_analytics_aggregates`, and why §63 did not build it
+
+§63 shipped seven analytics endpoints and **no migration**. The reasoning is on the record because the
+table was planned here and skipping it is the surprising choice.
+
+WooCommerce already ships the rollup this table would duplicate. WooCommerce Admin maintains
+`wc_order_stats`, `wc_order_product_lookup` and `wc_customer_lookup` — pre-computed analytics tables,
+filled by an importer scheduled through Action Scheduler. On this install those tables hold **0 rows
+against 912 orders**, with **1,426 `wc-admin_import_orders` jobs pending since 2026-08-11** and no
+Action Scheduler action ever completed: nothing drives WP-Cron on a headless backend that nobody browses.
+That is §61's and §62b's argument arriving a third time — half of a WooCommerce feature that only runs
+when a page is rendered — and it is worse here, because the tables *exist*, so code reading them returns
+zeros rather than failing. A dashboard would report a trading shop as having taken nothing.
+
+Our own rollup would inherit the same dependency: a pre-computed number needs something to re-compute it,
+and the scheduler in this stack demonstrably does not run. It is also a number that can be wrong and stay
+wrong, which is why `Customers/CustomerStatistics` is computed on read.
+
+So §63 uses **bounded aggregate queries plus a short response cache**. Every window is capped at
+`AnalyticsRange::MAX_DAYS` (366), the order filter rides WooCommerce's own `type_status_date` index, and
+`Analytics/AnalyticsCache` holds an assembled payload for `AC_ANALYTICS_CACHE_TTL` seconds (60 by default,
+0 to disable). A cache cannot drift further than its TTL, expires by itself, and needs no scheduler.
+
+**When the table earns its place**, and what it will need: the trigger is
+`AnalyticsRepository::ordersByWilaya()`, the one query that costs an index lookup per order in the window
+rather than a single grouped pass. When a 90-day window there stops fitting a request budget, that is the
+signal — and the rollup must ship with a driver that is *not* WP-Cron. A system cron calling
+`wp algerian-commerce` is the shape that works here, for the reason above.
 
 Schema changes ship as numbered migrations (`migrations/001_create_audit_logs.php`, …) gated on
 `AC_DB_VERSION`, which must equal the highest migration on disk. They run on plugin activation and

@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace AlgerianCommerce\Core;
 
+use AlgerianCommerce\Analytics\AnalyticsCache;
+use AlgerianCommerce\Analytics\AnalyticsController;
+use AlgerianCommerce\Analytics\AnalyticsRepository;
+use AlgerianCommerce\Analytics\AnalyticsService;
 use AlgerianCommerce\API\AuditLogController;
 use AlgerianCommerce\API\Cors;
 use AlgerianCommerce\API\HealthController;
@@ -196,6 +200,8 @@ final class Plugin
     private ?MarketingEventRepository $marketingEventRepository = null;
     private ?MarketingService $marketingService = null;
     private ?MetaSettings $metaSettings = null;
+    private ?AnalyticsRepository $analyticsRepository = null;
+    private ?AnalyticsService $analyticsService = null;
     private bool $booted = false;
 
     private function __construct()
@@ -413,7 +419,58 @@ final class Plugin
             new CmsController($this->logger(), $this->cmsService()),
             new MediaController($this->logger(), $this->mediaService()),
             new MarketingController($this->logger(), $this->marketingService()),
+            new AnalyticsController($this->logger(), $this->analyticsService()),
         ]);
+    }
+
+    /**
+     * The only place aggregate SQL over the order tables is constructed —
+     * roadmap §63. See `AnalyticsRepository` for why that exception to
+     * docs/ARCHITECTURE.md §7's "OrderRepository is the only file that touches
+     * an order" is narrow enough to be safe.
+     */
+    public function analyticsRepository(): AnalyticsRepository
+    {
+        global $wpdb;
+
+        return $this->analyticsRepository ??= new AnalyticsRepository($wpdb);
+    }
+
+    /**
+     * Takes `CodService` and `InventoryRepository`: the COD funnel and the
+     * low-stock count already exist, and a dashboard that recomputed either
+     * would eventually disagree with the endpoint that owns it. The dependency
+     * runs one way — neither module has heard of analytics.
+     */
+    public function analyticsService(): AnalyticsService
+    {
+        return $this->analyticsService ??= new AnalyticsService(
+            $this->analyticsRepository(),
+            new AnalyticsCache($this->analyticsCacheTtl()),
+            $this->codService(),
+            $this->inventoryRepository(),
+            $this->logger(),
+            VERSION
+        );
+    }
+
+    /**
+     * How long an analytics response may be reused, in seconds.
+     *
+     * `0` turns the cache off, which is what the test suite runs with so its
+     * assertions see the shop as it is rather than as it was a minute ago.
+     * A value that is not a number falls back to the default rather than to
+     * zero: a typo in `.env` should not quietly turn a performance feature off.
+     */
+    private function analyticsCacheTtl(): int
+    {
+        $configured = $this->config()->get('AC_ANALYTICS_CACHE_TTL');
+
+        if ($configured === null || !is_numeric($configured)) {
+            return AnalyticsCache::DEFAULT_TTL;
+        }
+
+        return max(0, (int) $configured);
     }
 
     /**
