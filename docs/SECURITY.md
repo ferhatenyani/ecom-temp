@@ -188,6 +188,28 @@ rule as "payment status is verified server-side, never believed from a callback"
   or the body alone), which is stable across a genuine retransmission and distinct between real events.
 - Duplicate delivery must never duplicate a payment, shipment, order transition, or notification.
 
+### A verifier written from a specification is not a verified verifier
+
+**No courier webhook has ever been received.** `ac_webhook_events` — the idempotency ledger every verified
+event writes to — holds rows for `chargily` and the test double only, and neither `YALIDINE_WEBHOOK_SECRET`
+nor `ZR_EXPRESS_WEBHOOK_SECRET` is set, so both routes currently 404 by the rule above. Every payload in
+`tests/Unit/CourierWebhookTest` and `tests/Api/shipping-webhooks.php` is *constructed* from published
+documentation: the suites prove each verifier matches the scheme as written, and cannot prove the sender
+implements that scheme. The gap is marked at both call sites —
+`grep -rn ASSUMPTION integrations/Yalidine integrations/ZRExpress`.
+
+Do not read a provider's "verified against the live API on <date>" note as covering its webhooks; those runs
+exercised the outbound API. The two failure modes differ and both are quiet:
+
+- A **wrong signature scheme** (ZR Express) refuses genuine events with 401 — the shop sees silence, not an
+  error, because a courier retrying into a 401 reports nothing to the merchant.
+- A **wrong field name or location** (Yalidine's `security_token`, documented as a body field) does the same.
+
+Neither is an outage here, because a verified courier event is only ever a hint to re-fetch and the hourly
+poller keeps parcels current regardless — which is the design decision that makes this a documented gap
+rather than a blocker. **The ledger is the standing check:** a row whose `provider` is `yalidine` or
+`zr-express` is proof one has genuinely arrived, and until then the markers stay.
+
 ### What an unverified request gets
 
 - **401 `webhook_unverified`**, in the standard envelope, saying nothing about *which* check failed. A
