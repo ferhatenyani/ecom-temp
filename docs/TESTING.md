@@ -153,8 +153,14 @@ testing a route that does not exist.
 What *is* reachable is the other half of the same bug class. WordPress keeps posts, products, orders,
 attachments and refunds in one id space, so `GET /media/{id}` with a product id is a real request that a
 repository reading `get_post()` without a type check would answer. All thirteen such crossings are
-asserted to 404 in `tests/Api/security.php`. **When §44's customer session lands, the owner-scoped tests
-belong beside those.**
+asserted to 404 in `tests/Api/security.php`.
+
+**The owner-scoped tests belong beside those, and they now have a step to belong to: roadmap 32c
+(§59c), customer accounts and sessions.** Order history is where the first real IDOR lands — a shopper
+editing `/orders/123` to `/orders/124`. Write them in the shape "customer A is refused customer B's
+order **and** customer A is served their own": a refusal on its own proves only that the route is
+broken, which is this document's standing rule about controls applied to the case that will most need
+it.
 
 #### Privilege escalation — the sweep is the new part
 
