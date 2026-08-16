@@ -92,6 +92,8 @@ services:
       # the cache; the test suite runs with it off so assertions see the shop
       # as it is. It is a cache, never a rollup — roadmap §63.
       AC_ANALYTICS_CACHE_TTL: ${AC_ANALYTICS_CACHE_TTL:-}
+      AC_ADMIN_EMAIL: ${AC_ADMIN_EMAIL:-}
+      AC_MAIL_FROM: ${AC_MAIL_FROM:-}
       # Provider credentials and feature flags. Config reads getenv(), so a
       # variable in .env reaches the plugin only if it is listed here — an
       # adapter whose keys are not passed through simply never registers, and
@@ -170,6 +172,8 @@ services:
       # the cache; the test suite runs with it off so assertions see the shop
       # as it is. It is a cache, never a rollup — roadmap §63.
       AC_ANALYTICS_CACHE_TTL: ${AC_ANALYTICS_CACHE_TTL:-}
+      AC_ADMIN_EMAIL: ${AC_ADMIN_EMAIL:-}
+      AC_MAIL_FROM: ${AC_MAIL_FROM:-}
       # Provider credentials and feature flags. Config reads getenv(), so a
       # variable in .env reaches the plugin only if it is listed here — an
       # adapter whose keys are not passed through simply never registers, and

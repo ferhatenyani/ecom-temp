@@ -55,13 +55,37 @@ final class ShipmentRepository
         // provider, provider_shipment_id, tracking_number, status,
         // live_order_id, metadata, updated_at — in toRow() order, minus the two
         // unset above.
-        return $this->wpdb->update(
+        $updated = $this->wpdb->update(
             $this->table(),
             $row,
             ['id' => $shipment->id],
             ['%s', '%s', '%s', '%s', '%d', '%s', '%s'],
             ['%d']
         ) !== false;
+
+        if ($updated) {
+            /**
+             * A parcel was written — roadmap step 34.
+             *
+             * Emitted here rather than in `ShippingService` because there are
+             * two write paths and only one of them goes through the service:
+             * an admin changing a status, and `ShipmentPoller` recording what
+             * the courier said. The second is the one that matters most, since
+             * "delivered" almost always arrives from a poll.
+             *
+             * Fired on every successful write rather than only on a change,
+             * because this class does not know the previous status and reading
+             * it back to find out would add a query to every save. Duplicate
+             * suppression is `ac_notifications`' unique claim
+             * (`channel` + `event:shipment_id`), which is a stronger guarantee
+             * than a comparison here would be — see migration 010.
+             *
+             * @param Shipment $shipment The parcel as it now stands.
+             */
+            do_action('ac_shipment_saved', $shipment);
+        }
+
+        return $updated;
     }
 
     /**

@@ -878,6 +878,105 @@ Three things cost real debugging time here:
 - **`wc_get_orders()` returns refunds by default.** `shop_order_refund` is in the default `type`, and
   `WC_Order_Refund` does not extend `WC_Order`. Ask for `'type' => 'shop_order'` explicitly.
 
+## Coupons (§21, step 33)
+
+```bash
+GET/POST /coupons            GET/PATCH/DELETE /coupons/{id}
+```
+
+No migration and no table: coupons are `shop_coupon` posts. HPOS moved *orders* to custom tables and
+left these where they were, so `WP_Query` is WooCommerce's current storage for them — the "never
+`get_post()`" rule is about orders specifically.
+
+**This step was owed.** §59b shipped `POST /cart/coupons`, so a shopper could apply a discount the API
+had no way to create; a shop had to open wp-admin. `tests/Api/coupons.php` closes the loop — it creates
+a coupon through the API and asserts it takes 500 DZD off a §59b cart.
+
+`ac_manage_coupons` already existed (Admin, Manager, Marketing Manager) — **no new capability**. The
+admin/shopper split matters: a public endpoint that *listed* coupons would hand every visitor the shop's
+discount schedule, including codes meant for one customer's apology. Applying a code you know is a
+different act from discovering which codes exist.
+
+**PLAN §21 asks for ten things and WooCommerce supplies nine.** "Maximum discount where supported" is the
+tenth, and it is not supported: `maximum_amount` caps the *cart a coupon may be used against*, not the
+discount produced. A 50% coupon on a 100,000 DZD cart discounts 50,000 and nothing stops it. So
+`maximum_discount` is **refused by name with the reason**, and `maximum_amount` is exposed under its real
+meaning — a shop owner must not set one believing they set the other.
+
+### Two round-trip bugs, both found on the suite's first run
+
+Both the same shape: **the read body could not be written back.**
+
+- `CouponPresenter` emitted `date_expires` as ISO 8601 while `CouponInput` demanded `Y-m-d`.
+- WooCommerce stores an absent threshold as the string `'0'`. The presenter published that as `"0.00"`
+  and the input compared it as a real minimum, so every coupon with a minimum spend and no maximum failed
+  `min ≤ max` against a maximum that did not exist.
+
+A client PATCHing back a body this API had just produced got a 400 about two fields it never touched.
+Thresholds are now `null` when absent — the treatment `usage_limit` already had — and the input accepts
+either date shape.
+
+## Notifications (§29, §30, step 34)
+
+Migration **010**. No REST routes: §29 asks for an abstraction, not an endpoint.
+
+```bash
+wp algerian-commerce send-notifications [--limit=<n>] [--channel=<name>] [--summary]
+```
+
+```text
+NotificationChannelInterface  →  EmailChannel
+Plugin::notificationChannels()   the only place a channel's configuration is read
+ac_notifications                 the claim and the queue, one table
+```
+
+**Nothing is sent on a request path.** §62b settled this for marketing conversions and it is stronger
+here: a confirmation is queued while an order is saved, so an SMTP server that takes thirty seconds puts
+thirty seconds on a checkout, and one that is down fails an order that has already taken money.
+
+**The claim and the queue are one table.** `UNIQUE (channel, dedupe_key)` makes "this event, on this
+subject, once" a database guarantee — which is why `NotificationSubscriber` filters no hooks at all.
+`woocommerce_order_status_changed` fires on every transition and `ac_shipment_saved` on every write;
+eight firings produce one message, without a comparison that has to be right in eight places.
+
+**The message is frozen when the row is written.** An order refunded between queueing and sending must
+still deliver the confirmation that was true when it was placed, or a customer gets a receipt describing
+a state they never saw. The suite changes an order's total after queueing and asserts the message does
+not follow.
+
+**`ac_shipment_saved` is the one hook this project added**, in `ShipmentRepository::update()` rather than
+`ShippingService`, because there are two write paths and only one goes through the service: an admin
+changing a status, and `ShipmentPoller` recording what the courier said. The second is the one that
+matters — "delivered" almost always arrives from a poll.
+
+**The CLI command is the drive; the cron is a convenience.** Nothing runs WP-Cron on a headless backend
+nobody browses (§63 refused a rollup table over exactly that). A deployment that wants its customers to
+receive mail points a system scheduler at `send-notifications`.
+
+Three behaviours worth knowing:
+
+- **Low stock claims once and is re-armed on restock.** Deduplication stops an hourly email about a line
+  that has been low all week; `woocommerce_product_set_stock` clears the claim once the product is back
+  above its threshold, so the next fall warns again. WooCommerce provides the first half, not the second.
+- **A COD order is not a paid order.** `processing` is reached without payment for cash on delivery, so
+  the payment message is gated on `$order->is_paid()` — or every COD customer is told their money arrived.
+- **A permanent failure is not retried.** A malformed address is `rejected` and parked; a timeout is
+  `failed` and retried up to `MAX_ATTEMPTS`, so one dead row does not hold up the queue behind it.
+
+### Deferred, with reasons
+
+**Password reset by email.** §30 lists it and it does not belong in this queue: a five-minute drain is
+right for a shipment update and wrong for a reset, and sending it inline puts the SMTP timeout back on a
+user-facing request. It needs a synchronous mail path this project does not have.
+
+**SMS, WhatsApp, push, in-app.** §29 names them as *potential* channels and says to activate only what is
+configured; none has credentials here. Each is one class implementing `NotificationChannelInterface` plus
+one `add()`.
+
+**No successful send is asserted anywhere.** This stack has no SMTP server: `wp_mail()` fails with
+`sendmail: can't connect`, the row stays pending with the reason in `last_error`, and that is the queue
+working correctly. A test that needed a mail server would be a test nobody could run.
+
 ## Shopper accounts (§59c)
 
 ```bash
