@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53 and §55–§63 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53 and §55–§64 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
-ZR Express, the payment abstraction, Chargily, the CMS, media, SEO, the marketing event layer and analytics —
-and its
+ZR Express, the payment abstraction, Chargily, the CMS, media, SEO, the marketing event layer, analytics and
+import/export — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -16,11 +16,12 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53 and §55–§63 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53 and §55–§64 are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
 shipping rules, the Yalidine and ZR Express adapters, the security review, the payment abstraction and
 Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS and media endpoints,
-§62's SEO, §62b's marketing event layer and §63's analytics. **Next up is §64, import/export.**
+§62's SEO, §62b's marketing event layer, §63's analytics and §64's import/export. **Next up is §65,
+the testing strategy.**
 
 §63 is `src/Analytics/` — seven read-only endpoints (`overview`, `revenue`, `orders`, `products`,
 `customers`, `shipping`, `cod`) and **no migration**; `Schema::VERSION` is still 9.
@@ -99,6 +100,41 @@ Graph API **v26.0** is pinned in `MetaSettings` per §68. Everything came from M
 2026-08-16 per §54, and **nothing has run against a live dataset** — no ad account, which is §56's
 situation. `grep -rn ASSUMPTION integrations/Meta src/Marketing`. When a token exists, set
 `test_event_code` in `ac_meta_settings` and watch Test Events.
+
+§64 is `src/ImportExport/` — six endpoints, **no migration** (`Schema::VERSION` is still 9): two imports
+(`/import/products`, `/import/inventory`) and four exports (products, inventory, orders, customers).
+
+**The pipeline is stateless and `dry_run` defaults to true.** §64's "confirm" step looks like it needs a
+job held between two requests; instead `dry_run: true` returns the preview and the error report and
+`dry_run: false` applies the same file. There is no `ac_import_jobs` table and **no uploaded file is
+retained** — SECURITY.md's "File uploads" rule says accepting a file is the most dangerous thing this API
+does, and one kept for later is that danger with a longer fuse. The trigger for revisiting is named: when a
+catalogue outgrows `CsvReader::MAX_ROWS` and needs batching, the table earns its place. Defaulting
+`dry_run` to true is the safety property — a client that forgets the flag previews, never writes.
+
+**WooCommerce's CSV engine is reused, and this is deliberately *not* another §61.** The SEO plugin, the
+pixel plugin and wc-admin's analytics tables were all rejected because the half that runs is a rendering or
+scheduler concern that never executes headless. The CSV engine is plain PHP that reads a file and calls the
+product CRUD; only its *loader* is admin-gated. Measured 2026-08-16: with `is_admin()` false, five
+`require_once`s (`WooCsv`) produced a valid 40-column export. Forking forty columns of variations,
+attributes and meta would break the "never fork their data models" rule and produce a file no other
+WooCommerce tool could read.
+
+**A CSV is a document a spreadsheet will run.** A cell starting `=`, `+`, `-`, `@`, tab or CR is a formula,
+and the attacker needs one product name. `CsvWriter` escapes exactly as `WC_CSV_Exporter::escape_data()`
+does — products use WooCommerce's exporter and everything else uses ours, so `tests/Api/import-export.php`
+asserts the two still agree after a WooCommerce upgrade.
+
+Three things §64 found. **`update_existing` is a mode switch whose name reads as a modifier**: `false`
+creates new SKUs and skips existing ones, `true` updates existing ones and skips new ones, and *neither*
+does both — so the API says `mode=create|update`. **A product dry run is a parse and a lookup, not a
+rehearsal**, because `WC_Product_CSV_Importer` has no dry-run mode; it runs WooCommerce's own parser and
+says so in `preview_only` rather than letting someone read an optimistic report as a promise. **An export
+is not a JSON resource**: `API/FileDownload` is the one deliberate exception to the envelope, bounded to
+2xx bodies on opt-in routes with a filename that is ours — and since `rest_do_request()` never runs
+`rest_pre_serve_request`, the download headers are checked in `scripts/test-api.sh`, as media uploads are.
+**Every imported stock change goes through `InventoryService`**, so two thousand rows write two thousand
+ledger movements on purpose: an import must not be a back door around `ac_inventory_movements`.
 
 §62 is `src/SEO/`, and it is **a block on the payloads that already exist** rather than an endpoint:
 `seo` appears on `GET /products/{id}` and `GET /cms/pages/{path}`, and is written through the
@@ -323,11 +359,12 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`, `Analytics/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
+`Customers/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`, `Analytics/`,
+`ImportExport/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
 `tests/`, plus `integrations/ZRExpress/`, `integrations/Chargily/` and `integrations/Meta/`. Still to come:
-`Notifications/`, `ImportExport/`, …
+`Notifications/`, `Settings/`, …
 
 **The bundled PSR-4 autoloader is registered for `src/` behind Composer, not instead of it.** Composer runs
 with `optimize-autoloader`, so it dumps a *classmap* — a snapshot of the files present when somebody last ran

@@ -4309,6 +4309,108 @@ process
 report
 ```
 
+## What was built
+
+`src/ImportExport/` — six endpoints, **no migration and no table**
+(`Schema::VERSION` stays 9):
+
+``` text
+POST /import/products     dry_run (default true), mode=create|update
+POST /import/inventory    dry_run (default true)
+GET  /export/products     WooCommerce's own 40-column format
+GET  /export/inventory    the columns /import/inventory reads back
+GET  /export/orders       one row per order, with date and status filters
+GET  /export/customers
+```
+
+``` text
+ImportExport/CsvWriter            RFC 4180 + formula escaping
+ImportExport/CsvReader            header mapping, BOM, caps, per-row lines
+ImportExport/InventoryRow         one stock-take row, validated
+ImportExport/ImportReport         counts, bounded errors, preview
+ImportExport/WooCsv               loads WooCommerce's CSV engine
+ImportExport/ProductCsvExporter   one method's visibility widened
+ImportExport/ImportService        the two imports
+ImportExport/ExportService        the four exports
+API/FileDownload                  the one exception to the envelope
+```
+
+## The pipeline is stateless, and the trigger is named
+
+"Confirm" looks like it needs the server to hold a parsed job between two
+requests. It does not: `dry_run: true` returns the preview and the error
+report, `dry_run: false` applies the same file. **`dry_run` defaults to true**,
+so a client that forgets the flag gets a preview and never a write.
+
+No `ac_import_jobs` table, and no uploaded file retained between requests —
+which matters because SECURITY.md → "File uploads" opens by observing that
+accepting a file is the most dangerous thing this API does, and a file kept for
+later is that danger with a longer fuse. The cost is one extra upload from a
+client that already holds the file.
+
+The point at which this stops being right is stated rather than left to be
+discovered: when a catalogue outgrows `CsvReader::MAX_ROWS` and needs batching,
+there has to be somewhere to record "three thousand rows in", and the table
+earns its place. It is the same shape of decision §63 made about
+`ac_analytics_aggregates`.
+
+## WooCommerce's CSV engine, and why this is not another §61
+
+§61 rejected an SEO plugin, §62b a pixel plugin and §63 wc-admin's analytics
+tables, all for the same reason: the half that runs is a rendering or scheduler
+concern that never executes headless. **The CSV engine is none of those.** It is
+plain PHP that reads a file and calls the product CRUD, and only its *loader* is
+admin-gated — the classes live in `includes/import/` and `includes/export/`,
+outside `admin/`, and are simply never required in a non-admin request.
+Measured 2026-08-16: with `is_admin()` false, five `require_once`s produced a
+valid 40-column export.
+
+So the product CSV format is reused, not reimplemented. Writing our own would
+fork forty columns of variations, attributes and meta — which CLAUDE.md forbids
+outright — and produce a file no other WooCommerce tool could read, for a shop
+whose likeliest reason to export is to hand it to something else.
+
+## A CSV is a document a spreadsheet will run
+
+A cell beginning `=`, `+`, `-`, `@`, tab or carriage return is a formula to
+Excel, LibreOffice and Sheets, and the attacker needs one product name or one
+customer's first name. `CsvWriter` prefixes a quote, exactly as
+`WC_CSV_Exporter::escape_data()` does — the product export uses WooCommerce's
+exporter and the other three use ours, so a shop opening both must not find one
+escaped and the other not. `tests/Api/import-export.php` asserts the two agree,
+which is what stops the duplication drifting after a WooCommerce upgrade.
+
+## Three things this section found
+
+**`update_existing` is a mode switch whose name reads as a modifier.** Measured:
+
+``` text
+update_existing   new SKU                        existing SKU
+false             imported (created)             skipped, unchanged
+true              skipped, "No matching          updated
+                    product exists to update"
+```
+
+Neither setting does both halves. Passed through under its own name it is a trap
+in both directions — `true` reads as "create and also update" and creates
+nothing — so the API says `mode=create|update`, which is what the two settings
+actually do.
+
+**A product dry run is a parse and a lookup, not a rehearsal.**
+`WC_Product_CSV_Importer` has no dry-run mode, and simulating one means
+reimplementing the mapping this section refuses to fork. So the preview runs
+WooCommerce's *own parser* — a column it cannot read fails there too — and
+reports which SKUs exist. It cannot promise every write will succeed, and the
+response says so in `preview_only` rather than leaving someone to infer it from
+a report that turned out to be optimistic.
+
+**An export is not a JSON resource.** `API/FileDownload` is the one deliberate
+exception to the response envelope, bounded three ways: only a 2xx body is raw,
+only routes that opt in, and the filename is ours and never the caller's.
+`rest_do_request()` never runs `rest_pre_serve_request`, so the in-process suite
+is structurally blind to whether the download headers are real —
+`scripts/test-api.sh` checks them, as it does for media uploads.
+
 ------------------------------------------------------------------------
 
 # 65. Testing Strategy

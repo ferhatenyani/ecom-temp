@@ -18,8 +18,8 @@ Milestone 5 is complete; roadmap §47 (product CRUD), §49 (inventory), §44 (au
 (orders and customers), §51 (Algerian geography), §52 (COD), §53 (the shipping abstraction), §4
 step 28b (shipping rules and pricing, PLAN §14), §56 (Yalidine), §57 (ZR Express), §58 (the payment
 abstraction), §59 (Chargily), §60 (all three webhooks), §61 (CMS and media) and §62 (SEO) are in,
-and §62b (the marketing event layer and Meta's Conversions API) and §63 (analytics), along with
-rate limiting. Not implemented yet: 2FA, customer sessions, notifications, import/export.
+and §62b (the marketing event layer and Meta's Conversions API), §63 (analytics) and §64
+(import/export), along with rate limiting. Not implemented yet: 2FA, customer sessions, notifications.
 
 ```
 algerian-commerce-core.php   bootstrap: header, constants, autoload, lifecycle hooks
@@ -81,6 +81,10 @@ src/Marketing/               MarketingProviderInterface, MarketingEvent,
                              raw PII never leaves it)
 integrations/Meta/           MetaProvider, MetaClient, MetaCredentials,
                              MetaSettings — the Conversions API, server half only
+src/ImportExport/            CsvWriter (formula escaping, pure), CsvReader,
+                             InventoryRow, ImportReport, WooCsv (loads
+                             WooCommerce's CSV engine), ProductCsvExporter,
+                             ImportService, ExportService, ImportExportController
 src/Analytics/               AnalyticsRange (the window, pure), Metrics,
                              RevenueReport (PLAN §28, pure), AnalyticsCache,
                              AnalyticsRepository (the aggregate SQL, all of it),
@@ -166,6 +170,12 @@ tests/Unit/                  unit tests — no WordPress required
 | GET | `/analytics/customers` | `ac_view_analytics` | new against returning, and guest orders |
 | GET | `/analytics/shipping` | `ac_view_analytics` | delivery rate, provider performance, by wilaya |
 | GET | `/analytics/cod` | `ac_view_analytics` | the COD funnel over a window |
+| POST | `/import/products` | `ac_manage_products` | CSV body; `dry_run` (default true), `mode=create\|update` |
+| POST | `/import/inventory` | `ac_manage_inventory` | CSV body; `dry_run` (default true) |
+| GET | `/export/products` | `ac_manage_products` | WooCommerce's own 40-column CSV |
+| GET | `/export/inventory` | `ac_manage_inventory` | the columns `/import/inventory` reads back |
+| GET | `/export/orders` | `ac_manage_orders` | one row per order (`status`, `date_from`, `date_to`, `limit`) |
+| GET | `/export/customers` | `ac_manage_customers` | customer records, without lifetime statistics |
 
 ```bash
 curl http://localhost:8090/wp-json/algerian-commerce/v1/health
@@ -2169,6 +2179,108 @@ exist and are already served; a second definition of "confirmation rate" living 
 disagree with the first, and the shop would have two numbers and no way to tell which was right. The
 dependency runs one way — neither module has heard of analytics — and `tests/Api/analytics.php` asserts
 that `/analytics/cod` and `/cod/statistics` still agree.
+
+## Import and export (§64)
+
+Six endpoints, **no migration** — `Schema::VERSION` stays 9.
+
+```bash
+# preview, then apply — the same file, twice
+curl -u "$CRED" -H 'Content-Type: text/csv' --data-binary @stock.csv \
+     "$API/import/inventory?dry_run=true"
+curl -u "$CRED" -H 'Content-Type: text/csv' --data-binary @stock.csv \
+     "$API/import/inventory?dry_run=false"
+
+curl -u "$CRED" "$API/export/inventory?limit=500" -o stock.csv
+```
+
+### The pipeline is stateless, and `dry_run` defaults to true
+
+§64's "confirm" step looks like it needs the server to hold a parsed job between two requests. It does
+not: send the file with `dry_run: true` for the preview and the error report, then the same file with
+`dry_run: false` to apply it. **The default is a preview**, so a client that forgets the flag never
+writes — the reverse default means one malformed integration overwrites a catalogue on its first request.
+
+There is no `ac_import_jobs` table and no uploaded file is retained between requests. docs/SECURITY.md →
+"File uploads" opens by observing that accepting a file is the most dangerous thing this API does, and a
+file kept for later is that danger with a longer fuse. The cost is one extra upload from a client that
+already holds the file.
+
+**When the table earns its place** is stated rather than left to be discovered: when a catalogue outgrows
+`CsvReader::MAX_ROWS` and needs batching, something has to record "three thousand rows in". Same shape of
+decision as §63's `ac_analytics_aggregates`.
+
+### A CSV body, not a multipart upload
+
+Three reasons, in order of weight. **Nothing is written where a web server can serve it** — a multipart
+upload ends in `move_uploaded_file()` into `wp-content/uploads`, which §61 spends four checks and a
+re-encode making safe; a body is a string, and where a third-party engine needs a path the file goes to
+`get_temp_dir()` under a random name and is unlinked in a `finally`. **The privileged caller is a server**,
+not a browser. And **it is testable**: `rest_do_request()` cannot perform a real multipart upload, which is
+why the media suite can only prove refusals in-process.
+
+### WooCommerce's CSV engine — and why this is not another §61
+
+§61 rejected an SEO plugin, §62b a pixel plugin, §63 wc-admin's analytics tables: in each case the half
+that runs is a rendering or scheduler concern that never executes headless. **The CSV engine is none of
+those.** It is plain PHP that reads a file and calls the product CRUD, and only its *loader* is
+admin-gated — the classes sit in `includes/import/` and `includes/export/`, outside `admin/`, and are
+simply never required in a non-admin request. Measured 2026-08-16: with `is_admin()` false, five
+`require_once`s produced a valid 40-column export.
+
+So the product CSV format is reused, not reimplemented. Forking forty columns of variations, attributes,
+cross-sells and meta would break "never fork their data models" and produce a file no other WooCommerce
+tool could read — for a shop whose likeliest reason to export is to hand it to something else.
+
+### A CSV is a document a spreadsheet will run
+
+A cell beginning `=`, `+`, `-`, `@`, a tab or a carriage return is a **formula**, and formulas reach the
+shell and the network. The attacker needs one product name or one customer's first name; the shop owner
+runs it by opening their own export. `CsvWriter` prefixes a single quote, exactly as
+`WC_CSV_Exporter::escape_data()` does — products use WooCommerce's exporter and the other three exports use
+ours, so `tests/Api/import-export.php` asserts the two still agree after a WooCommerce upgrade.
+
+### `update_existing` is a mode switch whose name reads as a modifier
+
+Measured 2026-08-16:
+
+| `update_existing` | new SKU | existing SKU |
+| --- | --- | --- |
+| `false` | imported (created) | skipped, unchanged |
+| `true` | skipped — "No matching product exists to update" | updated |
+
+**Neither setting does both halves.** Passed through under its own name it is a trap in both directions:
+`true` reads as "create and also update" and creates nothing. The API says `mode=create` or `mode=update`,
+which is what the two settings actually do, and `create` is the default because a first import is the
+common case.
+
+### What a dry run can and cannot promise
+
+For inventory it is exact — the same code path, with the write skipped. For products it is **a parse and a
+lookup, not a rehearsal**: `WC_Product_CSV_Importer` has no dry-run mode, and simulating one means
+reimplementing the mapping this section refuses to fork. So it runs WooCommerce's *own* parser (a column
+that parser cannot read fails in the preview too) and reports which SKUs exist, honouring the mode. It
+cannot promise every write will succeed, and the response says so in `preview_only`.
+
+### Every imported stock change goes through the ledger
+
+An import is not a back door. Stock rows go through `InventoryService`, so two thousand rows write two
+thousand `ac_inventory_movements` entries with an actor and a reason — deliberately, because that table's
+whole purpose is that no quantity changes without one. A stock take uses `set`, not a delta, so running the
+same file twice is safe; the second run reports the rows as `skipped, unchanged`.
+
+An inventory import **never creates a product**: a typo'd SKU that silently created a nameless, priceless
+product would be far worse than a reported failure. A SKU appearing twice in one file is refused with the
+earlier line named, because applying both would make the result depend on row order.
+
+### An export is a file, not an envelope
+
+`API/FileDownload` is the one deliberate exception to the response envelope, bounded three ways: only a 2xx
+body is served raw, only on routes that opt in, and the `Content-Disposition` filename is generated rather
+than taken from input. Errors always come back in the envelope, so a client never saves an error message as
+`products.csv`. Because `rest_do_request()` never runs `rest_pre_serve_request`, the download headers are
+checked in `scripts/test-api.sh` — the in-process suite is structurally blind to them, exactly as it is to
+a real media upload.
 
 ## Security review (§55)
 
