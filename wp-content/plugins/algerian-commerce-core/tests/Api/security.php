@@ -164,6 +164,12 @@ $publicPrefixes = [
     '/algerian-commerce/v1/webhooks/',
     '/algerian-commerce/v1/cart',               // §59b — the token is the owner
     '/algerian-commerce/v1/checkout',           // §59b — same cart, same token
+    // §59c. Not "unguarded" — a capability cannot express "the person holding
+    // this session", so the check is AccountSession::require() one layer down,
+    // which answers 401. tests/Api/account.php calls every one of these with no
+    // session, a forged session and another shopper's session, because the
+    // route table cannot show what is protecting them.
+    '/algerian-commerce/v1/account',
 ];
 
 $guarded = [];

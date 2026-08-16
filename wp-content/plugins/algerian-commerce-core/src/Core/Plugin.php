@@ -28,6 +28,9 @@ use AlgerianCommerce\CLI\SyncDestinationsCommand;
 use AlgerianCommerce\CLI\SyncPaymentsCommand;
 use AlgerianCommerce\CLI\SyncShipmentsCommand;
 use AlgerianCommerce\CLI\UnlockCommand;
+use AlgerianCommerce\Account\AccountController;
+use AlgerianCommerce\Account\AccountService;
+use AlgerianCommerce\Account\AccountSession;
 use AlgerianCommerce\Cart\CartController;
 use AlgerianCommerce\Cart\CartService;
 use AlgerianCommerce\Cart\CartSession;
@@ -200,6 +203,8 @@ final class Plugin
     private ?GeoImporter $geoImporter = null;
     private ?ContentTypes $contentTypes = null;
     private ?CmsRepository $cmsRepository = null;
+    private ?AccountService $accountService = null;
+    private ?AccountSession $accountSession = null;
     private ?CartService $cartService = null;
     private ?CheckoutService $checkoutService = null;
     private ?CartSession $cartSession = null;
@@ -429,6 +434,7 @@ final class Plugin
                 $this->shippingProviders(),
                 $this->shippingService()
             ),
+            new AccountController($this->logger(), $this->accountService()),
             new CartController($this->logger(), $this->cartService()),
             new CheckoutController($this->logger(), $this->checkoutService()),
             new CmsController($this->logger(), $this->cmsService()),
@@ -627,6 +633,29 @@ final class Plugin
     public function cartSession(): CartSession
     {
         return $this->cartSession ??= new CartSession();
+    }
+
+    /**
+     * Shopper accounts — roadmap §59c.
+     *
+     * The session is a separate object from the service because
+     * `AccountSession` is what the IDOR defence rests on: it resolves the
+     * caller and takes no user id from anywhere.
+     */
+    public function accountSession(): AccountSession
+    {
+        return $this->accountSession ??= new AccountSession();
+    }
+
+    public function accountService(): AccountService
+    {
+        return $this->accountService ??= new AccountService(
+            $this->accountSession(),
+            $this->customerRepository(),
+            $this->orderRepository(),
+            $this->auditLogger(),
+            $this->rateLimiter()
+        );
     }
 
     public function cartService(): CartService

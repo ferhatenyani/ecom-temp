@@ -267,6 +267,81 @@ check "DELETE ?force=true removes it" 200 \
 check "the forced-deleted product is gone" 404 "$(status -u "$CRED" "${API}/products/${PROBE_ID:-0}")"
 echo
 
+# --------------------------------------------------------------- account --
+#
+# §59c's session travels as the `X-Customer-Token` header, which
+# rest_do_request() cannot carry — tests/Api/account.php has to use the
+# parameter, so the header path a real storefront uses would otherwise never
+# run. The IDOR itself is proven in depth there; what is here is the transport
+# and the one thing only this stage can see at all: **the login brute-force
+# lockout**, which needs a real client IP.
+#
+# That lockout is not automatic. RateLimitGuard hooks
+# `application_password_failed_authentication`, which is WordPress's admin path;
+# a customer login goes nowhere near it, so AccountService records the failure
+# itself. If this block reports 401 where it expects 429, that wiring is gone
+# and the shop's customer logins are unlimited — the same regression the
+# application-password guard already shipped with once.
+echo "customer accounts (roadmap §59c)"
+
+ACCT_EMAIL="ac-http-account@example.test"
+ACCT_PASS="CorrectHorseBatteryHttp"
+
+wpcli -e AC_EMAIL="$ACCT_EMAIL" wpcli wp eval '
+$u = get_user_by("email", getenv("AC_EMAIL"));
+if ($u) { wp_delete_user($u->ID); }
+echo "cleared";' >/dev/null
+
+ACCT_BODY=$(curl -s -m 30 -X POST -H 'Content-Type: application/json' \
+  -d "{\"email\":\"${ACCT_EMAIL}\",\"password\":\"${ACCT_PASS}\",\"first_name\":\"Http\"}" \
+  "${API}/account/register")
+ACCT_TOKEN=$(printf '%s' "$ACCT_BODY" | grep -o '"token":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+check "registration needs no credential" "true" \
+  "$([[ ${#ACCT_TOKEN} -gt 40 ]] && echo true || echo false)"
+
+# THE PROPERTY THIS BLOCK EXISTS FOR: the header carries the session.
+check "the X-Customer-Token header carries the session" 200 \
+  "$(status -H "X-Customer-Token: ${ACCT_TOKEN}" "${API}/account")"
+check "no header is 401" 401 "$(status "${API}/account")"
+check "a forged header is 401" 401 \
+  "$(status -H "X-Customer-Token: ${ACCT_EMAIL}|9999999999|a|b" "${API}/account")"
+
+# A shopper session must not open any staff route, whatever it is sent as.
+check "a customer session opens no staff route" 401 \
+  "$(status -H "X-Customer-Token: ${ACCT_TOKEN}" "${API}/orders")"
+check "...and is not an Authorization credential" 401 \
+  "$(status -u "${ACCT_EMAIL}:${ACCT_PASS}" "${API}/products")"
+
+# The lockout. Wrong passwords, until the limiter answers instead of the login.
+locked=""
+for _ in $(seq 1 25); do
+  if [[ "$(status -X POST -H 'Content-Type: application/json' \
+       -d "{\"email\":\"${ACCT_EMAIL}\",\"password\":\"wrong wrong wrong\"}" \
+       "${API}/account/login")" == "429" ]]; then
+    locked=429
+    break
+  fi
+done
+check "repeated bad logins are rate limited, not 401 forever" 429 "${locked:-401}"
+
+# ...and the correct password is refused too while the address is locked out,
+# which is what makes it a lockout rather than a slow-down.
+check "a locked-out address is refused a correct password" 429 \
+  "$(status -X POST -H 'Content-Type: application/json' \
+     -d "{\"email\":\"${ACCT_EMAIL}\",\"password\":\"${ACCT_PASS}\"}" "${API}/account/login")"
+
+"${COMPOSE[@]}" run --rm -T wpcli wp eval 'global $wpdb; $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE \"%ac_rl_%\"");' >/dev/null 2>&1
+check "and works again once unlocked" 200 \
+  "$(status -X POST -H 'Content-Type: application/json' \
+     -d "{\"email\":\"${ACCT_EMAIL}\",\"password\":\"${ACCT_PASS}\"}" "${API}/account/login")"
+
+wpcli -e AC_EMAIL="$ACCT_EMAIL" wpcli wp eval '
+$u = get_user_by("email", getenv("AC_EMAIL"));
+if ($u) { wp_delete_user($u->ID); }
+echo "cleaned";' >/dev/null
+echo
+
 # ------------------------------------------------------------------ cart --
 #
 # §59b's cart is covered in depth by tests/Api/cart.php. One property is not
