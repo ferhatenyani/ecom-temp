@@ -1,0 +1,85 @@
+{
+  "version": "2026-08-16",
+  "note": "Fictional shoppers — roadmap §67, docs/PLAN.md §46 (\"Never use real customer data as seed data\"). Every address is on example.test, which RFC 6761 reserves and no resolver ever answers, so a drained notification queue cannot reach a real inbox. SeedDataset enforces that domain rather than trusting this note.",
+  "customers": [
+    {
+      "email": "amina.belkacem@example.test",
+      "first_name": "Amina",
+      "last_name": "Belkacem",
+      "phone": "0551020304",
+      "billing": {
+        "address_1": "12 rue Larbi Ben M'hidi",
+        "city": "Bab El Oued",
+        "state": "Alger",
+        "postcode": "16008",
+        "country": "DZ"
+      }
+    },
+    {
+      "email": "yacine.hamdani@example.test",
+      "first_name": "Yacine",
+      "last_name": "Hamdani",
+      "phone": "0661778899",
+      "billing": {
+        "address_1": "45 boulevard de l'ALN",
+        "address_2": "Résidence El Feth, bât. C",
+        "city": "Es Senia",
+        "state": "Oran",
+        "postcode": "31000",
+        "country": "DZ"
+      }
+    },
+    {
+      "email": "nadia.cherif@example.test",
+      "first_name": "Nadia",
+      "last_name": "Chérif",
+      "phone": "0770112233",
+      "billing": {
+        "address_1": "8 cité des Frères Abbas",
+        "city": "El Khroub",
+        "state": "Constantine",
+        "postcode": "25100",
+        "country": "DZ"
+      }
+    },
+    {
+      "email": "karim.mansouri@example.test",
+      "first_name": "Karim",
+      "last_name": "Mansouri",
+      "phone": "0555443322",
+      "billing": {
+        "address_1": "3 rue de la Gare",
+        "city": "Sétif",
+        "state": "Sétif",
+        "postcode": "19000",
+        "country": "DZ"
+      }
+    },
+    {
+      "email": "lila.ouali@example.test",
+      "first_name": "Lila",
+      "last_name": "Ouali",
+      "phone": "0698001122",
+      "billing": {
+        "address_1": "Lotissement Tazmalt, lot 27",
+        "city": "Akbou",
+        "state": "Béjaïa",
+        "postcode": "06000",
+        "country": "DZ"
+      }
+    },
+    {
+      "email": "sofiane.benali@example.test",
+      "first_name": "Sofiane",
+      "last_name": "Benali",
+      "phone": "0540998877",
+      "billing": {
+        "address_1": "17 rue des Frères Zerga",
+        "city": "Tlemcen",
+        "state": "Tlemcen",
+        "postcode": "13000",
+        "country": "DZ"
+      }
+    }
+  ]
+}

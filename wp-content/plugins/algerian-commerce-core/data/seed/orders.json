@@ -1,0 +1,139 @@
+{
+  "version": "2026-08-16",
+  "note": "Fictional orders — roadmap §67. `ref` is the seed's own idempotency key and is kept in the ac_seed_orders option, never written onto the order: OrderRepository is the only file that touches an order (CLAUDE.md). Every order is dated now, because this API accepts no order date — §63's time series therefore shows one day, which is a property of the seed and not of the reports.",
+  "orders": [
+    {
+      "ref": "order-001",
+      "customer": "amina.belkacem@example.test",
+      "status": "completed",
+      "payment_method": "cod",
+      "payment_method_title": "Paiement à la livraison",
+      "items": [
+        { "sku": "AC-TAP-001", "quantity": 1 },
+        { "sku": "AC-EPI-001", "quantity": 2 }
+      ]
+    },
+    {
+      "ref": "order-002",
+      "customer": "yacine.hamdani@example.test",
+      "status": "processing",
+      "payment_method": "cod",
+      "payment_method_title": "Paiement à la livraison",
+      "customer_note": "Livrer après 16 h, merci.",
+      "items": [
+        { "sku": "AC-BUR-010-M", "quantity": 1 }
+      ]
+    },
+    {
+      "ref": "order-003",
+      "customer": "nadia.cherif@example.test",
+      "status": "completed",
+      "payment_method": "chargily",
+      "payment_method_title": "Carte CIB / EDAHABIA",
+      "items": [
+        { "sku": "AC-BIJ-002-AG", "quantity": 1 },
+        { "sku": "AC-BIJ-005", "quantity": 1 }
+      ]
+    },
+    {
+      "ref": "order-004",
+      "customer": "karim.mansouri@example.test",
+      "status": "pending",
+      "payment_method": "chargily",
+      "payment_method_title": "Carte CIB / EDAHABIA",
+      "items": [
+        { "sku": "AC-MAI-003", "quantity": 2 }
+      ]
+    },
+    {
+      "ref": "order-005",
+      "customer": "lila.ouali@example.test",
+      "status": "processing",
+      "payment_method": "cod",
+      "payment_method_title": "Paiement à la livraison",
+      "items": [
+        { "sku": "AC-POT-001", "quantity": 1 },
+        { "sku": "AC-POT-007", "quantity": 1 },
+        { "sku": "AC-EPI-004", "quantity": 3 }
+      ]
+    },
+    {
+      "ref": "order-006",
+      "customer": "sofiane.benali@example.test",
+      "status": "processing",
+      "final_status": "cancelled",
+      "payment_method": "cod",
+      "payment_method_title": "Paiement à la livraison",
+      "customer_note": "Annulée par téléphone : client injoignable deux fois.",
+      "items": [
+        { "sku": "AC-TAP-004", "quantity": 1 }
+      ]
+    },
+    {
+      "ref": "order-007",
+      "customer": "amina.belkacem@example.test",
+      "status": "completed",
+      "final_status": "refunded",
+      "payment_method": "chargily",
+      "payment_method_title": "Carte CIB / EDAHABIA",
+      "items": [
+        { "sku": "AC-EPI-009", "quantity": 1 }
+      ]
+    },
+    {
+      "ref": "order-008",
+      "customer": null,
+      "status": "processing",
+      "payment_method": "cod",
+      "payment_method_title": "Paiement à la livraison",
+      "billing": {
+        "first_name": "Rachid",
+        "last_name": "Meziane",
+        "email": "rachid.meziane@example.test",
+        "phone": "0559887766",
+        "address_1": "22 rue Didouche Mourad",
+        "city": "Sidi M'Hamed",
+        "state": "Alger",
+        "postcode": "16000",
+        "country": "DZ"
+      },
+      "items": [
+        { "sku": "AC-EPI-001", "quantity": 6 }
+      ]
+    },
+    {
+      "ref": "order-009",
+      "customer": "yacine.hamdani@example.test",
+      "status": "on-hold",
+      "payment_method": "cod",
+      "payment_method_title": "Paiement à la livraison",
+      "customer_note": "En attente de confirmation de l'adresse.",
+      "items": [
+        { "sku": "AC-BUR-010-L", "quantity": 1 },
+        { "sku": "AC-POT-001", "quantity": 1 }
+      ]
+    },
+    {
+      "ref": "order-010",
+      "customer": "karim.mansouri@example.test",
+      "status": "failed",
+      "payment_method": "chargily",
+      "payment_method_title": "Carte CIB / EDAHABIA",
+      "items": [
+        { "sku": "AC-BIJ-002-OR", "quantity": 1 }
+      ]
+    },
+    {
+      "ref": "order-011",
+      "customer": "nadia.cherif@example.test",
+      "status": "completed",
+      "payment_method": "cod",
+      "payment_method_title": "Paiement à la livraison",
+      "items": [
+        { "sku": "AC-EPI-004", "quantity": 2 },
+        { "sku": "AC-EPI-001", "quantity": 1 },
+        { "sku": "AC-POT-007", "quantity": 2 }
+      ]
+    }
+  ]
+}

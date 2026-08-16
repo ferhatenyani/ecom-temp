@@ -5129,6 +5129,83 @@ backup of the media library.
 off-site (§44), and **a backup is not valid until a restore has been
 tested** — script the restore too, and run it.
 
+## Done — six scripts, and the sixth is the one §66 did not list
+
+`scripts/` now holds `setup.sh`, `reset.sh`, `seed.sh`, `health.sh`,
+`backup.sh`, `restore.sh` beside the existing `test.sh` and `test-api.sh`.
+`restore.sh` is not in the list above, and it is the reason the list works:
+"a backup is not valid until a restore has been tested" is an instruction to
+write a second script, not a note to be careful.
+
+**setup.sh had a waiting list, and it is now paid.** Four decisions were
+deferred to this script by name across earlier sections, and every one of them
+is a state nothing fails loudly about:
+
+  - **WooCommerce installs at the pinned version** from `compose.yaml`'s
+    `x-tested-versions` (§68), with `--force` so an install at another version
+    is replaced rather than skipped. It is the one component with no image tag,
+    so without this `wp plugin install woocommerce` takes whatever is current.
+  - **`woocommerce_currency` is set to `DZD`.** A fresh install returns `USD`;
+    prices still render and orders still save while §62 publishes the wrong
+    currency to Google and §62b reports conversions in the wrong one to Meta.
+    WooCommerce records the currency per order, so it cannot be fixed later.
+  - **Akismet and Hello Dolly are deleted**, not deactivated. They live in the
+    volume, so a fresh install brings them back.
+  - **Roles run before anything writes.** Every service asserts a capability, so
+    seeding a site with no `ac_*` roles fails as a wall of 403s that reads like
+    a broken seeder rather than a missing step.
+
+It also sets pretty permalinks (the REST API answers at `/wp-json` only when the
+rewrite exists), enables HPOS, and generates `DB_PASSWORD` / `DB_ROOT_PASSWORD`
+into a fresh `.env` — `compose.yaml` interpolates those into the db container,
+so an empty value creates a MySQL install with a blank password rather than
+failing. Every step is idempotent: this is the script to re-run after
+`docker compose down`, not only the one to run once.
+
+**health.sh checks the two layers `GET /health` cannot see, and delegates the
+rest.** Five of §66's seven checks are already answered from the inside by the
+endpoint, which reports `wordpress`, `database`, `woocommerce`, `plugin` and
+`schema`. Re-implementing them here would be a second copy that drifts. What the
+endpoint cannot see is the **container layer** — a running endpoint says nothing
+about the other containers, and `wpcli` is run-on-demand so "it can run `wp`" is
+a different question from "it is in `ps`" — and the **transport**: answering
+`rest_do_request()` and answering Apache on the published port are different
+claims, with the permalink rewrite and the port mapping in between. It
+deliberately does **not** check versions; `scripts/test.sh versions` is §68's
+record and a second comparison would be the copy that goes stale.
+
+**reset.sh is destructive in four ways, and none of them is the default.**
+`docker compose down -v` is never reached without an explicit answer; it refuses
+unless `WP_ENVIRONMENT_TYPE` is `local` or `development` (the same switch
+WordPress uses for Application Passwords over plain HTTP, so it already means
+something here); it prints what it is about to destroy **with counts read from
+the database it is about to drop**, because "907 orders" stops a hand that "the
+database" does not; and the confirmation is the typed word `DESTROY`, since `y`
+is muscle memory. It also refuses when stdin is not a terminal — a destructive
+script that reads confirmation from a pipe has no confirmation.
+
+**backup.sh and restore.sh, and what running the drill found.** The dump runs
+inside `db` with the flags above; uploads come out of the volume with
+`docker compose cp`; `.env` is copied at mode 600 into a directory at mode 700,
+under a `backups/.gitignore` that ignores everything but itself. Each run writes
+a `manifest.txt` carrying the versions, the git commit and **every table's row
+count**, which is what makes verification mechanical.
+
+`scripts/restore.sh --verify <dir>` restores into a throwaway MySQL container of
+the pinned version and compares those counts. Run on 2026-08-16: **62 tables,
+every count matching.** It failed twice first, and both failures are the point
+of running rather than writing it:
+
+  - `mysqladmin ping` answers from the entrypoint's *temporary* server during
+    initialization, before root has a password — so the wait loop passed and the
+    next command failed with "Access denied", which reads as a corrupt backup.
+    The readiness gate is now a real query against the target database.
+  - `docker exec -i` inside the comparison loop **consumed the manifest from
+    stdin**: one table was compared, the rest swallowed, and the run reported
+    "1 table, every row count matches" in green. The `-i` is gone, and the
+    script now refuses to pass when it compared nothing — the same guard §65's
+    scanner tests carry, for the same reason.
+
 ------------------------------------------------------------------------
 
 # 67. Seed Data
@@ -5149,6 +5226,64 @@ Never use real client/customer data locally unless you have a legitimate
 protected workflow.
 
 This allows Claude to test against realistic data.
+
+## Done — `src/Seed/`, `data/seed/`, and `wp algerian-commerce seed`
+
+Five categories, 5 categories / 12 products / 5 variations / 6 customers /
+4 coupons / 11 orders. **No migration and no table** — `Schema::VERSION` is
+still 10. The fixtures are JSON in `data/seed/` and ship inside the plugin,
+beside §51's geography and for the same reason: the plugin is what gets cloned
+per client, so a client replacing the demo catalogue replaces a file, not code.
+
+**Everything is written through a service — not one row through `$wpdb`.** §64
+already established that an import must not be a back door around
+`ac_inventory_movements`; a seeder writing posts directly is the same back door
+with a friendlier name. A seed that bypassed `ProductService` could produce a
+product the API would refuse — a duplicate SKU, a sale price above the regular
+one, a variation whose attribute the parent does not offer — and every test
+written against it would then be a test against a state the shop cannot reach.
+Going through the services makes the fixtures **proof the API can build this
+shop**. Two consequences follow, both deliberate: it runs as an administrator,
+because services assert capabilities and a seeder with no identity would have to
+bypass the check; and it is idempotent on natural keys — SKU, email, coupon code
+— with orders keyed by an `ac_seed_orders` option rather than a marker written
+onto the order, because `OrderRepository` is the only file that touches one.
+
+**Geography is not seeded here.** PLAN §46 lists "Algerian locations" and §51
+already ships 69 wilayas and 1,541 communes with an importer. A seed inventing
+its own Algiers would be a second source of truth for the one dataset where that
+is most expensive, since a courier matches communes *by name*. `scripts/seed.sh`
+calls `import-algeria` first instead.
+
+**`SeedDataset` is the pure half, and it exists for one rule that has no other
+home.** Most of what it checks fails loudly when the seeder runs — a category
+nobody defined, a SKU no order can reference. **PLAN §46's "never use real
+customer data" does not**: a fixture carrying a colleague's real address seeds
+perfectly and mails them the first time somebody drains the queue. So every
+seeded email must be on a domain RFC 6761 or RFC 2606 reserves, checked exactly
+enough that `badexample.com` fails where `mail.example.com` passes.
+
+**Two mailers, and they needed opposite answers.** Seeding eleven orders queues
+a customer confirmation and an admin alert each in `ac_notifications` (step 34);
+those are deferred, so the seeder notes the highest id first and drops what it
+added, with `--keep-notifications` to opt out. **WooCommerce's own mailer is
+neither deferred nor ours**: `WC_Emails` sends synchronously inside
+`woocommerce_order_status_changed`, and the first run here attempted **25 sends**
+— visible only as `sendmail: can't connect` because this machine has no MTA. On
+a machine with one, a fictional order would have mailed the shop's real admin
+address. It is short-circuited through `pre_wp_mail` for the duration of the
+writes, and `--keep-notifications` deliberately does not turn it back on: a
+queue can be inspected and drained on purpose, a synchronous send cannot.
+
+**One limitation, named rather than worked around.** Every seeded order is dated
+now, because this API accepts no order date — §63's time series therefore shows
+one day. Adding `date_created` to `OrderInput` is a real API decision (an admin
+who can backdate an order can move revenue between months) and belongs to §50,
+not to a fixture loader.
+
+Tested by `tests/Unit/SeedDatasetTest` (61 tests, synthetic input) and
+`tests/Api/seed.php` (38 assertions, the shipped fixtures and what they
+produce). See docs/TESTING.md → "The seed suite".
 
 ------------------------------------------------------------------------
 

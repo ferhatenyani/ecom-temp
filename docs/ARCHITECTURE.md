@@ -79,6 +79,8 @@ src/
                  SQL over WooCommerce's order tables lives (see §7)
   ImportExport/  CSV import and export; reuses WooCommerce's own CSV engine
                  rather than reimplementing its 40-column product format
+  Seed/          the development fixtures loader (§67) — writes only through
+                 the services above, never $wpdb
   CMS/  Marketing/  Notifications/  Settings/
   Audit/         audit event recording
   Security/      validation, sanitization, rate limiting, webhook verification

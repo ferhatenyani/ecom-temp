@@ -1,0 +1,39 @@
+{
+  "version": "2026-08-16",
+  "note": "Fictional coupons — roadmap §67, docs/PLAN.md §21. Codes are lowercased by WooCommerce on save, which is why the seeder looks them up that way.",
+  "coupons": [
+    {
+      "code": "BIENVENUE10",
+      "discount_type": "percent",
+      "amount": "10",
+      "description": "10 % sur la première commande.",
+      "usage_limit_per_user": 1,
+      "exclude_sale_items": true
+    },
+    {
+      "code": "RAMADAN2000",
+      "discount_type": "fixed_cart",
+      "amount": "2000",
+      "description": "2 000 DA à partir de 15 000 DA d'achat.",
+      "minimum_amount": "15000",
+      "usage_limit": 200
+    },
+    {
+      "code": "LIVRAISON",
+      "discount_type": "fixed_cart",
+      "amount": "0",
+      "description": "Livraison offerte à partir de 20 000 DA.",
+      "minimum_amount": "20000",
+      "free_shipping": true
+    },
+    {
+      "code": "TAPIS15",
+      "discount_type": "percent",
+      "amount": "15",
+      "description": "15 % sur les tapis et textiles.",
+      "product_categories": ["tapis"],
+      "individual_use": true,
+      "usage_limit": 50
+    }
+  ]
+}

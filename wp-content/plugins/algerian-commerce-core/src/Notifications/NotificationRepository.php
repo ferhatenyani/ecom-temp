@@ -181,4 +181,40 @@ final class NotificationRepository
             )
         );
     }
+
+    /**
+     * The highest id in the queue, or 0 when it is empty.
+     *
+     * A watermark for a caller that is about to cause queueing and wants to
+     * know afterwards what it caused — see `Seed\Seeder` (roadmap §67).
+     */
+    public function maxId(): int
+    {
+        return (int) $this->wpdb->get_var("SELECT MAX(id) FROM {$this->table()}");
+    }
+
+    /**
+     * Drop every *pending* row above a watermark.
+     *
+     * This exists for the seeder and is deliberately narrow. Seeding eleven
+     * orders queues a customer confirmation and an admin alert for each, and a
+     * fictional order must not tell anybody it happened — the customer
+     * addresses are on reserved domains that reach nobody (`SeedDataset`), but
+     * the admin alert goes to a real inbox.
+     *
+     * **Pending only, and above a watermark only.** A row that has already been
+     * sent is a record of something that left the building and is never
+     * deleted, and rows queued before the caller started are not the caller's
+     * to remove.
+     */
+    public function discardPendingAbove(int $id): int
+    {
+        return (int) $this->wpdb->query(
+            $this->wpdb->prepare(
+                "DELETE FROM {$this->table()} WHERE id > %d AND status = %s",
+                $id,
+                self::STATUS_PENDING
+            )
+        );
+    }
 }
