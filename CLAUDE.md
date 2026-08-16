@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53, §55–§65, §68–§69, §59b and §59c are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53, §55–§65, §68–§69 and §59b–§59d are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
 ZR Express, the payment abstraction, Chargily, the CMS, media, SEO, the marketing event layer, analytics,
-import/export, the cart and checkout and shopper accounts — and its
+import/export, the cart and checkout, shopper accounts, coupons and notifications — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -16,13 +16,13 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53, §55–§65, §59b–§59c and §68–§69 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53, §55–§65, §59b–§59d and §68–§69 are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
 shipping rules, the Yalidine and ZR Express adapters, the security review, the payment abstraction and
 Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS and media endpoints,
 §62's SEO, §62b's marketing event layer, §63's analytics, §64's import/export, §65's testing audit,
-§68's version pinning, §69's API walkthrough, §59b's cart and checkout and §59c's shopper
-accounts. **Next up is §66 (the five automation scripts) and
+§68's version pinning, §69's API walkthrough, §59b's cart and checkout, §59c's shopper
+accounts and §59d's coupons and notifications. **Next up is §66 (the five automation scripts) and
 §67 (seed data), which go together because `seed.sh` is §67's delivery mechanism.**
 
 **§59b is `src/Cart/` — seven cart routes and two checkout routes, no migration and no table**
@@ -148,6 +148,33 @@ through `rest_do_request()`, so no test had sent a POST or PATCH through Apache,
 and an `Authorization` header. `scripts/test-api.sh` → "CRUD over HTTP" is that walkthrough, and it lives
 there rather than in a document because a documented walkthrough is one nobody re-runs. It is thin on
 business rules by design — what it proves is the transport, and it is what found the 500.
+
+**§59d is steps 33 and 34, built together** — 33 was owed and 34 had nothing to say until orders,
+payments and shipments existed. **Coupons are `src/Coupons/`, six routes, no migration** (coupons are
+`shop_coupon` posts; HPOS moved only orders). The step was owed because §59b shipped `POST /cart/coupons`
+against a discount the API could not create. `ac_manage_coupons` already existed — **no new capability**.
+**PLAN §21 asks for ten things and WooCommerce supplies nine**: "maximum discount" is not one of them —
+`maximum_amount` caps the *cart*, not the discount — so `maximum_discount` is refused by name with the
+reason. **Two round-trip bugs, both found on the suite's first run and both the same shape**: the read
+body could not be written back, because the presenter emitted ISO dates the input refused, and because
+WooCommerce stores an absent threshold as `'0'` which the presenter published as `"0.00"` and the input
+then compared as a real minimum. Thresholds are now `null` when absent, matching `usage_limit`.
+
+**Notifications are `src/Notifications/` — migration 010, `Schema::VERSION` is now 10, and no REST
+routes**: §29 asks for an abstraction, not an endpoint. **Nothing is sent on a request path** — §62b's
+argument, stronger here, because an SMTP server that hangs would hang a checkout and one that is down
+would fail an order that had already taken money. `notify()` writes a row; `wp algerian-commerce
+send-notifications` sends. **The claim and the queue are one table** with `UNIQUE (channel, dedupe_key)`,
+which is why the subscriber filters no hooks at all: eight firings produce one message, guaranteed by the
+database rather than by a comparison that has to be right in eight places. **The message is frozen at
+queue time**, so an order refunded after queueing still delivers the confirmation that was true when it
+was placed. `ac_shipment_saved` is the one hook this project added, in `ShipmentRepository::update()`
+rather than the service, because the poller writes without going through the service and "delivered"
+almost always arrives from a poll. **Low stock claims once and is re-armed on restock** — WooCommerce
+provides the first half and not the second. **A COD order is not a paid order**: the payment message is
+gated on `$order->is_paid()`, or every COD customer is told their money arrived. Deferred with reasons:
+password reset (needs a synchronous mail path, not a five-minute drain) and §29's other four channels
+(no credentials — each is one class plus one `add()`).
 
 §63 is `src/Analytics/` — seven read-only endpoints (`overview`, `revenue`, `orders`, `products`,
 `customers`, `shipping`, `cod`) and **no migration**; `Schema::VERSION` is still 9.
@@ -486,7 +513,7 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `Account/`, `Cart/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`,
+`Customers/`, `Account/`, `Cart/`, `Coupons/`, `Notifications/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`,
 `Analytics/`, `ImportExport/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and

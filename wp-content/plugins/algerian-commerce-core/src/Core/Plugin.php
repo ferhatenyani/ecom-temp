@@ -25,6 +25,7 @@ use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
 use AlgerianCommerce\CLI\ShippingCheckCommand;
 use AlgerianCommerce\CLI\SyncDestinationsCommand;
+use AlgerianCommerce\CLI\SendNotificationsCommand;
 use AlgerianCommerce\CLI\SyncPaymentsCommand;
 use AlgerianCommerce\CLI\SyncShipmentsCommand;
 use AlgerianCommerce\CLI\UnlockCommand;
@@ -44,6 +45,9 @@ use AlgerianCommerce\COD\CodController;
 use AlgerianCommerce\COD\CodRepository;
 use AlgerianCommerce\COD\CodService;
 use AlgerianCommerce\COD\CodSubscriber;
+use AlgerianCommerce\Coupons\CouponController;
+use AlgerianCommerce\Coupons\CouponRepository;
+use AlgerianCommerce\Coupons\CouponService;
 use AlgerianCommerce\Core\Migrations\MigrationRunner;
 use AlgerianCommerce\Inventory\InventoryController;
 use AlgerianCommerce\Inventory\InventoryRepository;
@@ -71,6 +75,11 @@ use AlgerianCommerce\Media\MediaController;
 use AlgerianCommerce\Media\MediaRepository;
 use AlgerianCommerce\Media\MediaService;
 use AlgerianCommerce\Media\UploadPolicy;
+use AlgerianCommerce\Notifications\EmailChannel;
+use AlgerianCommerce\Notifications\NotificationChannelRegistry;
+use AlgerianCommerce\Notifications\NotificationRepository;
+use AlgerianCommerce\Notifications\NotificationService;
+use AlgerianCommerce\Notifications\NotificationSubscriber;
 use AlgerianCommerce\Orders\OrderController;
 use AlgerianCommerce\Orders\OrderRepository;
 use AlgerianCommerce\Orders\OrderService;
@@ -154,6 +163,9 @@ final class Plugin
     /** The "send what the shop has already sold" drain — roadmap §62b. */
     public const MARKETING_DRAIN_EVENT = 'ac_drain_marketing';
 
+    /** The notification queue drain — roadmap step 34. */
+    public const NOTIFICATION_DRAIN_EVENT = 'ac_drain_notifications';
+
     private static ?self $instance = null;
 
     private ?Config $config = null;
@@ -205,6 +217,11 @@ final class Plugin
     private ?CmsRepository $cmsRepository = null;
     private ?AccountService $accountService = null;
     private ?AccountSession $accountSession = null;
+    private ?NotificationChannelRegistry $notificationChannels = null;
+    private ?NotificationRepository $notificationRepository = null;
+    private ?NotificationService $notificationService = null;
+    private ?CouponRepository $couponRepository = null;
+    private ?CouponService $couponService = null;
     private ?CartService $cartService = null;
     private ?CheckoutService $checkoutService = null;
     private ?CartSession $cartSession = null;
@@ -265,6 +282,8 @@ final class Plugin
         $this->registerShipmentPolling();
         $this->registerPaymentPolling();
         $this->registerMarketingDrain();
+        $this->registerNotificationDrain();
+        (new NotificationSubscriber($this->notificationService()))->register();
         $this->registerCliCommands();
 
         $this->logger()->debug('Plugin booted', ['version' => VERSION]);
@@ -368,6 +387,26 @@ final class Plugin
         }
     }
 
+    /**
+     * The notification drain — roadmap step 34.
+     *
+     * Five minutes, matching the marketing drain, and with the same caveat
+     * written on it: WP-Cron only fires when somebody visits, so a deployment
+     * that wants its customers to actually receive mail points a real scheduler
+     * at `wp algerian-commerce send-notifications`. The cron is what makes a
+     * development machine behave sensibly, not the mechanism.
+     */
+    private function registerNotificationDrain(): void
+    {
+        add_action(self::NOTIFICATION_DRAIN_EVENT, function (): void {
+            $this->notificationService()->drain();
+        });
+
+        if (!wp_next_scheduled(self::NOTIFICATION_DRAIN_EVENT)) {
+            wp_schedule_event(time() + MINUTE_IN_SECONDS, 'ac_five_minutes', self::NOTIFICATION_DRAIN_EVENT);
+        }
+    }
+
     private function registerCliCommands(): void
     {
         if (!defined('WP_CLI') || !WP_CLI) {
@@ -382,6 +421,10 @@ final class Plugin
         WP_CLI::add_command('algerian-commerce sync-shipments', new SyncShipmentsCommand($this->shipmentPoller()));
         WP_CLI::add_command('algerian-commerce sync-payments', new SyncPaymentsCommand($this->paymentPoller()));
         WP_CLI::add_command('algerian-commerce sync-marketing', new SyncMarketingCommand($this->marketingService()));
+        WP_CLI::add_command(
+            'algerian-commerce send-notifications',
+            new SendNotificationsCommand($this->notificationService())
+        );
         WP_CLI::add_command('algerian-commerce shipping-check', new ShippingCheckCommand(
             $this->shippingProviders(),
             $this->geoRepository(),
@@ -435,6 +478,7 @@ final class Plugin
                 $this->shippingService()
             ),
             new AccountController($this->logger(), $this->accountService()),
+            new CouponController($this->logger(), $this->couponService()),
             new CartController($this->logger(), $this->cartService()),
             new CheckoutController($this->logger(), $this->checkoutService()),
             new CmsController($this->logger(), $this->cmsService()),
@@ -630,6 +674,62 @@ final class Plugin
      * would add the filter again and call `wc_load_cart()` against a session
      * that is already open.
      */
+    /**
+     * The channels this shop has configured — docs/PLAN.md §29.
+     *
+     * **The only place a channel's configuration is read**, which is the same
+     * rule `paymentProviders()` and `shippingProviders()` follow. §29 says to
+     * activate only what is configured; email is activated unconditionally
+     * because WordPress always has a mail transport, even if it is a broken
+     * one — a queue with nowhere to go is worse than a queue that reports
+     * `sendmail: can't connect` into `last_error`, which is at least legible.
+     *
+     * SMS, WhatsApp, push and in-app are §29's other four. Each is one class
+     * implementing `NotificationChannelInterface` plus one `add()` here.
+     */
+    public function notificationChannels(): NotificationChannelRegistry
+    {
+        if ($this->notificationChannels !== null) {
+            return $this->notificationChannels;
+        }
+
+        $registry = new NotificationChannelRegistry();
+
+        $registry->add(new EmailChannel(
+            $this->logger(),
+            (string) get_option('blogname', ''),
+            (string) (getenv('AC_MAIL_FROM') ?: get_option('admin_email', ''))
+        ));
+
+        return $this->notificationChannels = $registry;
+    }
+
+    public function notificationRepository(): NotificationRepository
+    {
+        global $wpdb;
+
+        return $this->notificationRepository ??= new NotificationRepository($wpdb);
+    }
+
+    public function notificationService(): NotificationService
+    {
+        return $this->notificationService ??= new NotificationService(
+            $this->notificationChannels(),
+            $this->notificationRepository(),
+            $this->logger()
+        );
+    }
+
+    public function couponRepository(): CouponRepository
+    {
+        return $this->couponRepository ??= new CouponRepository();
+    }
+
+    public function couponService(): CouponService
+    {
+        return $this->couponService ??= new CouponService($this->couponRepository(), $this->auditLogger());
+    }
+
     public function cartSession(): CartSession
     {
         return $this->cartSession ??= new CartSession();
@@ -1294,6 +1394,7 @@ final class Plugin
         wp_clear_scheduled_hook(self::POLL_EVENT);
         wp_clear_scheduled_hook(self::PAYMENT_POLL_EVENT);
         wp_clear_scheduled_hook(self::MARKETING_DRAIN_EVENT);
+        wp_clear_scheduled_hook(self::NOTIFICATION_DRAIN_EVENT);
 
         flush_rewrite_rules(false);
     }

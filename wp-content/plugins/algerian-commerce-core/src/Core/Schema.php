@@ -20,7 +20,7 @@ namespace AlgerianCommerce\Core;
  */
 final class Schema
 {
-    public const VERSION = 9;
+    public const VERSION = 10;
 
     private function __construct()
     {

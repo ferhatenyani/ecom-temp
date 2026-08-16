@@ -113,6 +113,7 @@ the third-party integration rules before the first provider adapter.
 - [59. Chargily](#59-chargily)
 - [59b. Cart and Checkout](#59b-cart-and-checkout)
 - [59c. Customer Accounts and Sessions](#59c-customer-accounts-and-sessions)
+- [59d. Coupons and Notifications](#59d-coupons-and-notifications)
 - [60. Webhooks](#60-webhooks)
 
 **Part XI — CMS and Marketing (Milestone 10)**
@@ -468,8 +469,8 @@ shopper can edit an id in a URL — which §59c states in full and which
      re-checks; PLAN §53, roadmap §59b
 32c. Customer accounts and sessions — login, profile, order history,
      and the order-id IDOR it must not ship; roadmap §44, §59c
-33. Coupons
-34. Notifications
+33. Coupons — WooCommerce's WC_Coupon behind our CRUD (PLAN §21)  [built]
+34. Notifications — the §29 abstraction, a queue and an email channel  [built]
 35. CMS
 36. SEO
 37. Marketing/pixels
@@ -3904,6 +3905,128 @@ and a reset link that is generated and never sent is worse than an absent
 feature because it looks like one that works. Registration already surfaces this:
 WooCommerce's new-account email fails in development with `sendmail: can't
 connect`, which is a configuration fact rather than a defect. Build it with §29.
+
+------------------------------------------------------------------------
+
+# 59d. Coupons and Notifications
+
+Steps 33 and 34, built together because 33 was owed and 34 had nothing to say
+until orders, payments and shipments all existed. Neither has a section of its
+own in the original document; PLAN §21 and §29–§30 are the specifications.
+
+## Coupons (step 33) — `src/Coupons/`
+
+Six routes, **no migration and no table**: coupons are `shop_coupon` posts, and
+HPOS moved *orders* to custom tables while leaving these where they were.
+
+``` text
+GET/POST /coupons        GET/PATCH/DELETE /coupons/{id}
+```
+
+**This step was owed.** §59b shipped `POST /cart/coupons`, so a shopper could
+apply a discount the API had no way to create — a shop had to open wp-admin,
+which is the thing a headless build exists to avoid. `tests/Api/coupons.php`
+closes the loop by creating a coupon through the API and asserting it takes 500
+DZD off a §59b cart.
+
+Authorization is `ac_manage_coupons`, which already existed and is held by
+Admin, Manager and Marketing Manager — **no new capability was invented**. The
+admin/shopper split is the security property worth naming: a public endpoint
+that *listed* coupons would hand every visitor the shop's whole discount
+schedule, including codes meant for one customer's apology. Applying a code you
+already know is a different act from finding out which codes exist.
+
+**PLAN §21 asks for ten things and WooCommerce supplies nine.** The tenth is
+"maximum discount where supported", and it is not supported: `WC_Coupon` has
+`maximum_amount`, a ceiling on the *cart* a coupon may be used against, not a
+cap on the discount. A 50% coupon on a 100,000 DZD cart discounts 50,000 and no
+field would stop it. `maximum_discount` is therefore **refused by name with the
+reason**, so nobody sets one believing they set the other, and capping it in our
+own code would mean recomputing WooCommerce's discount after it applied one.
+
+**Two round-trip bugs, both found by the suite on its first run**, and both the
+same shape: the read body could not be written back. `CouponPresenter` emitted
+`date_expires` as ISO 8601 while `CouponInput` demanded `Y-m-d`; and WooCommerce
+stores an absent threshold as the string `'0'`, which the presenter published as
+`"0.00"` and the input then compared as a real minimum — so every coupon with a
+minimum spend and no maximum failed `min ≤ max` against a maximum that did not
+exist. A client PATCHing back a body this API had just produced got a 400 about
+two fields it had never touched. Thresholds are now `null` when absent, matching
+how `usage_limit` was already treated, and the input accepts either date shape.
+
+## Notifications (step 34) — `src/Notifications/`
+
+Migration **010**, `Schema::VERSION` is now **10**. No REST routes: §29 asks for
+an abstraction, not an endpoint.
+
+``` text
+NotificationChannelInterface  →  EmailChannel        (§29's other four are additive)
+Plugin::notificationChannels()   the only place a channel's configuration is read
+ac_notifications                 the claim and the queue, one table
+wp algerian-commerce send-notifications [--limit=] [--channel=] [--summary]
+```
+
+**Nothing is sent on a request path.** §62b settled this for marketing
+conversions and it is stronger here: an order confirmation is queued while an
+order is being saved, so an SMTP server that takes thirty seconds would put
+thirty seconds on a checkout and one that is down would fail an order that had
+already taken money. `notify()` writes a row and returns; `drain()` sends.
+
+**The claim and the queue are one table**, as migration 009 argued: a claim in
+one table and a job in another can disagree, and the disagreement is a customer
+told twice that their order shipped, or never told at all.
+`UNIQUE (channel, dedupe_key)` makes "this event, on this subject, once" a
+database guarantee — which is why the subscriber does not filter its hooks at
+all. `woocommerce_order_status_changed` fires on every transition and
+`ac_shipment_saved` on every write; eight firings produce one message.
+
+**The rendered message is frozen when the row is written.** An order refunded
+between queueing and sending must still deliver the confirmation that was true
+when it was placed, or a customer receives a receipt describing a state they
+never saw. Asserted directly: the suite changes an order's total after queueing
+and checks the queued message does not follow.
+
+**`ac_shipment_saved` is the one hook this project had to add**, emitted by
+`ShipmentRepository::update()` rather than `ShippingService` because there are
+two write paths and only one goes through the service — an admin changing a
+status, and `ShipmentPoller` recording what the courier said. The second is the
+one that matters, since "delivered" almost always arrives from a poll.
+
+**The drive is the CLI command; the cron is a convenience.** CLAUDE.md records
+at length that nothing runs WP-Cron on a headless backend nobody browses — §63
+refused a rollup table over exactly that. A five-minute cron is registered
+because it costs nothing where something does drive it, and a real deployment
+points a system scheduler at `wp algerian-commerce send-notifications`.
+
+**Low stock claims once and is re-armed on restock.** Deduplication is what
+stops an hourly email about a line that has been low all week; it would also
+stop the *next* warning after the line recovered, so
+`woocommerce_product_set_stock` clears the claim once the product is back above
+its threshold. WooCommerce provides the first half and not the second.
+
+**A COD order is not a paid order.** `processing` is reached without payment for
+cash on delivery, so the payment message is queued only when `$order->is_paid()`
+— WooCommerce's own answer — or every COD customer would be told their money had
+arrived.
+
+### Deferred, with the reason
+
+**Password reset by email**, again — §30 lists it, and it does not belong in this
+queue. A drain on a five-minute cron is right for a shipment update and wrong
+for a reset: a shopper who has asked to sign in will not wait five minutes for
+the link, and sending it inline puts the SMTP timeout back on a user-facing
+request that this whole queue exists to avoid. It needs a synchronous mail path,
+which this project does not have.
+
+**SMS, WhatsApp, push and in-app.** §29 names them as *potential* channels and
+says to activate only what is configured; none has credentials here. Each is one
+class implementing `NotificationChannelInterface` and one `add()` in
+`Plugin::notificationChannels()`.
+
+**No successful send is asserted anywhere**, because this stack has no SMTP
+server. `wp_mail()` fails with `sendmail: can't connect`, the row stays pending
+with the reason in `last_error`, and that is the queue working. A test that
+needed a mail server would be a test nobody could run.
 
 ------------------------------------------------------------------------
 
