@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53, §55–§65 and §68–§69 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53, §55–§65, §68–§69 and §59b are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
-ZR Express, the payment abstraction, Chargily, the CMS, media, SEO, the marketing event layer, analytics and
-import/export — and its
+ZR Express, the payment abstraction, Chargily, the CMS, media, SEO, the marketing event layer, analytics,
+import/export and the cart and checkout — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -16,16 +16,53 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53, §55–§65 and §68–§69 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53, §55–§65, §59b and §68–§69 are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
 shipping rules, the Yalidine and ZR Express adapters, the security review, the payment abstraction and
 Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS and media endpoints,
 §62's SEO, §62b's marketing event layer, §63's analytics, §64's import/export, §65's testing audit,
-§68's version pinning and §69's API walkthrough. **Next up is §66 (the five automation scripts) and
+§68's version pinning, §69's API walkthrough and §59b's cart and checkout. **Next up is §66 (the five automation scripts) and
 §67 (seed data), which go together because `seed.sh` is §67's delivery mechanism.**
 
-**Two steps were added to §4's build sequence after §69: `32b` cart and checkout (§59b) and `32c`
-customer accounts and sessions (§59c).** They are not new scope — PLAN §53 always required `cart`,
+**§59b is `src/Cart/` — seven cart routes and two checkout routes, no migration and no table**
+(`Schema::VERSION` is still 9). The cart *is* `WC_Cart`: WooCommerce does line totals, tax, rounding,
+stock and §21's coupon rules, and this module owns only the boundary. Store API's **cart** was reusable
+and its **shipping and checkout** halves were not — measured 2026-08-16, this install has zero
+WooCommerce payment gateways and zero shipping zones, because §58 put payment behind
+`PaymentProviderInterface` and §14 replaced zones with `ac_shipping_rates`, so `wc/store/v1/checkout`
+cannot take a payment here and its `shipping_rates` is always empty.
+
+**A cart needs a session and there are no cookies, so `StoreApi\SessionHandler` is swapped in** — the
+cookie-free, signed-token handler WooCommerce ships for its own Store API, which keeps the token's
+signature, expiry and secret WooCommerce's problem rather than a credential this project mints. Three
+things that cost real time and are all load-bearing. **`wc_load_cart()` does not populate the cart**:
+`get_cart_from_session()` is hooked to `wp_loaded`, which fired long before any REST route, so you get a
+valid session holding the shopper's items beside an *empty cart* and no error — and neither
+`WC_Cart::get_cart()` (guarded by `did_action`) nor a fresh `new WC_Cart()` fixes it; constructing
+`WC_Cart_Session` directly is the unguarded public path and it is idempotent. **`WC_Cart::needs_shipping()`
+is permanently false here**, because it returns false when `wc_get_shipping_method_count()` is zero and
+§14 uses no zones — a cart of rugs reported `needs_shipping: false`, checkout skipped the §14 quote, and
+an order was created short by the whole delivery charge; `CartService::needsShipping()` asks the products
+instead. And **`CartSession::load()` keys on the token, not on "already loaded"** — the load-once guard
+made "a forged token opens an empty cart" pass *against the previous caller's cart* in the in-process
+suite, leaving the module's central security property untested.
+
+**`/cart` and `/checkout` are public, and the token is the owner.** No capability could gate them: a
+shopper has no WordPress account and §44 forbids giving one an Application Password, so requiring auth
+would mean the storefront proxying every quantity change with an admin credential. The token is signed
+with the site salt, expires in 48 hours, and a forged one opens an *empty* cart rather than somebody
+else's. **`LineInput` accepts `product_id`, `variation_id` and `quantity` and refuses `price`,
+`line_total`, `subtotal`, `total`, `discount` and `currency` by name with a reason** — the
+`CustomerInput` device. Shipping comes from `RateResolver` against the destination and the free-shipping
+threshold is compared against the *cart's* subtotal, because a caller that could state its own subtotal
+could claim to have crossed one. **Checkout does not take the money**: it creates a `pending` order and
+returns `next: {action: create_payment, endpoint: /orders/{id}/payments}`, §58's existing route, because
+a payment that fails must not orphan an order that succeeded. `RateResolver` is used directly rather
+than `ShippingService::rates()`, which asserts `ac_manage_shipping` — a shopper being quoted a delivery
+price is not reading the shop's shipping configuration.
+
+**Two steps were added to §4's build sequence after §69: `32b` cart and checkout (§59b, now built) and
+`32c` customer accounts and sessions (§59c).** They are not new scope — PLAN §53 always required `cart`,
 `checkout`, `customer accounts` and `orders` of the storefront — but the only storefront entry in the
 list was step 44, one line reading "Next.js storefront", and §44 deferred customer sessions to "the
 storefront work" with no step to defer them to. Both have substantial backend consequences: a cart
@@ -419,8 +456,8 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`, `Analytics/`,
-`ImportExport/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
+`Customers/`, `Cart/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`,
+`Analytics/`, `ImportExport/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
 `tests/`, plus `integrations/ZRExpress/`, `integrations/Chargily/` and `integrations/Meta/`. Still to come:

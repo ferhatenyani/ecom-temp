@@ -878,6 +878,116 @@ Three things cost real debugging time here:
 - **`wc_get_orders()` returns refunds by default.** `shop_order_refund` is in the default `type`, and
   `WC_Order_Refund` does not extend `WC_Order`. Ask for `'type' => 'shop_order'` explicitly.
 
+## Cart and checkout (§59b)
+
+```bash
+GET    /cart                          POST   /cart/items          {product_id, variation_id, quantity}
+DELETE /cart                          PATCH  /cart/items/{key}    {quantity}   0 removes
+POST   /cart/coupons {code}           DELETE /cart/items/{key}
+DELETE /cart/coupons/{code}
+GET    /checkout/shipping-rates?wilaya_id=&commune_id=&delivery_type=
+POST   /checkout                      {billing, shipping?, wilaya_id, commune_id, delivery_type,
+                                       payment_method?, customer_note?}
+```
+
+No migration and no table. The cart lives in `wp_woocommerce_sessions`, which is WooCommerce's.
+
+**The cart is `WC_Cart`.** Line totals, tax, rounding, stock and §21's coupon rules — usage limits,
+expiry, minimum spend, product and category restrictions — are all WooCommerce's, and reimplementing
+them would fork the data model this project does not fork and re-derive security-critical arithmetic
+that is already written. This module owns the boundary: validation in, our envelope out, errors that
+name the field.
+
+Store API's *cart* was reusable and its *shipping and checkout* halves were not. Measured 2026-08-16:
+this install has **zero WooCommerce payment gateways enabled** and **zero shipping zones**, because §58
+put payment behind `PaymentProviderInterface` and §14 replaced zones with `ac_shipping_rates`. So
+`wc/store/v1/checkout` cannot take a payment here and its `shipping_rates` is always empty. Store API
+also sits on core's CORS, which reflects any origin with `Allow-Credentials: true`; `API/Cors` governs
+our namespace only.
+
+### The session — three things that cost real time
+
+There are no cookies in a headless request, so `StoreApi\SessionHandler` is swapped in: WooCommerce's
+own cookie-free handler, keyed by a signed token in a header. Using it keeps the signature, the expiry
+and the secret WooCommerce's problem — a hand-rolled cart token is a credential, and `Auth/AuthService`
+already declined to write one of those.
+
+```php
+add_filter('woocommerce_session_handler', fn () => SessionHandler::class, 0);
+wc_load_cart();
+(new WC_Cart_Session(WC()->cart))->get_cart_from_session();   // <-- required, see below
+```
+
+- **`wc_load_cart()` does not populate the cart.** `WC_Cart_Session::get_cart_from_session()` is hooked
+  to `wp_loaded`, which fired long before any REST route runs, so the request gets a valid session
+  holding the shopper's items beside an **empty cart** — data present, nothing raised, basket reported
+  empty. Neither `WC_Cart::get_cart()` (guarded by `did_action('woocommerce_cart_loaded_from_session')`,
+  already fired) nor a fresh `new WC_Cart()` fixes it. Constructing `WC_Cart_Session` directly is the
+  public path that is not guarded, and running it twice does not duplicate lines.
+- **`WC_Cart::needs_shipping()` is permanently false here.** It returns false when
+  `wc_get_shipping_method_count()` is zero — a count of methods in *WooCommerce's shipping zones*, which
+  §14 deliberately does not use. A cart holding a rug reported `needs_shipping: false`, checkout skipped
+  the §14 quote on the strength of it, and an order was created with no delivery charge and a total
+  short by the entire shipping cost. `CartService::needsShipping()` asks the products instead, which is
+  a fact about the goods that no zone configuration can invalidate.
+- **`CartSession::load()` keys on the token, not on "already loaded".** The load-once guard is right
+  inside one HTTP request and wrong inside `tests/Api/cart.php`, where forty `rest_do_request()` calls
+  share a process: "a forged token opens an empty cart" passed **against the previous caller's cart**,
+  leaving the module's central security property untested. `$_SERVER['HTTP_CART_TOKEN']` is also
+  cleared rather than left stale, or an anonymous request inherits the last basket.
+
+### Public, and the token is the owner
+
+`/cart` and `/checkout` answer `__return_true` — the third and fourth entries in that allowlist after
+`/health`, `/locations/*` and the webhook routes. No capability could gate them: a shopper has no
+WordPress account at this point and §44 forbids giving one an Application Password, so requiring
+authentication would mean the storefront proxying every quantity change with an admin credential.
+
+The token is signed with the site salt, expires in 48 hours, and a **forged one opens an empty cart
+rather than somebody else's** — stronger than "unguessable", and asserted in `tests/Api/cart.php` beside
+the control that stops the assertion passing vacuously. It is accepted as the `Cart-Token` header
+(Store API's name, so a storefront can move either way) or a `cart_token` parameter, and returned in
+`meta.cart_token` rather than a response header — a header is invisible to `rest_do_request()`, which is
+the blindness that put §64's download headers in `scripts/test-api.sh`. An empty cart is issued no
+token: a shopper who has added nothing needs no identity, and minting one means a session row for every
+crawler.
+
+### Every number in a cart is a request, not a fact
+
+`LineInput` accepts `product_id`, `variation_id` and `quantity`. It refuses `price`, `line_total`,
+`line_subtotal`, `subtotal`, `total`, `discount` and `currency` **by name, with a reason** — the
+`CustomerInput` device, for the same reason: a client that sends a price is a client whose author
+believes it decides one, and a 400 saying so is what corrects that before production.
+
+Prices are re-read from the catalogue on every response, not cached from when the line was added.
+Shipping comes from `RateResolver` against the destination, never from the payload, and a free-shipping
+threshold is compared against the **cart's** subtotal — a caller that could state its own subtotal could
+claim to have crossed one.
+
+`RateResolver` is called directly rather than `ShippingService::rates()`, which asserts
+`ac_manage_shipping`: a shopper being quoted a delivery price is not reading the shop's shipping
+configuration. A courier's own quote is never consulted — what the shop charges is `ac_shipping_rates`
+and nothing else.
+
+### Checkout does not take the money
+
+It creates a `pending` order and answers with a hand-off:
+
+```json
+{"order": {"id": 2398, "total": "15450.00", "payment_method": "cod"},
+ "next": {"action": "create_payment", "endpoint": "/orders/2398/payments"}}
+```
+
+`POST /orders/{id}/payments` is §58's existing route and already owns the transaction row, the audit
+entry and the provider call. A payment that fails must not orphan an order that succeeded. The cart is
+emptied only once the order exists, so a failure anywhere above leaves the basket intact — an order that
+was never created is a retry, an emptied cart is a customer starting again.
+
+The destination is stored on the order as `_ac_wilaya_id` / `_ac_commune_id` / `_ac_delivery_type`, so a
+later shipment does not have to recover it from a free-text address — the guess `Shipping\ShipmentInput`
+refuses to make. A shipping address is optional and its absence means "same as billing"; `null` is a
+choice, a malformed object is still an error.
+
 ## Cash on delivery
 
 Roadmap §52, docs/PLAN.md §12. COD is how most Algerian orders are actually paid, so the shop phones

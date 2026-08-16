@@ -3626,6 +3626,119 @@ arriving one step sooner.
 already the only place that is read (§52, §58). Checkout consumes that registry;
 it does not learn about COD separately.
 
+## What was built
+
+`src/Cart/` — seven cart routes and two checkout routes, **no migration and no
+table** (`Schema::VERSION` is still 9):
+
+``` text
+GET    /cart                        POST   /cart/items
+DELETE /cart                        PATCH  /cart/items/{key}
+POST   /cart/coupons                DELETE /cart/items/{key}
+DELETE /cart/coupons/{code}
+GET    /checkout/shipping-rates     POST   /checkout
+```
+
+**The cart is `WC_Cart`, and that was the whole decision.** WooCommerce's cart
+does the arithmetic — line totals, tax, rounding, stock, and §21's coupon rules
+including usage limits and restrictions. Reimplementing it would fork the data
+model CLAUDE.md forbids forking and re-derive security-critical maths that is
+already written and already audited. What this module owns is the boundary:
+validation in, our envelope out, and errors that name the field.
+
+**Store API's *cart* was reusable; its shipping and checkout halves were not**,
+and the split is why this is our routes over `WC_Cart` rather than a proxy.
+Measured 2026-08-16: this install has **zero WooCommerce payment gateways
+enabled** and **zero shipping zones**, because §58 put payment behind
+`PaymentProviderInterface` and §14 replaced zones with `ac_shipping_rates`. So
+`wc/store/v1/checkout` cannot take a payment here and its `shipping_rates` is
+always empty. Store API also sits on core's CORS, which reflects **any** origin
+with `Allow-Credentials: true` — `API/Cors` governs our namespace only.
+
+## The session, and three things it cost to learn
+
+A cart needs a session and WooCommerce identifies one by cookie. There are no
+cookies here. `StoreApi\SessionHandler` is WooCommerce's own cookie-free
+handler, keyed by a signed token in a header, and swapping it in is one filter —
+so the token's signature, expiry and secret stay WooCommerce's problem rather
+than becoming a credential this project mints.
+
+``` text
+add_filter('woocommerce_session_handler', fn () => SessionHandler::class, 0);
+wc_load_cart();
+(new WC_Cart_Session(WC()->cart))->get_cart_from_session();   // <-- required
+```
+
+**`wc_load_cart()` does not populate the cart.** It opens the session and builds
+the cart object, but `WC_Cart_Session::get_cart_from_session()` is hooked to
+`wp_loaded`, which fired long before any REST route runs. The result is the
+worst available shape: a valid session holding the shopper's items beside an
+**empty cart**, with nothing reporting a problem. Neither `WC_Cart::get_cart()`
+nor a fresh `new WC_Cart()` fixes it — `get_cart()` is guarded by
+`did_action('woocommerce_cart_loaded_from_session')`, which has already fired.
+Constructing `WC_Cart_Session` directly is the public path that is not guarded,
+and it is idempotent.
+
+**`WC_Cart::needs_shipping()` is permanently false on this install**, and that
+one reached an order before a test caught it. It begins by returning false when
+`wc_get_shipping_method_count()` is zero — a count of methods in *WooCommerce's
+shipping zones*, which §14 deliberately does not use. A cart holding a rug
+reported `needs_shipping: false`, checkout skipped the §14 quote on the strength
+of it, and the order was created with no delivery charge and a total short by
+the entire shipping cost. `CartService::needsShipping()` asks the products
+instead, which is a fact about the goods that no zone configuration can
+invalidate.
+
+**A per-request singleton is not per-request in the test harness.**
+`CartSession::load()` originally guarded on "already loaded", which is correct
+inside one HTTP request and wrong inside `tests/Api/cart.php`, where forty
+`rest_do_request()` calls share one process. "A forged token opens an empty
+cart" passed **against the previous caller's cart** — the security property of
+the whole module, untestable and therefore untested. It now keys on the token
+and rebuilds WooCommerce's singletons when one changes, and clears
+`$_SERVER['HTTP_CART_TOKEN']` rather than leaving a stale one where the next
+anonymous request inherits it.
+
+## Public, and what actually protects it
+
+`/cart` and `/checkout` answer `__return_true`, which makes them the third and
+fourth entries in that allowlist after `/health`, `/locations/*` and the webhook
+routes. There is no capability that could gate them: a shopper has no WordPress
+account at this point in the flow and §44 forbids giving one an Application
+Password. Requiring authentication would mean the Next.js server proxying every
+quantity change with an admin credential, which is the arrangement §44 exists to
+prevent.
+
+**The token is the owner.** It is signed with the site salt, expires in 48
+hours, and a forged one opens an *empty* cart rather than somebody else's —
+stronger than §59b's "unguessable, not sequential", and asserted in
+`tests/Api/cart.php` with the control that stops it passing vacuously. Rate
+limiting applies as it does across the namespace.
+
+## The rule held
+
+`LineInput` accepts exactly `product_id`, `variation_id` and `quantity`, and
+refuses `price`, `line_total`, `line_subtotal`, `subtotal`, `total`, `discount`
+and `currency` **by name, with a reason** — the `Customers\CustomerInput`
+device, for the same reason: a client that sends a price is a client whose
+author believes it decides one. Shipping comes from `RateResolver` against the
+destination, never from a `shipping_total` in the payload, and the free-shipping
+threshold is compared against the *cart's* subtotal, because a caller that could
+state its own subtotal could claim to have crossed one.
+
+**Checkout does not take the money.** It creates a `pending` order and returns
+`next: {action: create_payment, endpoint: /orders/{id}/payments}` — §58's
+existing route, which already owns the transaction row, the audit entry and the
+provider call. A payment that fails must not orphan an order that succeeded.
+The cart is emptied only after the order exists, so a failure anywhere above
+leaves the basket intact.
+
+`RateResolver` is used directly rather than `ShippingService::rates()`, which
+asserts `ac_manage_shipping` — a staff capability a shopper will never hold. A
+customer being quoted a delivery price is not reading the shop's shipping
+configuration. And a courier's own quote is never consulted: what the shop
+charges is `ac_shipping_rates` and nothing else.
+
 ------------------------------------------------------------------------
 
 # 59c. Customer Accounts and Sessions

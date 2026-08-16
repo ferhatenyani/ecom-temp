@@ -75,6 +75,14 @@ only the incidental coverage it picked up from `inventory.php` (four calls) and 
 Nothing drove product CRUD hard, and the first walkthrough that did found a 500 (see "What the audit
 found" below).
 
+`tests/Api/cart.php` (§59b) is the other suite written to this shape, and it carries the module's
+central security property: **a forged cart token opens an empty cart rather than somebody else's.**
+Writing it found that the property was untestable as first built — `CartSession` guarded on "already
+loaded", which is right inside one HTTP request and wrong inside a suite that makes forty
+`rest_do_request()` calls in one process, so the assertion passed against the *previous caller's* cart.
+It now keys on the token. That is the second time in this document a control turned a passing assertion
+into a real one.
+
 ### Provider — Yalidine, ZR Express, Chargily
 
 | Provider | Sandbox | State |

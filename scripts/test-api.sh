@@ -267,6 +267,74 @@ check "DELETE ?force=true removes it" 200 \
 check "the forced-deleted product is gone" 404 "$(status -u "$CRED" "${API}/products/${PROBE_ID:-0}")"
 echo
 
+# ------------------------------------------------------------------ cart --
+#
+# §59b's cart is covered in depth by tests/Api/cart.php. One property is not
+# reachable from there and belongs here: the token travels as the `Cart-Token`
+# **header**. rest_do_request() parses no headers, so the in-process suite has
+# to use the `cart_token` parameter, and the header path — the one a real
+# storefront will use — would otherwise never be executed.
+#
+# The cart is also the only public write surface in the API, so "no credential
+# needed" is asserted rather than assumed.
+echo "cart (roadmap §59b — the header path)"
+
+CART_SKU="ac-http-cart"
+CART_PID=$(wpcli -e AC_SKU="$CART_SKU" wpcli wp eval '
+$sku = getenv("AC_SKU");
+foreach (["publish", "draft", "trash"] as $status) {
+    foreach (wc_get_products(["sku" => $sku, "status" => $status, "limit" => 20, "return" => "ids"]) as $id) {
+        wp_delete_post((int) $id, true);
+    }
+}
+$p = new WC_Product_Simple();
+$p->set_name("AC http cart fixture");
+$p->set_sku($sku);
+$p->set_regular_price("1000.00");
+$p->set_status("publish");
+echo (int) $p->save();
+')
+
+check "POST /cart/items needs no credential" 201 \
+  "$(status -X POST -H 'Content-Type: application/json' \
+     -d "{\"product_id\":${CART_PID:-0},\"quantity\":2}" "${API}/cart/items")"
+
+CART_BODY=$(curl -s -m 30 -X POST -H 'Content-Type: application/json' \
+  -d "{\"product_id\":${CART_PID:-0},\"quantity\":2}" "${API}/cart/items")
+CART_TOKEN=$(printf '%s' "$CART_BODY" | grep -o '"cart_token":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+check "a token comes back in meta" "true" "$([[ ${#CART_TOKEN} -gt 40 ]] && echo true || echo false)"
+check "the cart totalled the catalogue price" "2000.00" \
+  "$(printf '%s' "$CART_BODY" | grep -o '"subtotal":"[^"]*"' | head -1 | cut -d'"' -f4)"
+
+# THE PROPERTY THIS BLOCK EXISTS FOR: the header carries the cart.
+check "the Cart-Token header restores the cart" "2" \
+  "$(curl -s -m 30 -H "Cart-Token: ${CART_TOKEN}" "${API}/cart" \
+     | grep -o '"items_count":[0-9]*' | head -1 | cut -d: -f2)"
+
+# ...and without it, the same request is a different, empty cart.
+check "no header means a new, empty cart" "0" \
+  "$(curl -s -m 30 "${API}/cart" | grep -o '"items_count":[0-9]*' | head -1 | cut -d: -f2)"
+
+check "a forged token in the header opens an empty cart" "0" \
+  "$(curl -s -m 30 -H "Cart-Token: eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidF9mYWtlIn0.forged" "${API}/cart" \
+     | grep -o '"items_count":[0-9]*' | head -1 | cut -d: -f2)"
+
+# The §59b rule, over the wire.
+check "a client-sent price is refused over HTTP" 400 \
+  "$(status -X POST -H 'Content-Type: application/json' \
+     -d "{\"product_id\":${CART_PID:-0},\"quantity\":1,\"price\":\"0.01\"}" "${API}/cart/items")"
+
+wpcli -e AC_SKU="$CART_SKU" wpcli wp eval '
+foreach (["publish", "draft", "trash"] as $status) {
+    foreach (wc_get_products(["sku" => getenv("AC_SKU"), "status" => $status,
+                              "limit" => 20, "return" => "ids"]) as $id) {
+        wp_delete_post((int) $id, true);
+    }
+}
+echo "cleaned";' >/dev/null
+echo
+
 # ---------------------------------------------------------------- exports --
 # THE THIRD REGRESSION TEST.
 #
