@@ -4186,6 +4186,15 @@ refused with 501 rather than answered with zeros** — the HPOS query against
 `wp_posts` returns no rows and no error, which is the silent-wrong-number shape
 the whole rule exists to prevent.
 
+That refusal is **tested**, and the technique generalises: HPOS is not switched
+off and nothing is migrated, because
+`OrderUtil::custom_orders_table_usage_is_enabled()` reads an option, and any
+WordPress option can be short-circuited for the length of one request with a
+`pre_option_*` filter. It was first assumed untestable on the grounds that
+proving it meant migrating the install's orders — which was never true, and is
+worth remembering the next time a capability check looks like it needs the
+environment changed to exercise it.
+
 ## The capability was already too wide
 
 `ac_view_analytics` is held by every role in PLAN §3, Support Agent included —
