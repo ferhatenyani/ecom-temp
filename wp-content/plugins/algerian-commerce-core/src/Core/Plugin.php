@@ -28,6 +28,11 @@ use AlgerianCommerce\CLI\SyncDestinationsCommand;
 use AlgerianCommerce\CLI\SyncPaymentsCommand;
 use AlgerianCommerce\CLI\SyncShipmentsCommand;
 use AlgerianCommerce\CLI\UnlockCommand;
+use AlgerianCommerce\Cart\CartController;
+use AlgerianCommerce\Cart\CartService;
+use AlgerianCommerce\Cart\CartSession;
+use AlgerianCommerce\Cart\CheckoutController;
+use AlgerianCommerce\Cart\CheckoutService;
 use AlgerianCommerce\CMS\CmsController;
 use AlgerianCommerce\CMS\CmsRepository;
 use AlgerianCommerce\CMS\CmsService;
@@ -195,6 +200,9 @@ final class Plugin
     private ?GeoImporter $geoImporter = null;
     private ?ContentTypes $contentTypes = null;
     private ?CmsRepository $cmsRepository = null;
+    private ?CartService $cartService = null;
+    private ?CheckoutService $checkoutService = null;
+    private ?CartSession $cartSession = null;
     private ?CmsService $cmsService = null;
     private ?UploadPolicy $uploadPolicy = null;
     private ?MediaRepository $mediaRepository = null;
@@ -421,6 +429,8 @@ final class Plugin
                 $this->shippingProviders(),
                 $this->shippingService()
             ),
+            new CartController($this->logger(), $this->cartService()),
+            new CheckoutController($this->logger(), $this->checkoutService()),
             new CmsController($this->logger(), $this->cmsService()),
             new MediaController($this->logger(), $this->mediaService()),
             new MarketingController($this->logger(), $this->marketingService()),
@@ -604,6 +614,41 @@ final class Plugin
     public function cmsService(): CmsService
     {
         return $this->cmsService ??= new CmsService($this->cmsRepository(), $this->logger());
+    }
+
+    /**
+     * The cart's session — roadmap §59b.
+     *
+     * One instance per request, because `CartSession::load()` swaps
+     * WooCommerce's session handler and must do it once. A second instance
+     * would add the filter again and call `wc_load_cart()` against a session
+     * that is already open.
+     */
+    public function cartSession(): CartSession
+    {
+        return $this->cartSession ??= new CartSession();
+    }
+
+    public function cartService(): CartService
+    {
+        return $this->cartService ??= new CartService($this->cartSession());
+    }
+
+    /**
+     * Checkout — roadmap §59b.
+     *
+     * The one service that needs §14's rules and §58's payment registry at
+     * once. It takes the rule *repository* rather than ShippingService, which
+     * asserts a staff capability a shopper will never hold.
+     */
+    public function checkoutService(): CheckoutService
+    {
+        return $this->checkoutService ??= new CheckoutService(
+            $this->cartSession(),
+            $this->shippingRuleRepository(),
+            $this->paymentProviders(),
+            $this->logger()
+        );
     }
 
     /**

@@ -145,17 +145,25 @@ echo PHP_EOL, "── every route declares a guard ──", PHP_EOL;
  * actually registered — not the source — so a guard that is present but never
  * reaches the router fails here too.
  *
- * The public four are an allowlist rather than an exception: /health and the
- * namespace index disclose no shop data, the geography routes serve the §51
- * dataset that ships in the plugin and is the same for every client, and a
- * webhook's signature *is* its authentication (AbstractWebhookController says
- * so at the line that writes __return_true).
+ * The public list is an allowlist rather than an exception, and every entry has
+ * a reason: /health and the namespace index disclose no shop data, the
+ * geography routes serve the §51 dataset that ships in the plugin and is the
+ * same for every client, a webhook's signature *is* its authentication
+ * (AbstractWebhookController says so at the line that writes __return_true),
+ * and §59b's cart and checkout are reached by shoppers who have no account at
+ * all — what protects a cart is the signed token that opens it, not a
+ * capability, and requiring one would mean the storefront proxying every
+ * quantity change with an admin credential, which is the arrangement §44
+ * exists to prevent. `tests/Api/cart.php` is where that token is proven to be
+ * the owner.
  */
 $publicPrefixes = [
     '/algerian-commerce/v1',                    // core's own namespace index
     '/algerian-commerce/v1/health',
     '/algerian-commerce/v1/locations/',
     '/algerian-commerce/v1/webhooks/',
+    '/algerian-commerce/v1/cart',               // §59b — the token is the owner
+    '/algerian-commerce/v1/checkout',           // §59b — same cart, same token
 ];
 
 $guarded = [];
