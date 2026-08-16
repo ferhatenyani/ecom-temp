@@ -111,6 +111,8 @@ the third-party integration rules before the first provider adapter.
 
 - [58. Payment Abstraction](#58-payment-abstraction)
 - [59. Chargily](#59-chargily)
+- [59b. Cart and Checkout](#59b-cart-and-checkout)
+- [59c. Customer Accounts and Sessions](#59c-customer-accounts-and-sessions)
 - [60. Webhooks](#60-webhooks)
 
 **Part XI — CMS and Marketing (Milestone 10)**
@@ -416,6 +418,17 @@ third-party integration — a token, a hashed-PII payload and a deduplication
 contract with the storefront — and §62b says so where §62 only lists event
 names.
 
+**32b and 32c were added after §69, and they close a hole in this list rather
+than extending it.** PLAN §53 requires `cart`, `checkout`, `customer accounts`
+and `orders` of the storefront, and §44 defers a customer session to "the
+storefront work" — but the only storefront entry here is step 44, one line
+reading *"Next.js storefront"*. Cart, checkout and customer sessions all have
+substantial **backend** consequences, so bundling them into a frontend step is
+how a shop ends up improvising its pricing and its authorization inside a React
+page. 32c also carries this project's first real IDOR — order history, where a
+shopper can edit an id in a URL — which §59c states in full and which
+`Permissions::assertOwnsOr()` has been waiting for since §50.
+
 ``` text
 01. WSL 2
 02. Docker Desktop
@@ -451,6 +464,10 @@ names.
 30. ZR Express (was "Zedair")
 31. Payment abstraction
 32. Chargily
+32b. Cart and checkout — server-side pricing, stock and shipping
+     re-checks; PLAN §53, roadmap §59b
+32c. Customer accounts and sessions — login, profile, order history,
+     and the order-id IDOR it must not ship; roadmap §44, §59c
 33. Coupons
 34. Notifications
 35. CMS
@@ -2076,8 +2093,15 @@ development.
 
 **Customer authentication is not, and is deliberately blocked.** A session
 strategy cannot be designed before cart and checkout exist, and PLAN §53 says
-that architecture is finalized during implementation. It belongs with the
-storefront work, not here.
+that architecture is finalized during implementation.
+
+**It now has a step of its own — 32c, written up as §59c — and no longer
+"belongs with the storefront work".** That phrasing was the problem: it deferred
+a body of backend work to step 44, *"Next.js storefront"*, where the only thing
+waiting for it was a React page. §59c carries the two rules below plus the one
+thing this deferral was quietly holding: **order history is where this project's
+first real IDOR lands**, and `Permissions::assertOwnsOr()` has been written and
+unused since §50 waiting for it.
 
 Two rules to carry into it:
 
@@ -3554,6 +3578,123 @@ payment links are the whole surface. §59's "refunds if supported" therefore
 resolves to *not supported*, and `PaymentProviderInterface` gained no method for
 it. `PaymentStatus::REFUNDED` stays in the vocabulary for the provider that has
 one.
+
+------------------------------------------------------------------------
+
+# 59b. Cart and Checkout
+
+
+**This section was added because the list did not have it.** PLAN §53 requires
+`cart` and `checkout` of the storefront and says the architecture is "finalized
+during implementation"; §44 says a customer session "cannot be designed before
+cart and checkout exist". Between them, the two most security-sensitive
+endpoints this backend will ever expose had no step, no section and no owner —
+they were implicitly inside step 44, *"Next.js storefront"*, one line long. A
+cart is not a frontend concern with a backend footnote: prices, stock and
+shipping costs are decided here or they are decided by the customer.
+
+Build after step 32 (Chargily), because a checkout that cannot take a payment is
+a form. Coupons (33) may land either side — a cart applies them and does not
+require them to exist.
+
+Use supported WooCommerce mechanisms, per PLAN §53 and the standing rule against
+forking their data models.
+
+``` text
+cart:      create, read, add/update/remove line, apply coupon, clear
+           price and stock re-read on every response
+checkout:  quote shipping (§14 rules), choose payment method (§58),
+           create the order, hand off to the provider
+```
+
+**The rule that makes this section dangerous, and the reason it is written
+before the code:** a cart arrives from a browser, so **every number in it is
+attacker-controlled**. Quantity, price, shipping cost and coupon are all
+requests, never facts. Re-read price from the catalogue, re-read stock from
+inventory, re-quote shipping through `RateResolver`, and re-check the coupon —
+on the server, on every mutation, and again at checkout. A cart that trusts the
+price in its own payload is a shop that sells at whatever the customer types.
+This is the same rule as SECURITY.md → "Payments" ("never trust the frontend to
+tell the backend that a payment succeeded"), one step earlier in the flow.
+
+A cart belongs to a session, and until §59c exists that session is anonymous —
+so a cart id must be **unguessable**, not sequential, or one shopper reads
+another's basket by counting. That is the same defect §59c describes for orders,
+arriving one step sooner.
+
+`ENABLE_COD` gates what checkout *offers* — `Plugin::paymentProviders()` is
+already the only place that is read (§52, §58). Checkout consumes that registry;
+it does not learn about COD separately.
+
+------------------------------------------------------------------------
+
+# 59c. Customer Accounts and Sessions
+
+
+**Also added because the list did not have it**, and §44 deferred it to "the
+storefront work" without a step to defer it *to*. It has real backend
+consequences and cannot be built inside a Next.js page.
+
+Build after §59b, which is §44's own sequencing: a session needs something to be
+a session *of*.
+
+``` text
+register, log in, log out
+password reset
+profile read/update
+address book
+order history          <-- read §65's IDOR note before writing this one
+```
+
+Two rules are already settled and carry over unchanged from §44:
+
+``` text
+customers never receive an Application Password  (server-to-server only)
+customer sessions are HTTP-only cookies          (SECURITY.md)
+```
+
+## The flaw this section must not ship — order ids
+
+**Order history is where this project's first real IDOR lands, and it is not
+hypothetical.** Every route today carries a staff capability, so "may this
+caller read order 124?" has never had to be asked: everyone who can read one
+order is staff and may read them all. The moment a shopper can log in, that
+stops being true, and `GET /orders/124` becomes a question about *whose* order
+it is.
+
+The failure is one character wide. A shopper opens their history, sees
+`/orders/123`, edits it to `124`, and reads a stranger's name, phone, address
+and basket. Nothing crashes and nothing is logged as an error, because the
+request is **valid** — it is the authorization that is missing.
+
+Three things must all be true, and the third is the one that gets skipped:
+
+``` text
+1. the storefront asks for "my orders", never "orders for customer 5"
+   — the customer id comes from the session, never from the request body
+2. the Next.js server never forwards a browser-supplied id to this API
+   using its own privileged credential (§44's rule, one layer up)
+3. this API checks ownership itself, on the order, in the service layer
+```
+
+**Rule 3 is not optional and is not covered by the first two.** SECURITY.md →
+"Authorization" already says it: "a valid capability does not imply access to
+*that* order". A check that lives only in the storefront is a check that a
+second client, a mobile app or a mistake removes.
+
+`Permissions::assertOwnsOr()` is already written for exactly this and currently
+has **no call sites** — see §65 and `docs/TESTING.md`, which record it as
+deliberately unused rather than forgotten. Wiring it into the order routes is
+part of this step, not a follow-up, and so are the tests: `tests/Api/security.php`
+holds the type-confusion half of IDOR today and the owner-scoped half belongs
+beside it. The shape is "customer A is refused customer B's order, **and**
+customer A is served their own" — a refusal on its own proves only that the
+route is broken.
+
+The same question applies to every shopper-reachable resource that takes an id:
+an order's notes, its timeline, its shipments, its payments, a customer record,
+a saved address. Enumerate them when the step is built rather than discovering
+them one at a time.
 
 ------------------------------------------------------------------------
 

@@ -24,6 +24,19 @@ Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS a
 §68's version pinning and §69's API walkthrough. **Next up is §66 (the five automation scripts) and
 §67 (seed data), which go together because `seed.sh` is §67's delivery mechanism.**
 
+**Two steps were added to §4's build sequence after §69: `32b` cart and checkout (§59b) and `32c`
+customer accounts and sessions (§59c).** They are not new scope — PLAN §53 always required `cart`,
+`checkout`, `customer accounts` and `orders` of the storefront — but the only storefront entry in the
+list was step 44, one line reading "Next.js storefront", and §44 deferred customer sessions to "the
+storefront work" with no step to defer them to. Both have substantial backend consequences: a cart
+decides prices, stock and shipping costs, and **every number in it arrives from a browser**, so all of
+them are re-read server-side on every mutation. **`32c` carries this project's first real IDOR** —
+order history, where a shopper edits `/orders/123` to `/orders/124` and reads a stranger's name, phone
+and address, with nothing erroring because the request is valid and only the authorization is missing.
+`Permissions::assertOwnsOr()` has been written and unused since §50 waiting for exactly that; wiring it
+in and testing it ("customer A is refused customer B's order **and** served their own") is part of the
+step, not a follow-up. `docs/SECURITY.md` → "Security tests to write" carries the rule.
+
 **§65 was an audit, not a feature, and [docs/TESTING.md](docs/TESTING.md) is its deliverable** — the map
 from each of §65's five categories to the test that covers it, what was already covered under a different
 name, and what does not apply here with the argument. Read it before adding a suite. Four things it

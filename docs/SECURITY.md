@@ -493,8 +493,21 @@ the first leak.
 already covered under another name, and which do not apply here. Two are answered by an argument rather
 than a test, and both arguments are in this document: CSRF above, and the owner half of IDOR, which
 cannot be tested because no route in this API is owner-scoped yet — every one carries a management
-capability, and `Permissions::assertOwnsOr()` is written, unused, and waiting for roadmap §44's customer
-session. **When that lands, owner-scoped tests are part of it, not a follow-up.**
+capability, and `Permissions::assertOwnsOr()` is written, unused, and waiting for a customer session.
+
+**That wait now has a step: roadmap 32c, written up as §59c.** Read it before building customer accounts.
+The short form, because it is the one authorization mistake this project is most likely to make: a shopper
+opens their order history, edits `/orders/123` to `/orders/124`, and reads a stranger's name, phone and
+address. Nothing errors, because the request is valid and only the authorization is absent. Three things
+must all hold, and the third is the one that gets skipped — the storefront asks for "my orders" rather
+than "orders for customer 5"; the Next.js server never forwards a browser-supplied id under its own
+privileged credential; and **this API checks ownership itself, in the service layer**, because a check
+that lives only in the storefront is a check the second client removes. Owner-scoped tests are part of
+that step, not a follow-up, and the shape is "customer A is refused customer B's order **and** served
+their own" — a refusal alone proves only that the route is broken.
+
+The same question applies to every shopper-reachable resource taking an id: an order's notes, timeline,
+shipments and payments, a customer record, a saved address. Enumerate them when the step is built.
 
 Two properties of this list are worth keeping when adding to it. A refusal and an unreachable route look
 identical from outside, so **every negative test needs a positive control**. And an injection test that
