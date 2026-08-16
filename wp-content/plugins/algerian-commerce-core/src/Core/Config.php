@@ -80,6 +80,13 @@ final class Config
              */
             'AC_MEDIA_MAX_BYTES',
             /*
+             * How many seconds an analytics response may be reused (roadmap
+             * §63). `0` disables the cache; anything unparseable falls back to
+             * the default rather than to zero, so a typo cannot silently turn
+             * it off. It is a cache and never a rollup — see `AnalyticsCache`.
+             */
+            'AC_ANALYTICS_CACHE_TTL',
+            /*
              * Meta's two values, and they are not the same kind of thing
              * (roadmap §62b). META_PIXEL_ID is public — it ships inside the
              * storefront's JavaScript, so `GET /marketing/config` serves it.

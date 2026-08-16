@@ -71,6 +71,10 @@ services:
       # The upload cap in bytes. docker/php-uploads.ini raises PHP's own limit
       # to match; UploadPolicy takes the lower of the two.
       AC_MEDIA_MAX_BYTES: ${AC_MEDIA_MAX_BYTES:-}
+      # How long an analytics response may be reused, in seconds. 0 disables
+      # the cache; the test suite runs with it off so assertions see the shop
+      # as it is. It is a cache, never a rollup — roadmap §63.
+      AC_ANALYTICS_CACHE_TTL: ${AC_ANALYTICS_CACHE_TTL:-}
       # Provider credentials and feature flags. Config reads getenv(), so a
       # variable in .env reaches the plugin only if it is listed here — an
       # adapter whose keys are not passed through simply never registers, and
@@ -145,6 +149,10 @@ services:
       AC_RATE_LIMIT_AUTH_FAILURES: ${AC_RATE_LIMIT_AUTH_FAILURES:-}
       AC_RATE_LIMIT_TRUSTED_IPS: ${AC_RATE_LIMIT_TRUSTED_IPS:-}
       AC_MEDIA_MAX_BYTES: ${AC_MEDIA_MAX_BYTES:-}
+      # How long an analytics response may be reused, in seconds. 0 disables
+      # the cache; the test suite runs with it off so assertions see the shop
+      # as it is. It is a cache, never a rollup — roadmap §63.
+      AC_ANALYTICS_CACHE_TTL: ${AC_ANALYTICS_CACHE_TTL:-}
       # Provider credentials and feature flags. Config reads getenv(), so a
       # variable in .env reaches the plugin only if it is listed here — an
       # adapter whose keys are not passed through simply never registers, and

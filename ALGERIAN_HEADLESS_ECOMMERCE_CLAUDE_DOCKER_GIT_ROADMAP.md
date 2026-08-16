@@ -4133,6 +4133,105 @@ data becomes large.
 
 Use indexes and aggregation strategies.
 
+## What was built
+
+`src/Analytics/` — seven read-only endpoints, **no migration and no table**
+(`Schema::VERSION` stays 9):
+
+``` text
+GET /analytics/overview   /revenue   /orders   /products
+                          /customers /shipping /cod
+```
+
+``` text
+Analytics/AnalyticsRange       the window: today|yesterday|7d|30d|90d|custom
+Analytics/Metrics              rates and integer-minor-unit money arithmetic
+Analytics/RevenueReport        PLAN §28, and the three lines it refuses to invent
+Analytics/AnalyticsCache       a short response cache, never a rollup
+Analytics/AnalyticsRepository  the aggregate SQL, all of it, in one file
+Analytics/AnalyticsService     the capability split and the assembly
+Analytics/AnalyticsController  seven routes, one set of window arguments
+```
+
+## `ac_analytics_aggregates` was not built, and the evidence is why
+
+ARCHITECTURE §7 planned the table and §63 declined it — the reasoning is in
+that document under "`ac_analytics_aggregates`, and why §63 did not build it".
+The short form: WooCommerce Admin already ships this rollup
+(`wc_order_stats`, `wc_order_product_lookup`), and on this install those tables
+hold **0 rows against 912 orders**, with **1,426 `wc-admin_import_orders` jobs
+pending since 2026-08-11** and no Action Scheduler action ever completed.
+Nothing drives WP-Cron on a headless backend nobody browses. That is §61's and
+§62b's argument a third time — half of a WooCommerce feature that only runs
+when a page is rendered — and worse, because the tables exist, so reading them
+returns zeros rather than failing.
+
+Our own rollup inherits the same dependency. So: bounded queries on
+WooCommerce's `type_status_date` index, a window capped at 366 days, and a
+60-second response cache that cannot drift further than its TTL and needs no
+scheduler. The trigger for revisiting is named:
+`AnalyticsRepository::ordersByWilaya()`, the one query costing an index lookup
+per order — and the rollup must then ship with a driver that is not WP-Cron.
+
+## HPOS: aggregate SQL, and the one exception it justifies
+
+`Orders/OrderRepository` is the only file allowed to touch an order *object*,
+and that rule is intact: nothing in `Analytics/` loads a `WC_Order`. What it
+needs is `SUM` and `GROUP BY`, and WooCommerce publishes no API for either —
+`wc_get_orders()` can count, which is how §52's COD funnel works, but it cannot
+sum or rank. `AnalyticsRepository` is therefore the single file running
+aggregate SQL over the order tables, with the table name from
+`OrderUtil::get_table_for_orders()` and never a literal, and **a legacy install
+refused with 501 rather than answered with zeros** — the HPOS query against
+`wp_posts` returns no rows and no error, which is the silent-wrong-number shape
+the whole rule exists to prevent.
+
+## The capability was already too wide
+
+`ac_view_analytics` is held by every role in PLAN §3, Support Agent included —
+an account that cannot open a single order. The rule §63 adds is in
+SECURITY.md → "Authorization": **reporting may not disclose in aggregate what
+the caller cannot already read in detail.** Money needs `ac_manage_orders` on
+top, because that capability already reads an order's total. Counts and rates
+need only `ac_view_analytics`. No new capability was invented — §61's media gap
+set that precedent — and `meta.money_visible` tells a client which payload it
+got. The cache key carries the same flag, or the cache would serve an
+administrator's figures to a support agent.
+
+## What this shop can honestly report
+
+PLAN §28 lists ten figures and seven are real: order total, gross, net,
+collected, discounts, shipping revenue, tax, refunds, AOV. Three are named in
+`unavailable` with their reasons instead of being emitted as zero — **shipping
+cost** (`ac_shipments` has no cost column, by migration 004's own argument),
+**payment fees** (migration 007 refused a fee column; Chargily's land in
+per-transaction metadata and a second gateway would shape them differently) and
+**margin** (WooCommerce has no cost-of-goods field, and §28 says to calculate
+profit only where reliable cost data exists). A dashboard rendering
+"Margin: 0.00 DZD" has told the shop something false.
+
+## Three things this section found
+
+**Counts and sums do not share a currency.** WooCommerce records the currency
+per order, and this install holds 890 orders in `USD` from before anyone set
+`DZD`. Filtering the whole query to the store currency put "22 orders placed"
+on a dashboard beside a COD funnel reporting 615. Counts are of every order;
+only money is scoped, through a `CASE` rather than a `WHERE`, and
+`excluded_currencies` reports what was left out.
+
+**`refunded` has to count as a revenue status.** A fully refunded order made a
+sale and gave it back: it belongs in gross with its refund subtracted, netting
+to zero. Excluding the order while still counting the refund — the obvious
+reading — nets to *minus* the sale, so a shop that refunded everything would
+report negative revenue it never took. Refunds are also keyed to the parent
+order's date, because `net = gross − refunds` is only true of one set of orders.
+
+**A wilaya comes off the shipment, never off the address.** `ShipmentInput`
+already refuses to fuzzy-match "Ouled Fayet" into a commune, and a report must
+not make the guess the shipping module declined. Orders with no parcel have no
+wilaya and are reported as `unattributed` with the reason attached — a map with
+a stated gap beats a map that is quietly wrong.
+
 ------------------------------------------------------------------------
 
 # 64. Import/Export
