@@ -312,6 +312,14 @@ images disagree about who `www-data` is**: uid 33 in the Debian `wordpress` imag
 writes nothing, and the tempting fix — `chmod 777 wp-content` — was in place here and has been removed. Do
 not put it back: a world-writable plugin directory is arbitrary code execution waiting for one other bug.
 
+**The store currency is `DZD`, and it is an option in the volume rather than anything version-controlled.**
+A fresh install comes back as `USD`, which is wrong here in a way nothing fails loudly about: prices still
+render, orders still save, and §62's `priceCurrency` quietly publishes the wrong currency to Google while
+§62b reports conversions in the wrong one to Meta. Set it with
+`wp option update woocommerce_currency DZD`; it belongs in §66's `setup.sh` when that exists, beside
+deleting the bundled plugins. Note that WooCommerce records the currency **per order**, so changing it
+does not rewrite orders already taken.
+
 WordPress's bundled Akismet and Hello Dolly are **deleted**, not deactivated — neither does anything on a
 headless backend and unused code still has to be patched. They live in the volume, so a fresh install brings
 them back; deleting them belongs in §66's `setup.sh` when it exists.
