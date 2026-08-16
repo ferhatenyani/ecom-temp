@@ -36,7 +36,7 @@ real upload can only happen in `http`.
 
 ## §65's five categories
 
-### Unit — 1,125 tests, 2,644 assertions, 73 files
+### Unit — 1,275 tests, 2,886 assertions, 75 files
 
 | §65 asks for | Covered by |
 |---|---|
@@ -52,7 +52,7 @@ an accident — `AnalyticsRange` takes the current instant as an argument so tha
 timezone boundary" is decidable in a test, and `AnalyticsCache::key()` is pure so that "a payload with
 money in it never shares a key with one without" is a unit test rather than an argument.
 
-### Integration — 18 suites in `tests/Api/`
+### Integration — 23 suites in `tests/Api/`
 
 §65's four words (WordPress, WooCommerce, custom plugin, database) are not four separate suites here.
 Every `tests/Api/` suite is an integration test by that definition: it runs inside a booted WordPress,
@@ -264,3 +264,33 @@ in-process.
 - **Cover the category where it lives.** A new inbound endpoint's forgery test belongs in that endpoint's
   suite, not in `security.php`; `security.php` holds what is about the API as a whole.
 - **Suites clean up after themselves**, trash included, so a second run starts where the first did.
+
+## The seed suite, and why a data loader has a `tests/Api` suite
+
+`tests/Api/seed.php` (roadmap §67) registers no routes and tests none. It is here because the rules that
+matter about the fixtures are the ones a unit test cannot reach.
+
+`tests/Unit/SeedDatasetTest` covers the validator against synthetic input — 61 tests over category
+references, SKU uniqueness across the product/variation namespace, variation attribute matching, legal
+status transitions, and PLAN §46's reserved-domain rule. The suite points the same validator at the
+**shipped** `data/seed/*.json`, which is the half that catches a fixture edited after the validator was
+written, and then asserts what the seeder produced: every SKU resolves, the variable product carries its
+variations and has a derived price, every shopper is a `customer` account, an order reached `cancelled`
+and another `refunded` (neither is a creatable status, so reaching them proves the second transition
+ran), every order is priced above zero, and a seeded product has rows in `ac_inventory_movements`.
+
+Three of its assertions are there because the thing they check has no other witness.
+
+**"a dry run writes nothing"** counts products either side of the call. A dry run that quietly wrote
+would look identical in every other assertion.
+
+**The notification pair** deletes one seeded order first, so the re-run genuinely creates one — otherwise
+"nothing was queued" would be asserted against a run that wrote nothing at all, which is a test that
+passes forever. It then asserts both doors: the queue returns to its previous size by default, and
+`--keep-notifications` actually keeps rows.
+
+**"wp_mail is not left short-circuited"** is the one that guards the rest of the process. The seeder
+filters `pre_wp_mail` for the duration of its writes, because WooCommerce's own transactional mail sends
+*synchronously* inside the status transition and there is nothing to discard afterwards. A seeder that
+forgot to remove that filter would silence every later suite's mail and every real send in the same
+request, and nothing else would notice.

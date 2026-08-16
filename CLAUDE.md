@@ -4,26 +4,93 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53, §55–§65, §68–§69 and §59b–§59d are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53, §55–§69 and §59b–§59d are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
 ZR Express, the payment abstraction, Chargily, the CMS, media, SEO, the marketing event layer, analytics,
-import/export, the cart and checkout, shopper accounts, coupons and notifications — and its
+import/export, the cart and checkout, shopper accounts, coupons, notifications and the development seed — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
-went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
-rest of §66 and [backups/](backups/) are still empty placeholders.
+went the way it did. Read it before extending a module. [scripts/](scripts/) is complete: `setup.sh`, `reset.sh`,
+`seed.sh`, `health.sh`, `backup.sh`, `restore.sh`, `test.sh`, `test-api.sh`. [backups/](backups/) holds only its own
+`.gitignore` — a backup carries `.env` and every customer record, so nothing in there is ever committed.
 
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53, §55–§65, §59b–§59d and §68–§69 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53, §55–§69 and §59b–§59d are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
 shipping rules, the Yalidine and ZR Express adapters, the security review, the payment abstraction and
 Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS and media endpoints,
 §62's SEO, §62b's marketing event layer, §63's analytics, §64's import/export, §65's testing audit,
 §68's version pinning, §69's API walkthrough, §59b's cart and checkout, §59c's shopper
-accounts and §59d's coupons and notifications. **Next up is §66 (the five automation scripts) and
-§67 (seed data), which go together because `seed.sh` is §67's delivery mechanism.**
+accounts, §59d's coupons and notifications, §66's automation scripts and §67's seed data.
+**§4's build order is now complete through step 42 (backup/recovery); steps 43 and 44 are the Next.js
+admin and storefront, which are separate repositories.** What is left in *this* repository is §70's
+integration contract, §71's client configuration, §72's feature flags, and the two documents that still
+do not exist — `docs/API.md` and `docs/DEPLOYMENT.md`.
+
+**§66 is six scripts and §67 is `src/Seed/` plus `data/seed/`, built together because `seed.sh` is
+§67's delivery mechanism.** No migration and no table — `Schema::VERSION` is still 10.
+
+**The sixth script is `restore.sh`, which §66 does not list, and it is the reason the list works.** "A
+backup is not valid until a restore has been tested" is an instruction to write a second script, not a
+note to be careful. `scripts/restore.sh --verify <dir>` starts a throwaway MySQL of the pinned version,
+restores the dump into it and compares every table's `COUNT(*)` against the manifest each backup carries
+— the running stack is untouched, which is what makes the drill something that gets *done*. Run
+2026-08-16: **62 tables, every count matching**. It failed twice first, and both are worth knowing:
+`mysqladmin ping` answers from the entrypoint's *temporary* server before root has a password, so the
+readiness gate must be a real query; and `docker exec -i` inside the comparison loop **ate the manifest
+from stdin**, comparing one table and reporting success in green — so the script now refuses to pass when
+it compared nothing. `backup.sh` dumps from inside `db` (never `wp db export`, which is broken here for
+the `caching_sha2_password` reason), takes uploads out of the volume with `docker compose cp`, and writes
+`.env` at 0600 into a directory at 0700 under a `backups/.gitignore` that ignores everything but itself.
+
+**`setup.sh` pays the waiting list this file kept.** WooCommerce installs at `x-tested-versions`'s pinned
+version with `--force`; `woocommerce_currency` is set to `DZD`; Akismet and Hello Dolly are deleted; the
+`ac_*` roles are installed before anything writes, or seeding fails as a wall of 403s that reads like a
+broken seeder. It also sets pretty permalinks, enables HPOS, and generates the two database passwords
+into a fresh `.env` — `compose.yaml` interpolates them, so a blank value creates a MySQL install with no
+password rather than an error. Every step is idempotent; re-run it after `docker compose down`.
+**`health.sh` checks only what `GET /health` cannot see** — the container layer (`wpcli` is
+run-on-demand, so "can it run `wp`" is not "is it in `ps`") and the transport (answering
+`rest_do_request()` and answering Apache on the published port are different claims) — then asks the
+endpoint for the other five and reports its verdict per check. It does **not** check versions;
+`scripts/test.sh versions` is §68's record and a second copy would drift. **`reset.sh` is destructive in
+four ways and none is the default**: `down -v` is never reached without an explicit answer, it refuses
+unless `WP_ENVIRONMENT_TYPE` is `local`/`development`, it prints counts read from the database it is
+about to drop, and the confirmation is the typed word `DESTROY` — `y` is muscle memory.
+
+**Every seeded row goes through a service; not one through `$wpdb`.** That is §64's rule ("an import must
+not be a back door around `ac_inventory_movements`") applied to the friendlier-sounding case. A seed that
+bypassed `ProductService` could build a shop the API would refuse — a duplicate SKU, a variation whose
+attribute the parent does not offer — and every test written against it would test an unreachable state.
+Two consequences: it **runs as an administrator**, because services assert capabilities and a seeder with
+no identity would have to bypass the check; and it is idempotent on natural keys — SKU, email, coupon
+code — with orders keyed by the `ac_seed_orders` **option** rather than a marker on the order, because
+`OrderRepository` is the only file that touches one. **Geography is not seeded**: §51 already ships 69
+wilayas and 1,541 communes, a courier matches communes *by name*, and `seed.sh` calls `import-algeria`
+first rather than inventing a second Algiers.
+
+**`SeedDataset` is pure, and it exists for one rule that has no other home.** Everything else it checks
+fails loudly when the seeder runs; **PLAN §46's "never use real customer data" does not** — a fixture
+carrying a colleague's real address seeds perfectly and mails them the first time somebody drains the
+queue. So every seeded email must sit on a domain RFC 6761 or RFC 2606 reserves, checked exactly enough
+that `badexample.com` fails where `mail.example.com` passes.
+
+**Seeding orders touches two mailers and they needed opposite answers.** `ac_notifications` is deferred,
+so the seeder notes the highest id and drops what it added (`--keep-notifications` opts out). **WooCommerce's
+own mailer is neither deferred nor ours**: `WC_Emails` sends *synchronously* inside
+`woocommerce_order_status_changed`, and the first run here attempted **25 sends** — visible only as
+`sendmail: can't connect` because this machine has no MTA. On a machine with one, a fictional order would
+have mailed the shop's real admin address. It is short-circuited through `pre_wp_mail` for the duration
+of the writes, and `--keep-notifications` deliberately does not re-open it: a queue can be inspected and
+drained on purpose, a synchronous send cannot. `tests/Api/seed.php` asserts the filter is removed again,
+because a seeder that left it would silence every later suite in the same process.
+
+**One limitation, named rather than worked around: every seeded order is dated now**, because this API
+accepts no order date, so §63's time series shows one day. Adding `date_created` to `OrderInput` is a
+real decision about §50 — an admin who can backdate an order can move revenue between months — not
+something a fixture loader gets to make.
 
 **§59b is `src/Cart/` — seven cart routes and two checkout routes, no migration and no table**
 (`Schema::VERSION` is still 9). The cart *is* `WC_Cart`: WooCommerce does line totals, tax, rounding,
@@ -514,11 +581,11 @@ events, shipment records, payment transactions, notification events, analytics a
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
 `Customers/`, `Account/`, `Cart/`, `Coupons/`, `Notifications/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`,
-`Analytics/`, `ImportExport/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
+`Analytics/`, `ImportExport/`, `Seed/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
 `tests/`, plus `integrations/ZRExpress/`, `integrations/Chargily/` and `integrations/Meta/`. Still to come:
-`Notifications/`, `Settings/`, …
+`Settings/`, …
 
 **The bundled PSR-4 autoloader is registered for `src/` behind Composer, not instead of it.** Composer runs
 with `optimize-autoloader`, so it dumps a *classmap* — a snapshot of the files present when somebody last ran
@@ -632,9 +699,12 @@ parses an `Authorization` header, never runs `rest_pre_serve_request` (so CORS h
 downloads are invisible to it), and cannot perform a real upload because `wp_handle_upload()` ends in
 `move_uploaded_file()`. Run it before touching authentication, rate limiting, CORS, uploads or any write
 path. [docs/TESTING.md](docs/TESTING.md) has the per-stage table and the conventions for adding a suite.
-The rest of `scripts/{setup,reset,seed,health,backup}.sh` (§66) does not exist yet. `reset.sh` is
-destructive by design and must say so loudly, and `backup.sh` cannot use `wp db query`/`wp db export` —
-see §66.
+`scripts/{setup,reset,seed,health,backup,restore}.sh` (§66) all exist. `setup.sh` is idempotent and is
+the script to re-run after `docker compose down`; `seed.sh` loads §51's geography and then §67's
+fixtures; `health.sh` checks the container layer and the transport and delegates the rest to
+`GET /health`; `backup.sh` dumps from inside the `db` container because `wp db export` is broken here;
+`restore.sh --verify` is the drill that makes a backup a backup; and `reset.sh` destroys both volumes
+behind a typed `DESTROY` and an environment check.
 
 ## API conventions
 

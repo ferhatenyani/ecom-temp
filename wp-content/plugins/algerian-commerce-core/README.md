@@ -2592,6 +2592,76 @@ than taken from input. Errors always come back in the envelope, so a client neve
 checked in `scripts/test-api.sh` — the in-process suite is structurally blind to them, exactly as it is to
 a real media upload.
 
+## Development seed (§67)
+
+`src/Seed/` and `data/seed/` — 5 categories, 12 products, 5 variations, 6 customers, 4 coupons and 11
+orders, loaded by `wp algerian-commerce seed`. No migration and no table. `scripts/seed.sh` is the shell
+wrapper and calls `import-algeria` first.
+
+The fixtures are JSON and ship **inside the plugin**, beside §51's geography and for the same reason: the
+plugin is what gets cloned per client, so a client replacing the demo catalogue replaces a file rather
+than code.
+
+### Everything goes through a service
+
+Not one row is written with `$wpdb`. §64 already established that an import must not be a back door
+around `ac_inventory_movements`; a seeder writing posts directly is the same back door with a friendlier
+name. A seed that bypassed `ProductService` can produce a product the API would refuse — a duplicate SKU,
+a sale price above the regular one, a variation whose attribute the parent does not offer — and then
+every test written against it is a test against a state the shop cannot reach. Going through the services
+makes the fixtures *proof the API can build this shop*.
+
+Categories are the one exception, and only because there is nothing to go through:
+`/product-categories` is read-only by design (managing them is PLAN §5, with its own phase), so those use
+WordPress's own term API, which is what WooCommerce uses too.
+
+Two consequences follow. **It runs as somebody** — services assert capabilities, so `SeedCommand` sets a
+current user (`--as=<login>`, otherwise the first administrator); a seeder with no identity would have to
+bypass the check, which is the one thing this module exists not to do. And **it is idempotent on natural
+keys**: products and variations by SKU, customers by email, coupons by code. Orders have no natural key,
+so the seed keeps its own ledger in the `ac_seed_orders` option rather than writing a marker onto the
+order — `OrderRepository` is the only file that touches an order, and a seeder is not the place to make
+the second exception. The ledger is checked against reality rather than believed, so an order deleted by
+hand is recreated rather than reported as updated forever.
+
+### `SeedDataset` is pure, and one of its rules has no other home
+
+Most of what it checks would fail loudly anyway when the seeder ran: a product in a category nobody
+defined, an order naming a SKU nobody sells, a variation attribute the parent does not offer (matched
+exactly as `VariationService` keys them — lowercased — because a fixture capitalised differently is
+accepted by every JSON parser and refused by the API).
+
+**PLAN §46's "never use real customer data" is not like that.** A fixture carrying a colleague's real
+address seeds perfectly and mails them the first time somebody drains the notification queue. So every
+seeded email must be on a domain RFC 6761 or RFC 2606 reserves — `.test`, `.example`, `.invalid`,
+`.localhost`, `example.com` and its siblings — checked exactly enough that `badexample.com` fails where
+`mail.example.com` passes.
+
+It also refuses `cancelled` and `refunded` as *starting* statuses, since neither is creatable
+(`OrderStatus::CREATABLE`), and offers `final_status` for reaching them the way a real order does: a
+second, legal transition.
+
+### Two mailers, and they needed opposite answers
+
+Seeding eleven orders queues a customer confirmation and an admin alert for each in `ac_notifications`.
+Those are deferred — a row now, a drain later — so the seeder notes the highest id before it writes and
+drops what it added, with `--keep-notifications` to opt out. The customer addresses reach nobody by
+construction; the **admin alert goes to a real inbox**, which is what makes this more than tidiness.
+
+**WooCommerce's own mailer is neither deferred nor ours.** `WC_Emails` sends synchronously inside
+`woocommerce_order_status_changed`, so by the time `seed()` returns the mail has already left — there is
+nothing to discard. The first run here attempted 25 sends, visible only as `sendmail: can't connect`
+because this machine has no MTA. It is short-circuited through `pre_wp_mail` for the duration of the
+writes, and `--keep-notifications` deliberately does **not** turn it back on: a queue can be inspected
+and drained on purpose, a synchronous send has no such second look. `tests/Api/seed.php` asserts the
+filter is removed again, because a seeder that left it would silence every later suite in the process.
+
+### What the seed cannot do
+
+Every seeded order is dated **now**, because this API accepts no order date — §63's time series therefore
+shows one day. Adding `date_created` to `OrderInput` is a real decision about the orders module (an admin
+who can backdate an order can move revenue between months), not one a fixture loader gets to make.
+
 ## Security review (§55)
 
 §55 is a review rather than a feature: walk everything that ships — `Auth/`, `Security/`, `Permissions/`,
@@ -2826,6 +2896,7 @@ wp algerian-commerce migrate [--dry-run]        # apply pending migrations
 wp algerian-commerce roles [--list]             # install / re-sync capabilities
 wp algerian-commerce unlock <ip|login>          # lift a brute-force lockout
 wp algerian-commerce import-algeria [--dry-run] # §51 geography
+wp algerian-commerce seed [--dry-run] [--as=<login>] [--keep-notifications]
 wp algerian-commerce shipping-check             # can this store ship anything?
 wp algerian-commerce sync-destinations --provider=<name> [--dry-run] [--gaps=<n>]
 wp algerian-commerce sync-shipments [--provider=] [--limit=] [--min-age=]

@@ -530,3 +530,33 @@ result set**, which is the thing a vulnerable query actually fails.
 ## Backups
 
 Maintain backups of database and uploads, and **test restores** — an untested backup is not a backup.
+
+`scripts/backup.sh` and `scripts/restore.sh` (roadmap §66, PLAN §44) are that rule as commands. Three
+things about them are security properties rather than operational convenience.
+
+**A backup is a copy of every secret this stack has, and of every customer.** The directory holds `.env`
+— every provider credential — and a database dump containing each shopper's name, phone number and full
+address. So `backups/` carries a `.gitignore` that ignores everything but itself, the run directory is
+`chmod 700` and the copied `.env` is `chmod 600`. `backups/` is local development only; production
+backups belong off-site, and off-site means encrypted at rest, because the threat model of a dump on
+someone's laptop is not the threat model of the running database.
+
+**The restore is scripted and is meant to be run.** `scripts/restore.sh --verify <dir>` starts a
+throwaway MySQL container of the pinned version, restores the dump into it, and compares every table's
+`COUNT(*)` against the manifest the backup carries — the running stack is never touched, which is what
+makes the drill something that actually gets done rather than something deferred until it is needed.
+Verified on 2026-08-16: 62 tables, every row count matching. Two failures found by running it that
+reading it would not have shown — `mysqladmin ping` answers from the entrypoint's temporary server
+*before* root has a password, so the readiness gate is a real query; and `docker exec -i` inside the
+comparison loop ate the manifest from stdin, so exactly one table was compared and the run reported
+success in green. That second one is why the script refuses to pass when it compared nothing.
+
+**The restoring path is not the default and cannot be reached by accident.** It drops and recreates the
+database, so it requires a typed confirmation or `--yes`, and refuses outright when there is no terminal
+to confirm at. `.env` and the plugin are `--with-env` / `--with-plugin`: a restore that silently replaced
+live provider credentials with last week's would be a very quiet outage.
+
+The same discipline applies to `scripts/reset.sh`, which destroys both volumes. It refuses unless
+`WP_ENVIRONMENT_TYPE` is `local` or `development` — the same switch WordPress uses to decide whether
+Application Passwords may travel over plain HTTP, so it already means something here — and it prints
+what it is about to destroy with counts read from the database it is about to drop.

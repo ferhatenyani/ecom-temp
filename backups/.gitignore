@@ -1,0 +1,9 @@
+# A backup holds a copy of .env — every provider credential this stack has —
+# and a database dump containing every customer's name, phone number and
+# address. Roadmap §66 says backups/ is for local development only and that
+# production backups belong off-site; this is the part that makes "never
+# committed" a property of the repository rather than a habit.
+#
+# Ignore everything, keep the directory.
+*
+!.gitignore

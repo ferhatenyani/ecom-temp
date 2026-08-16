@@ -1,0 +1,159 @@
+{
+  "version": "2026-08-16",
+  "note": "Development seed data — roadmap §67, docs/PLAN.md §46. Fictional shop, fictional products. Prices are DZD. Never replace this with a client's real catalogue: it is committed to git and it is loaded by a command anyone can run.",
+  "categories": [
+    { "slug": "tapis", "name": "Tapis et Textiles", "description": "Tapis, couvertures et tissages." },
+    { "slug": "poterie", "name": "Poterie et Céramique", "description": "Terre cuite et céramique émaillée." },
+    { "slug": "epicerie", "name": "Épicerie Fine", "description": "Produits du terroir algérien." },
+    { "slug": "bijoux", "name": "Bijoux Traditionnels", "description": "Argent, corail et émail." },
+    { "slug": "maison", "name": "Maison et Décoration", "description": "Cuivre, bois et luminaires." }
+  ],
+  "products": [
+    {
+      "sku": "AC-TAP-001",
+      "name": "Tapis berbère de Ghardaïa 200x140",
+      "type": "simple",
+      "categories": ["tapis"],
+      "regular_price": "24000",
+      "short_description": "Tissage main en laine vierge, motifs du M'zab.",
+      "description": "Tapis noué à la main en laine vierge non teintée, motifs géométriques du M'zab. Chaque pièce est unique et les dimensions varient de quelques centimètres.",
+      "stock_quantity": 6,
+      "weight": "4.5",
+      "featured": true
+    },
+    {
+      "sku": "AC-TAP-004",
+      "name": "Couverture kabyle en laine",
+      "type": "simple",
+      "categories": ["tapis"],
+      "regular_price": "9800",
+      "sale_price": "8200",
+      "short_description": "Laine filée main, bandes ivoire et brun.",
+      "description": "Couverture tissée sur métier vertical, laine filée à la main, teintures végétales.",
+      "stock_quantity": 14,
+      "weight": "2.2"
+    },
+    {
+      "sku": "AC-BUR-010",
+      "name": "Burnous en laine",
+      "type": "variable",
+      "categories": ["tapis"],
+      "short_description": "Burnous traditionnel en laine, capuche doublée.",
+      "description": "Burnous en laine tissée, capuche doublée, coupe traditionnelle. Taillé large — prendre une taille en dessous pour un porté ajusté.",
+      "attributes": [
+        { "name": "Taille", "options": ["S", "M", "L"], "visible": true, "variation": true, "position": 0 }
+      ],
+      "variations": [
+        { "sku": "AC-BUR-010-S", "attributes": { "taille": "S" }, "regular_price": "17500", "stock_quantity": 4, "weight": "1.8" },
+        { "sku": "AC-BUR-010-M", "attributes": { "taille": "M" }, "regular_price": "17500", "stock_quantity": 7, "weight": "1.9" },
+        { "sku": "AC-BUR-010-L", "attributes": { "taille": "L" }, "regular_price": "18500", "stock_quantity": 2, "weight": "2.1" }
+      ]
+    },
+    {
+      "sku": "AC-POT-001",
+      "name": "Jarre en terre cuite de Maatkas",
+      "type": "simple",
+      "categories": ["poterie"],
+      "regular_price": "6500",
+      "short_description": "Poterie modelée sans tour, décor à l'ocre.",
+      "description": "Jarre modelée à la main selon la technique du colombin, cuite au feu de bois et décorée à l'ocre et au kaolin.",
+      "stock_quantity": 11,
+      "weight": "3.0"
+    },
+    {
+      "sku": "AC-POT-007",
+      "name": "Service à thé en céramique émaillée, 6 verres",
+      "type": "simple",
+      "categories": ["poterie", "maison"],
+      "regular_price": "4900",
+      "short_description": "Plateau, théière et six verres émaillés.",
+      "description": "Service complet en céramique émaillée, décor bleu et blanc peint à la main.",
+      "stock_quantity": 23,
+      "weight": "2.8"
+    },
+    {
+      "sku": "AC-EPI-001",
+      "name": "Huile d'olive extra vierge de Kabylie, 1 L",
+      "type": "simple",
+      "categories": ["epicerie"],
+      "regular_price": "1850",
+      "short_description": "Première pression à froid, récolte de l'année.",
+      "description": "Huile d'olive extra vierge, variété Chemlal, première pression à froid, bouteille en verre teinté.",
+      "stock_quantity": 120,
+      "weight": "1.4"
+    },
+    {
+      "sku": "AC-EPI-004",
+      "name": "Dattes Deglet Nour branchées, 1 kg",
+      "type": "simple",
+      "categories": ["epicerie"],
+      "regular_price": "1400",
+      "sale_price": "1150",
+      "short_description": "Deglet Nour de Tolga, sur branche.",
+      "description": "Dattes Deglet Nour récoltées à Tolga, conditionnées sur branche en barquette d'un kilogramme.",
+      "stock_quantity": 64,
+      "weight": "1.1"
+    },
+    {
+      "sku": "AC-EPI-009",
+      "name": "Miel de jujubier, 500 g",
+      "type": "simple",
+      "categories": ["epicerie"],
+      "regular_price": "5200",
+      "short_description": "Miel de Sidr récolté dans les Aurès.",
+      "description": "Miel de jujubier (Sidr) récolté dans les Aurès, non chauffé et non filtré. La cristallisation est naturelle.",
+      "stock_quantity": 3,
+      "low_stock_amount": 5,
+      "weight": "0.7"
+    },
+    {
+      "sku": "AC-BIJ-002",
+      "name": "Fibule kabyle",
+      "type": "variable",
+      "categories": ["bijoux"],
+      "short_description": "Argent émaillé et corail, travail des Ath Yenni.",
+      "description": "Fibule kabyle en argent, émail cloisonné et cabochons de corail, façonnée dans la tradition des Ath Yenni.",
+      "attributes": [
+        { "name": "Finition", "options": ["Argent", "Or"], "visible": true, "variation": true, "position": 0 }
+      ],
+      "variations": [
+        { "sku": "AC-BIJ-002-AG", "attributes": { "finition": "Argent" }, "regular_price": "12500", "stock_quantity": 5, "weight": "0.2" },
+        { "sku": "AC-BIJ-002-OR", "attributes": { "finition": "Or" }, "regular_price": "16900", "stock_quantity": 3, "weight": "0.2" }
+      ]
+    },
+    {
+      "sku": "AC-BIJ-005",
+      "name": "Bracelet touareg en argent et ébène",
+      "type": "simple",
+      "categories": ["bijoux"],
+      "regular_price": "8900",
+      "short_description": "Argent gravé et ébène, travail du Hoggar.",
+      "description": "Bracelet en argent gravé serti d'ébène, motifs géométriques touaregs du Hoggar.",
+      "stock_quantity": 9,
+      "weight": "0.3"
+    },
+    {
+      "sku": "AC-MAI-003",
+      "name": "Lanterne en cuivre ciselé",
+      "type": "simple",
+      "categories": ["maison"],
+      "regular_price": "7400",
+      "short_description": "Cuivre repoussé et verre coloré, 40 cm.",
+      "description": "Lanterne en cuivre ciselé et repoussé à la main, panneaux de verre coloré, hauteur 40 cm.",
+      "stock_quantity": 17,
+      "weight": "1.6"
+    },
+    {
+      "sku": "AC-MAI-008",
+      "name": "Plateau en bois d'olivier, 40 cm",
+      "type": "simple",
+      "categories": ["maison"],
+      "regular_price": "3600",
+      "short_description": "Bois d'olivier massif, finition huilée.",
+      "description": "Plateau tourné dans un billot d'olivier massif, finition à l'huile alimentaire. Le veinage diffère d'une pièce à l'autre.",
+      "stock_quantity": 0,
+      "stock_status": "outofstock",
+      "weight": "1.2"
+    }
+  ]
+}

@@ -23,7 +23,9 @@ use AlgerianCommerce\Auth\AuthService;
 use AlgerianCommerce\CLI\ImportAlgeriaCommand;
 use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
+use AlgerianCommerce\CLI\SeedCommand;
 use AlgerianCommerce\CLI\ShippingCheckCommand;
+use AlgerianCommerce\Seed\Seeder;
 use AlgerianCommerce\CLI\SyncDestinationsCommand;
 use AlgerianCommerce\CLI\SendNotificationsCommand;
 use AlgerianCommerce\CLI\SyncPaymentsCommand;
@@ -213,6 +215,7 @@ final class Plugin
     private ?GeoRepository $geoRepository = null;
     private ?GeoService $geoService = null;
     private ?GeoImporter $geoImporter = null;
+    private ?Seeder $seeder = null;
     private ?ContentTypes $contentTypes = null;
     private ?CmsRepository $cmsRepository = null;
     private ?AccountService $accountService = null;
@@ -417,6 +420,7 @@ final class Plugin
         WP_CLI::add_command('algerian-commerce roles', new RolesCommand($this->roles()));
         WP_CLI::add_command('algerian-commerce unlock', new UnlockCommand($this->rateLimiter(), $this->rateLimitStore()));
         WP_CLI::add_command('algerian-commerce import-algeria', new ImportAlgeriaCommand($this->geoImporter()));
+        WP_CLI::add_command('algerian-commerce seed', new SeedCommand($this->seeder()));
         WP_CLI::add_command('algerian-commerce sync-destinations', new SyncDestinationsCommand($this->destinationSync()));
         WP_CLI::add_command('algerian-commerce sync-shipments', new SyncShipmentsCommand($this->shipmentPoller()));
         WP_CLI::add_command('algerian-commerce sync-payments', new SyncPaymentsCommand($this->paymentPoller()));
@@ -1181,6 +1185,28 @@ final class Plugin
             $this->logger(),
             $this->auditLogger(),
             AC_CORE_PATH . 'data/algeria'
+        );
+    }
+
+    /**
+     * The development seed loader — roadmap §67.
+     *
+     * Beside `geoImporter()` and for the same reason: the fixtures ship inside
+     * the plugin, which is what gets cloned per client. A client replacing
+     * `data/seed/` with their own demo catalogue replaces a file, not code.
+     */
+    public function seeder(): Seeder
+    {
+        return $this->seeder ??= new Seeder(
+            $this->productService(),
+            $this->variationService(),
+            $this->inventoryService(),
+            $this->customerService(),
+            $this->couponService(),
+            $this->orderService(),
+            $this->notificationRepository(),
+            $this->logger(),
+            AC_CORE_PATH . 'data/seed'
         );
     }
 
