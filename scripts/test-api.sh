@@ -94,6 +94,44 @@ check "GET /analytics/overview with application password" 200 \
   "$(status -u "$CRED" "${API}/analytics/overview")"
 echo
 
+# ---------------------------------------------------------------- exports --
+# THE THIRD REGRESSION TEST.
+#
+# §64's exports answer with a file instead of the JSON envelope, and that
+# happens in `rest_pre_serve_request` — a filter rest_do_request() never runs.
+# So tests/Api/import-export.php can prove the CSV *body* and is structurally
+# blind to whether the response is actually served as a download. Only this
+# stage can see the headers.
+echo "exports"
+EXPORT_HEADERS=$(curl -s -D - -o /dev/null -m 30 -u "$CRED" "${API}/export/inventory?limit=2")
+
+check "an export is served as text/csv" "yes" \
+  "$(grep -qi '^content-type: text/csv' <<<"$EXPORT_HEADERS" && echo yes || echo no)"
+check "an export is served as an attachment" "yes" \
+  "$(grep -qi '^content-disposition: attachment' <<<"$EXPORT_HEADERS" && echo yes || echo no)"
+# One shop's private data. Even over TLS, a shared cache holding it is a
+# disclosure waiting for the next request.
+check "an export is not cacheable" "yes" \
+  "$(grep -qi '^cache-control:.*no-store' <<<"$EXPORT_HEADERS" && echo yes || echo no)"
+check "the filename cannot carry a header injection" "yes" \
+  "$(grep -i '^content-disposition' <<<"$EXPORT_HEADERS" | grep -qE 'filename="[A-Za-z0-9._-]+"' && echo yes || echo no)"
+
+# The body is the CSV itself and not an envelope around it.
+EXPORT_BODY=$(curl -s -m 30 -u "$CRED" "${API}/export/inventory?limit=2")
+check "the body is a CSV, not JSON" "yes" \
+  "$(grep -q '"success"' <<<"$EXPORT_BODY" && echo no || echo yes)"
+check "the CSV names its columns" "yes" \
+  "$(head -1 <<<"$EXPORT_BODY" | grep -q 'sku' && echo yes || echo no)"
+
+# An error must never be served raw: a client would save the error message as
+# products.csv. The envelope comes back with the 4xx.
+ERROR_BODY=$(curl -s -m 30 -u "$CRED" "${API}/export/orders?limit=999999")
+check "an export error is still the envelope" "yes" \
+  "$(grep -q '"success":false' <<<"$ERROR_BODY" && echo yes || echo no)"
+check "an export error is not text/csv" 400 \
+  "$(status -u "$CRED" "${API}/export/orders?limit=999999")"
+echo
+
 # ------------------------------------------------------------------ media --
 #
 # THE OTHER REGRESSION TEST.

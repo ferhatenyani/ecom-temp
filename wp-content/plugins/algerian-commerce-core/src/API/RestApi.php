@@ -31,6 +31,9 @@ final class RestApi
         add_action('rest_api_init', [$this, 'registerRoutes']);
 
         (new ErrorNormalizer())->register();
+        // §64's exports write their own body. Registered after Cors, which uses
+        // the same hook to set headers — headers first, body second.
+        (new FileDownload())->register();
     }
 
     public function registerRoutes(): void

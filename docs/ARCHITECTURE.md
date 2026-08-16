@@ -77,7 +77,9 @@ src/
   Payments/      PaymentService + PaymentProviderInterface
   Analytics/     read-only aggregation and reporting; the one place aggregate
                  SQL over WooCommerce's order tables lives (see §7)
-  CMS/  Marketing/  Notifications/  Settings/  ImportExport/
+  ImportExport/  CSV import and export; reuses WooCommerce's own CSV engine
+                 rather than reimplementing its 40-column product format
+  CMS/  Marketing/  Notifications/  Settings/
   Audit/         audit event recording
   Security/      validation, sanitization, rate limiting, webhook verification
 integrations/

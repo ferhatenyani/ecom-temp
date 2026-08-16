@@ -333,6 +333,37 @@ rather than by moving it.
   "deleted" would not be true of the only thing anyone can reach — and these files are customer-supplied
   photographs as often as they are product shots.
 
+## CSV import and export
+
+- **A CSV is a document a spreadsheet will execute.** A cell beginning `=`, `+`, `-`, `@`, a tab or a
+  carriage return is a formula to Excel, LibreOffice and Google Sheets, and formulas reach the shell and the
+  network. The attacker needs no access to the shop — one product name, one customer's first name, one order
+  note is enough, and the shop owner runs it by opening their own export. **Every exported field is
+  neutralised** by prefixing a single quote (`ImportExport\CsvWriter`), which is what
+  `WC_CSV_Exporter::escape_data()` does; where both are in play they are asserted to agree, so the
+  duplication cannot drift after a WooCommerce upgrade.
+- **An export carries the capability of the thing it exports** — orders need `ac_manage_orders`, customers
+  need `ac_manage_customers`. This is §63's rule at its strongest: not a summary but the records themselves,
+  in a file that leaves the building. There is deliberately no separate "export" capability, which would let
+  an account read in bulk what it cannot read one at a time.
+- **Exports are bounded and uncacheable.** A row cap keeps one request's cost finite; `Cache-Control:
+  no-store, private` keeps one shop's order book out of a shared cache.
+- **An import writes no file anywhere a web server can reach.** The CSV arrives as the request body, not as
+  a multipart upload, so `move_uploaded_file()` into `wp-content/uploads` — the step "File uploads" below
+  spends four checks and a re-encode making safe — is simply absent. Where a third-party engine needs a path
+  (WooCommerce's product importer does), the file goes to `get_temp_dir()` under a random name and is
+  unlinked in a `finally`. Nothing is retained between requests.
+- **A dry run defaults to on.** A client that omits the flag gets a preview, never a write. The reverse
+  default means one malformed integration overwrites a catalogue on its first request.
+- **An import must not be a back door around the ledger.** Stock changes go through the domain service, so
+  every imported row leaves an `ac_inventory_movements` entry and an audit record with an actor — "a
+  spreadsheet said so" is a reason like any other, and an import that wrote quantities directly would defeat
+  the table's whole purpose.
+- **Serving a file is the one exception to the response envelope**, and it is bounded: only a 2xx body is
+  raw, only on routes that opt in, and the `Content-Disposition` filename is generated rather than taken
+  from input — a filename from input is header injection and path traversal looking for somewhere to happen.
+  Errors always come back in the envelope, so a client never saves an error message as `products.csv`.
+
 ## Customer data sent to third parties
 
 Settled by §62b, which is the first integration that sends **customer data outward** rather than fetching

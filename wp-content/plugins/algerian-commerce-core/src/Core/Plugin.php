@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace AlgerianCommerce\Core;
 
+use AlgerianCommerce\ImportExport\ExportService;
+use AlgerianCommerce\ImportExport\ImportExportController;
+use AlgerianCommerce\ImportExport\ImportService;
 use AlgerianCommerce\Analytics\AnalyticsCache;
 use AlgerianCommerce\Analytics\AnalyticsController;
 use AlgerianCommerce\Analytics\AnalyticsRepository;
@@ -202,6 +205,8 @@ final class Plugin
     private ?MetaSettings $metaSettings = null;
     private ?AnalyticsRepository $analyticsRepository = null;
     private ?AnalyticsService $analyticsService = null;
+    private ?ImportService $importService = null;
+    private ?ExportService $exportService = null;
     private bool $booted = false;
 
     private function __construct()
@@ -420,7 +425,33 @@ final class Plugin
             new MediaController($this->logger(), $this->mediaService()),
             new MarketingController($this->logger(), $this->marketingService()),
             new AnalyticsController($this->logger(), $this->analyticsService()),
+            new ImportExportController($this->logger(), $this->importService(), $this->exportService()),
         ]);
+    }
+
+    /**
+     * Imports go through the domain services rather than around them — roadmap
+     * §64. An import that wrote stock quantities directly would be a back door
+     * past the ledger and the audit trail, which is the one thing
+     * `ac_inventory_movements` exists to make impossible.
+     */
+    public function importService(): ImportService
+    {
+        return $this->importService ??= new ImportService(
+            $this->inventoryService(),
+            $this->inventoryRepository(),
+            $this->auditLogger(),
+            $this->logger()
+        );
+    }
+
+    public function exportService(): ExportService
+    {
+        return $this->exportService ??= new ExportService(
+            $this->orderRepository(),
+            $this->customerRepository(),
+            $this->inventoryRepository()
+        );
     }
 
     /**
