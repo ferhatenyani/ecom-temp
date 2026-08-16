@@ -3879,6 +3879,75 @@ Purchase
 
 Use unique purchase/event IDs to prevent duplicate conversions.
 
+## What was built
+
+The SEO half. The marketing half is §62b, which is the whole reason that
+section is numbered rather than folded in here: this one names six events and
+stops.
+
+``` text
+src/SEO/   SeoFields (the rules, pure), SeoInput, SeoSubject,
+             SeoRepository, SeoResolver
+```
+
+No migration, no table, no endpoint of its own. `seo` is a **block on the
+resources that already exist** — it appears on `GET /products/{id}` and
+`GET /cms/pages/{path}`, and it is written through the resource's own PATCH, so
+a client that already edits a product edits its SEO in the same request and gets
+one list of field errors back.
+
+## No SEO plugin, and why
+
+PLAN §25 says to use one. This was built without one, deliberately, and the
+reasoning is the same one §62b applies to "Meta for WooCommerce": in a headless
+install the half of an SEO plugin that **renders** never runs. Its `<title>` and
+its JSON-LD go into a front end nobody visits, and its sitemap and `robots.txt`
+are served on the *backend's* domain rather than the storefront's — where they
+are worse than absent, because they invite indexing of the admin origin.
+
+What is left is a meta box over five fields, which is what `SEO/` now is.
+
+Rank Math is a real upgrade path rather than a rejected one: it publishes a
+`getHead` endpoint built for headless installs. It stays an option, and taking
+it means a `RankMathSource` reading `rank_math_*` in place of `SeoRepository` —
+nothing above `SeoResolver` changes.
+
+## Correct by default, improvable by hand
+
+Five stored overrides — title, description, canonical, robots, image — and
+everything else derived from the content, so a shop that has never opened an SEO
+field still serves a sensible title, description and share image on every page.
+
+``` text
+title        the override, else "Product — Site", trimmed at 60
+description  the override, else the short description, else the body:
+               shortcodes and markup stripped, trimmed at 160
+canonical    the override, or empty. NEVER derived — see below
+robots       the override, else index,follow — but noindex for anything
+               unpublished, which this API serves long before it is public
+image        the override, else the featured image
+og           follows title/description rather than storing them twice
+structured   Product with an Offer where there is a price; WebPage otherwise.
+  data         Nothing invents a rating, a review count or a brand
+```
+
+**A canonical URL is never derived, and that is the one rule here.** WordPress's
+permalink points at *this* backend; the storefront is a different origin with
+its own routing. A canonical guessed here would confidently tell Google the
+shop's pages live on the admin domain. The payload carries the slug, and the
+side that knows its own URL scheme builds the URL.
+
+## Two bugs the tests found
+
+``` text
+strip_tags   removes a <script> element's tags and keeps what is between
+               them, so a body ending in an analytics snippet published
+               `var x = 1;` as its meta description
+spacing      the fix for that — whitespace around every tag — turned
+               "les <strong>58 wilayas</strong>." into "58 wilayas .".
+               Block boundaries become a space; inline tags do not
+```
+
 ------------------------------------------------------------------------
 
 # 62b. Meta Pixel and Conversions API

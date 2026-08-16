@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Products;
 
 use AlgerianCommerce\API\ApiException;
+use AlgerianCommerce\SEO\SeoInput;
 
 /**
  * Validates and normalizes a product write payload.
@@ -97,6 +98,7 @@ final class ProductInput
             'type',
             'attributes',
             'image_id',
+            'seo',
         ];
     }
 
@@ -234,6 +236,16 @@ final class ProductInput
             }
 
             $clean[$field] = array_values(array_unique($ids));
+        }
+
+        /*
+         * SEO is a nested object rather than five flat fields — roadmap §62.
+         * Its errors are collected into the same list, so a bad `seo.canonical`
+         * and a bad `sku` come back in one response instead of the client
+         * fixing one, resubmitting and finding the other.
+         */
+        if (array_key_exists('seo', $payload)) {
+            $clean['seo'] = SeoInput::fromPayload($payload['seo'], $errors);
         }
 
         if ($errors !== []) {
