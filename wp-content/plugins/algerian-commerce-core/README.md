@@ -473,6 +473,16 @@ Rules worth knowing before extending it:
 - **Prices stay strings** end to end. They are decimal DZD amounts; a float would introduce rounding
   into money.
 - **A duplicate SKU is 409, not 400.** The payload is well formed; the catalogue already contains it.
+- **The trash counts, and finding that out cost a 500.** `wc_get_product_id_by_sku()` excludes
+  `post_status = 'trash'`, but WooCommerce's data store does not — `wc_product_meta_lookup` keeps the
+  trashed product's row and inserting against it throws *"already present in the lookup table"* from
+  inside `$product->save()`. So the conflict check answered "free" for a SKU the write was about to
+  refuse, and an admin who trashed a product and re-created it got `500 internal_error` every time.
+  `ProductRepository::skuExists()` now checks the trash too — through `wc_get_products()` with the
+  statuses named, not SQL against WooCommerce's table — and the 409 carries `trashed_product_id`,
+  because "already in use" about a product no longer in the catalogue is the sort of answer that costs
+  somebody an afternoon. Found by roadmap §69's HTTP walkthrough; the regression test is
+  `tests/Api/products.php` → "the SKU the trash keeps".
 - **A PATCH that sends only `sale_price`** is checked against the *stored* regular price, otherwise a
   product could be put on "sale" above its own price.
 - **`WC_Data_Exception` is translated** into the error envelope, so WooCommerce's own validation does
@@ -2544,27 +2554,50 @@ not warn, it simply does not wire the provider, and the test then fails with `Ar
 was called with no arguments. Write `#[DataProvider('nameProvider')]` with
 `use PHPUnit\Framework\Attributes\DataProvider;`, and note that a provider method must be `static`.
 
-Unit tests must run without booting WordPress. The full WP integration suite arrives with §65.
+Unit tests must run without booting WordPress. `tests/Api/` is the integration suite, and it runs against
+a booted WordPress, WooCommerce's real CRUD and a real MySQL.
 
 ```bash
 scripts/test.sh              # every stage
-scripts/test.sh unit         # one stage: syntax | unit | rest | http
+scripts/test.sh unit         # one stage: versions | syntax | unit | rest | http
 ```
 
 | Stage | What it covers | Blind to |
 | --- | --- | --- |
+| `versions` | the running stack against `compose.yaml`'s pins (§68) | the code |
 | `syntax` | `php -l` over every file | everything else |
 | `unit` | pure logic, no WordPress (`tests/Unit`) | anything touching WP |
-| `rest` | routing, args, permissions, IDOR (`tests/Api`) | authentication, rate limiting |
-| `http` | authentication, rate limiting (`scripts/test-api.sh`) | — |
+| `rest` | routing, args, permissions, IDOR (`tests/Api`) | auth, rate limiting, response headers, real uploads |
+| `http` | auth, rate limiting, CORS, downloads, uploads (`scripts/test-api.sh`) | — |
 
-**Run this one before touching auth or rate limiting.** `rest_do_request()` — what the in-process
-checks use — never parses an `Authorization` header, so it cannot observe authentication or rate
-limiting at all. The first rate-limit guard shipped letting every credential-guessing attempt
-through, with all 321 unit tests green, because nothing exercised a real HTTP request with real
-credentials. Comment out the two `add_filter` calls in `RateLimitGuard::register()` and the unit
-suite stays green while `scripts/test-api.sh` turns red on exactly the right assertions — that is
-the regression it exists to catch.
+**Run the `http` one before touching auth, rate limiting, CORS, uploads or any write path.**
+`rest_do_request()` — what the in-process checks use — is blind to three things, not one. It never parses
+an `Authorization` header, so it cannot observe authentication or rate limiting. It never runs
+`rest_pre_serve_request`, so CORS headers and §64's file downloads are invisible to it. And
+`wp_handle_upload()` ends in `move_uploaded_file()`, which by design fails for anything that did not
+arrive over a real POST.
+
+The first rate-limit guard shipped letting every credential-guessing attempt through, with all 321 unit
+tests green, because nothing exercised a real HTTP request with real credentials. Comment out the two
+`add_filter` calls in `RateLimitGuard::register()` and the unit suite stays green while
+`scripts/test-api.sh` turns red on exactly the right assertions — that is the regression it exists to
+catch. §69's "CRUD over HTTP" block was added for the same reason and found a 500 on its first run.
+
+`docs/TESTING.md` is roadmap §65's deliverable: the map from each of its five categories to the test that
+covers it, what was already covered under a different name, and what does not apply here. **Read it
+before adding a suite** — in particular its two conventions, both learned the hard way here. A refusal
+and an unreachable route look identical from outside, so every negative test needs a positive control.
+And an injection test that asserts only "no crash" passes against a concatenated query, so assert that a
+payload does not *widen a result set*.
+
+Two suites are about the API as a whole rather than one module:
+
+- `tests/Api/security.php` — §65's security list. It reads the router, which no per-feature suite can:
+  every route must declare a guard, and one Support Agent credential is swept across every GET route at
+  once, which catches a route added later with the wrong one.
+- `tests/Unit/SqlSafetyTest` — every `$wpdb` call site in `src/`, `integrations/` and `migrations/` is
+  prepared or free of variables, and every table name is `$wpdb->prefix` plus a literal. A static guard
+  against the repository written *next*; it proves it can still fail, against a hostile fixture.
 
 ## Configuration
 

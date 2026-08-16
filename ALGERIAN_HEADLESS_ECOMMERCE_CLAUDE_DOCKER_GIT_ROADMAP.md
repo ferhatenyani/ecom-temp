@@ -4485,6 +4485,56 @@ webhook forgery
 replay
 ```
 
+## Done — as an audit, and what it changed
+
+`docs/TESTING.md` is this section's deliverable: the map from every line above to
+the test that covers it, what was already covered under another name, and what
+does not apply here with the argument. Read it rather than this summary.
+
+The suites were already large — 1,121 unit tests and 16 `tests/Api` suites before
+this — so §65 was walked as an audit rather than written as a feature. Most lines
+were already covered, several under a different name. Four things changed.
+
+**`/products` had no API suite**, and that was the largest finding. Products are
+§47, the first commerce module, built before `tests/Api/` was a convention; every
+module from §49 onward got a suite while products kept the incidental coverage it
+picked up from `inventory.php` and `seo.php`. `tests/Api/products.php` covers
+§65's eight API lines in order and is the reference shape for the next one.
+
+**It found a 500 on its first run.** `wc_get_product_id_by_sku()` excludes
+trashed products; WooCommerce's data store does not, because
+`wc_product_meta_lookup` keeps the row. So the duplicate-SKU check said "free"
+for a SKU the insert was about to refuse, and an admin who trashed a product and
+re-created it got `internal_error` every time. Fixed in
+`ProductRepository::skuExists()`, through `wc_get_products()` rather than SQL
+against WooCommerce's table, and the 409 now names the trashed product.
+
+**SQL injection got two tests, and nothing was wrong with the SQL.**
+`tests/Unit/SqlSafetyTest` is the durable half: it walks all 60 `$wpdb` call
+sites in `src/`, `integrations/` and `migrations/` and requires each to be
+prepared or free of variables, plus every table name to be `$wpdb->prefix` and a
+literal — the second check being what makes the first mean anything. It proves it
+can still fail, against a fixture of four ways the mistake gets written. The
+behavioural half is in `tests/Api/security.php`, and its assertion is that **a
+payload must not widen a result set**, because "200, no crash" is also what a
+concatenated `WHERE` returns.
+
+**CSRF is ruled out with an argument, not tested.** `docs/SECURITY.md` → "CSRF"
+carries it: the credential is an `Authorization` header a cross-origin page
+cannot set, and WordPress core forces `wp_set_current_user(0)` on any REST
+request carrying cookies without an `X-WP-Nonce` — so cookies are never
+sufficient, whatever their state. Measured over real HTTP on 2026-08-16, not
+assumed.
+
+`tests/Api/security.php` also does the one thing no per-feature suite can: it
+reads the router. Every route must declare a guard, with the four public ones an
+explicit allowlist; and one Support Agent credential is swept across every GET
+route at once, which catches a route added later with the wrong guard. The sweep
+carries a control — where an administrator gets 200, the Support Agent must get
+**403**, not a 404 or a validation error — and writing that control found two
+routes that refuse everybody for their own reasons and would otherwise have
+proven nothing.
+
 ------------------------------------------------------------------------
 
 # 66. Automation Scripts
@@ -4664,6 +4714,32 @@ merge
 Do not upgrade WordPress, WooCommerce and every plugin simultaneously
 without a reason.
 
+## Done — the record is a check, not a table
+
+Five of the six components above were already pinned by `compose.yaml`'s `image:`
+tags. **WooCommerce was the sixth and nothing pinned it**: it is a plugin
+installed into the `wordpress_data` volume, which is not version-controlled, so
+`wp plugin install woocommerce` takes whatever is current — this section's
+"avoid depending indefinitely on `latest`" arriving through the one component
+with no tag to pin. It is now declared in `compose.yaml` under
+`x-tested-versions`, beside the image pins, and §66's `setup.sh` will install
+that version rather than the current one.
+
+**No version table was written**, and that is the decision rather than an
+omission. A table in a document is a second copy of numbers `compose.yaml`
+already states, and the copy is the one that goes stale silently.
+`scripts/test.sh versions` reads the pins out of `compose.yaml` and compares them
+against the stack that is actually running, so the record fails when it drifts
+instead of lying. It is the first stage, which also answers the first question of
+the upgrade drill above: whether the thing that moved is the thing you meant to
+move.
+
+Verified 2026-08-16, all matching: WordPress 7.0.4, PHP 8.4, MySQL 8.4.11,
+WP-CLI 2.12.0, WooCommerce 11.0.1. The two traps this stack has already cost an
+afternoon each for are in `CLAUDE.md` → Environment and must be read before
+touching a tag: bumping the `wordpress` tag does not upgrade an existing install,
+and a major MySQL upgrade has no in-place downgrade.
+
 ------------------------------------------------------------------------
 
 # 69. API Testing Before Next.js
@@ -4696,6 +4772,35 @@ permissions
 
 Only after the API works should the Next.js admin become the main
 testing interface.
+
+## Done — and it was partly satisfied already
+
+The honest answer when §65 started was **partly**. The `tests/Api` suites already
+covered product, order and customer behaviour in depth, and
+`scripts/test-api.sh` already covered authentication, rate limiting, media
+uploads and §64's exports over real HTTP.
+
+What nothing covered was a **write over real HTTP**. Every `tests/Api` suite
+reaches the router through `rest_do_request()`, so no test had ever sent a POST
+or a PATCH through Apache, the permalink rewrite and an `Authorization` header,
+or read our envelope back off the wire. That is the same class of blind spot that
+already justified this stage for authentication and for §64's download headers.
+
+`scripts/test-api.sh` → "CRUD over HTTP" closes it, in the order this section
+asks for: product create, read, update, duplicate-SKU conflict, trash,
+force-delete; order and customer queries; pagination and a bad argument; and
+permissions with a second, lower-privileged credential. It belongs there rather
+than in a separate walkthrough document because a documented walkthrough is one
+nobody re-runs, and this one runs in the suite.
+
+It is deliberately thin on business rules — those have their own suites and do
+not need a second, thinner copy. What it proves is the transport. **It found a
+500 on its first run** (§65 above), which is the argument for §69 existing at
+all: the in-process suites had been green over that path for months.
+
+Order *writes* are deliberately not in it. An order write leaves stock movements
+and audit rows in a database this script does not own, and
+`tests/Api/orders.php` already drives the whole lifecycle in-process.
 
 ------------------------------------------------------------------------
 

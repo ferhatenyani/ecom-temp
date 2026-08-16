@@ -230,12 +230,30 @@ final class ProductService
     /**
      * A duplicate SKU is a conflict, not a validation error — the payload is
      * well formed, the catalogue simply already contains it.
+     *
+     * A **trashed** product still holds its SKU, and says so, because
+     * "already in use" about a product that is not in the catalogue any more is
+     * the sort of answer that costs somebody an afternoon. See
+     * `ProductRepository::skuExists()` for why the trash has to be looked in at
+     * all: WooCommerce refuses the insert either way, and without this the
+     * refusal arrives as a 500 from inside `save()`.
      */
     private function guardSku(string $sku, int $ignoreId = 0): void
     {
-        if ($sku !== '' && $this->repository->skuExists($sku, $ignoreId)) {
-            throw ApiException::conflict('That SKU is already in use.', ['sku' => $sku]);
+        if ($sku === '' || !$this->repository->skuExists($sku, $ignoreId)) {
+            return;
         }
+
+        $trashed = $this->repository->trashedSkuOwner($sku, $ignoreId);
+
+        if ($trashed > 0) {
+            throw ApiException::conflict(
+                'That SKU belongs to a product in the trash.',
+                ['sku' => $sku, 'trashed_product_id' => $trashed]
+            );
+        }
+
+        throw ApiException::conflict('That SKU is already in use.', ['sku' => $sku]);
     }
 
     /**

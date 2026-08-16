@@ -1,3 +1,20 @@
+# Roadmap §68 — the tested versions, and the only place they are written down.
+#
+# Five of the six components §68 names are pinned by the `image:` tags below and
+# need nothing else. **WooCommerce is the sixth and nothing pinned it**: it is a
+# plugin installed into the `wordpress_data` volume, which is not
+# version-controlled, so `wp plugin install woocommerce` takes whatever is
+# current — exactly the "do not depend indefinitely on latest" §68 warns about,
+# arriving through the one component that has no tag to pin.
+#
+# So it is declared here, beside the image pins, rather than in a table in a
+# document that would drift from them. `scripts/test.sh versions` reads this
+# file and compares it against the stack that is actually running, which is what
+# makes it a record rather than a claim. §66's setup.sh will install this
+# version rather than the current one.
+x-tested-versions:
+  woocommerce: "11.0.1"
+
 services:
 
   # Versions are pinned to the exact builds this stack was verified against —
