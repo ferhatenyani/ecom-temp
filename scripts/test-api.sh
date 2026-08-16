@@ -94,6 +94,179 @@ check "GET /analytics/overview with application password" 200 \
   "$(status -u "$CRED" "${API}/analytics/overview")"
 echo
 
+# ------------------------------------------------------------------- CSRF ---
+#
+# Roadmap §65 lists CSRF, and docs/SECURITY.md → "CSRF" records why this API is
+# not exposed to it. The argument rests on one property, and this is the only
+# stage that can observe it: **a browser's ambient credentials are never
+# sufficient.** Cookies ride along on any cross-site request automatically;
+# an Authorization header does not.
+#
+# WordPress core is what enforces it. `rest_cookie_check_errors()` calls
+# `wp_set_current_user(0)` on any REST request that arrives with no
+# `X-WP-Nonce`, whatever the cookies said, so the request reaches our
+# permission_callback as an anonymous one. That is why the cookie below does
+# not need to be a *valid* session for the assertion to mean something — the
+# nonce check runs before the cookie is ever trusted, which is exactly the
+# property being asserted. What would break this is a plugin or a future change
+# that authenticated a request from cookies alone.
+echo "CSRF (roadmap §65 — ambient credentials are never enough)"
+
+COOKIE_NAME=$(wpcli wpcli wp eval 'echo LOGGED_IN_COOKIE;')
+SESSION="${COOKIE_NAME}=ac_apitest|9999999999|deadbeefdeadbeefdeadbeef|0000000000000000"
+
+check "a read with cookies and no nonce is anonymous" 401 \
+  "$(status -H "Cookie: ${SESSION}" "${API}/auth/me")"
+check "a write with cookies and no nonce is anonymous" 401 \
+  "$(status -X POST -H "Cookie: ${SESSION}" -H 'Content-Type: application/json' \
+     -d '{"name":"csrf probe","regular_price":"10"}' "${API}/products")"
+check "a nonce that does not verify is refused" 403 \
+  "$(status -H "Cookie: ${SESSION}" -H 'X-WP-Nonce: 0000000000' "${API}/auth/me")"
+
+# The control. Both refusals above are also what an unreachable route returns,
+# so the same route with a real credential has to succeed or they prove nothing.
+check "the same route answers a real credential" 200 "$(status -u "$CRED" "${API}/auth/me")"
+
+# No product was created by the write attempt above. Asserted rather than
+# assumed: a CSRF hole is silent from the attacker's side and from ours.
+check "the refused write created nothing" "0" \
+  "$(wpcli wpcli wp eval '
+     $q = new WP_Query(["post_type" => "product", "title" => "csrf probe", "post_status" => "any",
+                        "fields" => "ids", "posts_per_page" => 5]);
+     echo count($q->posts);')"
+echo
+
+# ------------------------------------------------------------------- CORS ---
+#
+# `API/Cors` removes core's `rest_send_cors_headers` and replaces it with an
+# allowlist on our namespace only. That swap happens in `rest_pre_serve_request`
+# — a filter rest_do_request() never runs — so tests/Unit/OriginPolicyTest can
+# prove the allowlist decides correctly and is structurally blind to whether the
+# handler is installed at all.
+#
+# The contrast with wp/v2 is the assertion that matters: core really does
+# reflect any Origin it is given, so seeing our namespace refuse the same
+# origin that core echoes proves our handler ran.
+echo "CORS (roadmap §46)"
+
+cors_origin() {
+  curl -s -D - -o /dev/null -m 15 -H "Origin: $1" -u "$CRED" "$2" \
+    | grep -i '^access-control-allow-origin:' | tr -d '\r' | awk '{print $2}'
+}
+
+check "an allowed origin is echoed back" "http://localhost:3000" \
+  "$(cors_origin "http://localhost:3000" "${API}/products?per_page=1")"
+check "a foreign origin gets no allow-origin header" "" \
+  "$(cors_origin "https://evil.example" "${API}/products?per_page=1")"
+check "core would have echoed that foreign origin" "https://evil.example" \
+  "$(cors_origin "https://evil.example" "${BASE}/wp-json/wp/v2/types")"
+# Without Vary, a shared cache can serve the allowed origin's approved response
+# to the next caller — including the refusal, which is the worse direction.
+check "the response varies on Origin, even when refusing" "yes" \
+  "$(curl -s -D - -o /dev/null -m 15 -H 'Origin: https://evil.example' -u "$CRED" "${API}/products?per_page=1" \
+     | grep -qi '^vary:.*origin' && echo yes || echo no)"
+echo
+
+# ------------------------------------------------------------------- §69 ---
+#
+# Roadmap §69: exercise product CRUD, order CRUD, customer queries,
+# authentication and permissions over real HTTP **before** the Next.js admin
+# becomes the main testing interface.
+#
+# The tests/Api suites already cover all of this in far more depth, in-process.
+# What they cannot cover is the transport, and this is a round trip through the
+# whole of it: Apache, the permalink rewrite, the Authorization header, a JSON
+# request body read off the wire, and our envelope on the way back. §69's point
+# is that the API stands on its own, so what is proven here is the path a
+# Next.js client will actually take — not the business rules, which have their
+# own suites and do not need a second, thinner copy.
+echo "CRUD over HTTP (roadmap §69)"
+
+json() { curl -s -m 30 -u "$CRED" -H 'Content-Type: application/json' "$@"; }
+field() { printf '%s' "$1" | grep -o "\"$2\":[0-9]*" | head -1 | cut -d: -f2; }
+
+# Start from a clean slate, trash included. A previous run that ended early
+# leaves the SKU held by a trashed product, and every assertion below would then
+# be about that instead — the same reason the rate-limit counters are cleared at
+# the top of this script.
+wpcli wpcli wp eval '
+foreach (["publish", "draft", "pending", "private", "trash"] as $status) {
+    foreach (wc_get_products(["sku" => "ac-69-probe", "status" => $status,
+                              "limit" => 20, "return" => "ids"]) as $id) {
+        wp_delete_post((int) $id, true);
+    }
+}
+echo "purged";' >/dev/null
+
+CREATED=$(json -X POST -d '{"name":"AC §69 probe","regular_price":"1234.00","sku":"ac-69-probe"}' "${API}/products")
+PROBE_ID=$(field "$CREATED" id)
+
+check "POST /products creates" "true" "$([[ -n "${PROBE_ID:-}" && "${PROBE_ID}" -gt 0 ]] && echo true || echo false)"
+check "the response is our envelope" "true" \
+  "$(grep -q '"success":true' <<<"$CREATED" && echo true || echo false)"
+check "GET /products/{id} reads it back" 200 "$(status -u "$CRED" "${API}/products/${PROBE_ID:-0}")"
+check "PATCH /products/{id} updates" "true" \
+  "$(json -X PATCH -d '{"regular_price":"999.00"}' "${API}/products/${PROBE_ID:-0}" \
+     | grep -q '"regular_price":"999.00"' && echo true || echo false)"
+check "the update survives a fresh read" "true" \
+  "$(json "${API}/products/${PROBE_ID:-0}" | grep -q '"regular_price":"999.00"' && echo true || echo false)"
+
+# A duplicate SKU is the one write conflict a storefront hits constantly, and
+# §65's API list names "duplicate" as its own category. 409 rather than 400:
+# the request is well formed, the shop's state is what refuses it.
+check "a duplicate SKU is a conflict" 409 \
+  "$(status -X POST -u "$CRED" -H 'Content-Type: application/json' \
+     -d '{"name":"AC §69 duplicate","regular_price":"1.00","sku":"ac-69-probe"}' "${API}/products")"
+
+# Orders and customers: read paths only. An order write over HTTP would leave
+# stock movements and audit rows behind in a database this script does not own,
+# and tests/Api/orders.php already drives the whole lifecycle in-process.
+check "GET /orders lists" 200 "$(status -u "$CRED" "${API}/orders?per_page=1")"
+check "GET /customers lists" 200 "$(status -u "$CRED" "${API}/customers?per_page=1")"
+check "GET /orders/{unknown} is 404" 404 "$(status -u "$CRED" "${API}/orders/99999999")"
+check "pagination is honoured over the wire" "1" \
+  "$(json "${API}/products?per_page=1" | grep -o '"per_page":[0-9]*' | head -1 | cut -d: -f2)"
+check "a bad argument is 400, not 500" 400 "$(status -u "$CRED" "${API}/products?per_page=9999")"
+
+# Permissions, with a second credential that holds none of the capabilities
+# above. This is the §69 line that the in-process suites *can* cover but that
+# nothing has yet checked travels correctly with a real Authorization header.
+SUPPORT_CRED=$(wpcli -e AC_LOGIN=ac_apitest_support wpcli wp eval '
+$login = getenv("AC_LOGIN");
+$u = get_user_by("login", $login);
+if (!$u) {
+    $id = wp_insert_user(["user_login" => $login, "user_pass" => wp_generate_password(32),
+                          "user_email" => $login . "@example.test", "role" => "ac_support_agent"]);
+    $u = get_user_by("id", $id);
+}
+$u->set_role("ac_support_agent");
+foreach (WP_Application_Passwords::get_user_application_passwords($u->ID) as $p) {
+    WP_Application_Passwords::delete_application_password($u->ID, $p["uuid"]);
+}
+$new = WP_Application_Passwords::create_new_application_password($u->ID, ["name" => "api-test-support"]);
+echo $login, ":", $new[0];
+')
+
+check "a Support Agent authenticates" 200 "$(status -u "$SUPPORT_CRED" "${API}/auth/me")"
+check "...and may read customers" 200 "$(status -u "$SUPPORT_CRED" "${API}/customers?per_page=1")"
+check "...but not products" 403 "$(status -u "$SUPPORT_CRED" "${API}/products")"
+check "...nor orders" 403 "$(status -u "$SUPPORT_CRED" "${API}/orders")"
+check "...nor write a product" 403 \
+  "$(status -X POST -u "$SUPPORT_CRED" -H 'Content-Type: application/json' \
+     -d '{"name":"nope","regular_price":"1.00"}' "${API}/products")"
+
+# DELETE trashes; force=true is the permanent one. That is WooCommerce's own
+# behaviour and the audit trail names the two differently (`product.trashed`
+# against `product.deleted`), so a client that meant to empty the catalogue and
+# only trashed it can tell. Both halves are asserted here because the difference
+# is invisible from the status code alone — the first DELETE also answers 200.
+check "DELETE /products/{id} trashes it" 200 "$(status -X DELETE -u "$CRED" "${API}/products/${PROBE_ID:-0}")"
+check "a trashed product is still addressable" 200 "$(status -u "$CRED" "${API}/products/${PROBE_ID:-0}")"
+check "DELETE ?force=true removes it" 200 \
+  "$(status -X DELETE -u "$CRED" "${API}/products/${PROBE_ID:-0}?force=true")"
+check "the forced-deleted product is gone" 404 "$(status -u "$CRED" "${API}/products/${PROBE_ID:-0}")"
+echo
+
 # ---------------------------------------------------------------- exports --
 # THE THIRD REGRESSION TEST.
 #

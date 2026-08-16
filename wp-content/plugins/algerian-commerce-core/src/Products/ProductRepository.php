@@ -77,6 +77,26 @@ final class ProductRepository
         ];
     }
 
+    /**
+     * Whether anything already holds this SKU — **including a trashed
+     * product**, which is the case that made this two calls instead of one.
+     *
+     * `wc_get_product_id_by_sku()` excludes `post_status = 'trash'`, but
+     * WooCommerce's product data store does not: `wc_product_meta_lookup` keeps
+     * the trashed product's row, and inserting against it throws
+     * "The product with SKU (…) you are trying to insert is already present in
+     * the lookup table" from inside `$product->save()`. So the cheap lookup
+     * answers "free" for a SKU the write is about to refuse, and the caller
+     * gets a 500 out of WooCommerce instead of the 409 this method exists to
+     * produce. Found by the roadmap §69 CRUD walkthrough in
+     * scripts/test-api.sh, which trashes a product and re-creates it.
+     *
+     * The second call is `wc_get_products()` with the statuses named
+     * explicitly, rather than SQL against the lookup table: it is WooCommerce's
+     * supported API for the question and it keeps this file free of opinions
+     * about where WooCommerce stores SKUs. It only runs when the fast path
+     * found nothing, so the common case is unchanged.
+     */
     public function skuExists(string $sku, int $ignoreId = 0): bool
     {
         if ($sku === '') {
@@ -85,7 +105,41 @@ final class ProductRepository
 
         $existing = (int) wc_get_product_id_by_sku($sku);
 
-        return $existing > 0 && $existing !== $ignoreId;
+        if ($existing > 0) {
+            return $existing !== $ignoreId;
+        }
+
+        return $this->trashedSkuOwner($sku, $ignoreId) > 0;
+    }
+
+    /**
+     * The id of a trashed product holding this SKU, or 0.
+     *
+     * Kept separate so `ProductService` can say *why* a SKU is unavailable —
+     * "already in use" sends an admin looking through a catalogue the product
+     * is no longer in.
+     */
+    public function trashedSkuOwner(string $sku, int $ignoreId = 0): int
+    {
+        if ($sku === '') {
+            return 0;
+        }
+
+        /** @var list<int> $ids */
+        $ids = wc_get_products([
+            'sku' => $sku,
+            'status' => 'trash',
+            'limit' => 2,
+            'return' => 'ids',
+        ]);
+
+        foreach ($ids as $id) {
+            if ((int) $id !== $ignoreId) {
+                return (int) $id;
+            }
+        }
+
+        return 0;
     }
 
     public function create(ProductInput $input): WC_Product

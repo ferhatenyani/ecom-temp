@@ -231,6 +231,45 @@ rather than a blocker. **The ledger is the standing check:** a row whose `provid
 - A webhook may not do anything the rest of the system would not. A parcel status never moves the order
   (CLAUDE.md), and a payment is marked paid only after a server-side verification against the provider.
 
+## CSRF
+
+**This API is not exposed to CSRF, and the reason is architectural rather than a control we added.** The
+§65 audit checked the claim against `Auth/` and against the running stack rather than asserting it; what
+follows is what was measured on 2026-08-16.
+
+CSRF requires an **ambient credential** — something a browser attaches to a cross-site request without
+the attacking page having to know it. This API has none:
+
+- **The intended credential is a WordPress Application Password sent as HTTP Basic auth.** A browser
+  never attaches it on its own. A cross-origin page cannot set an `Authorization` header on a form post,
+  an image or a script tag, and setting one through `fetch` makes the request non-simple, so it is
+  preflighted — and `API/Cors` answers a preflight from an origin outside the allowlist with no
+  `Access-Control-Allow-Origin` at all.
+- **A cookie is never sufficient.** Cookie authentication *is* reachable — `AuthService` reports
+  `auth_method: cookie` — but WordPress core's `rest_cookie_check_errors()` calls
+  `wp_set_current_user(0)` on any REST request that arrives with no `X-WP-Nonce`, whatever the cookies
+  said, so the request reaches our `permission_callback` as an anonymous one and gets 401. A nonce that
+  does not verify gets 403. The nonce lives in a same-origin page's JavaScript, which is exactly what a
+  cross-site attacker cannot read.
+- **There are no state-changing `GET` routes.** Every write is POST, PATCH or DELETE.
+
+Note what the second point does *not* say. The cookie's validity is not what is being tested and does not
+need to be: core forces the anonymous path **before** the cookie is trusted, so a valid session cookie
+and a forged one produce the same refusal for the same reason. That is the property worth having, and it
+is asserted over real HTTP in `scripts/test-api.sh` → "CSRF", with a control proving the same route
+answers a real credential — otherwise the refusals would be indistinguishable from an unreachable route.
+
+**What would reinstate the risk**, and what to re-check if any of it changes: a plugin or a change here
+that authenticates a request from cookies alone; a state-changing `GET`; a wildcard or reflected CORS
+origin; or `Access-Control-Allow-Credentials: true` reaching an origin that is not on the allowlist.
+WordPress core's own REST CORS handler reflects **any** origin it is given, which is why `API/Cors`
+removes it on this namespace — `scripts/test-api.sh` asserts the contrast against `wp/v2` so that the
+replacement is proven to be installed and not merely written.
+
+Nonces are therefore **not** used on this API's routes, and adding them would be theatre: a client that
+can obtain a nonce is a same-origin client that already has a session, and the Next.js server that holds
+the real credential is not a browser at all.
+
 ## Rate limiting
 
 Apply to authentication, password reset, checkout, order creation, COD confirmation, search, and
@@ -449,6 +488,18 @@ the first leak.
 
 `SQL injection`, `XSS`, `CSRF`, `IDOR`, `privilege escalation`, `rate limits`, `file upload abuse`,
 `webhook forgery`, `replay`.
+
+**All nine are now answered, and `docs/TESTING.md` is the map** — which test covers each, which were
+already covered under another name, and which do not apply here. Two are answered by an argument rather
+than a test, and both arguments are in this document: CSRF above, and the owner half of IDOR, which
+cannot be tested because no route in this API is owner-scoped yet — every one carries a management
+capability, and `Permissions::assertOwnsOr()` is written, unused, and waiting for roadmap §44's customer
+session. **When that lands, owner-scoped tests are part of it, not a follow-up.**
+
+Two properties of this list are worth keeping when adding to it. A refusal and an unreachable route look
+identical from outside, so **every negative test needs a positive control**. And an injection test that
+asserts only "no crash" passes against a concatenated query, so **assert that a payload does not widen a
+result set**, which is the thing a vulnerable query actually fails.
 
 ## Backups
 

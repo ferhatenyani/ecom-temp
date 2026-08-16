@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53 and §55–§64 are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53, §55–§65 and §68–§69 are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
 ZR Express, the payment abstraction, Chargily, the CMS, media, SEO, the marketing event layer, analytics and
@@ -16,12 +16,58 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53 and §55–§64 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53, §55–§65 and §68–§69 are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
 shipping rules, the Yalidine and ZR Express adapters, the security review, the payment abstraction and
 Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS and media endpoints,
-§62's SEO, §62b's marketing event layer, §63's analytics and §64's import/export. **Next up is §65,
-the testing strategy.**
+§62's SEO, §62b's marketing event layer, §63's analytics, §64's import/export, §65's testing audit,
+§68's version pinning and §69's API walkthrough. **Next up is §66 (the five automation scripts) and
+§67 (seed data), which go together because `seed.sh` is §67's delivery mechanism.**
+
+**§65 was an audit, not a feature, and [docs/TESTING.md](docs/TESTING.md) is its deliverable** — the map
+from each of §65's five categories to the test that covers it, what was already covered under a different
+name, and what does not apply here with the argument. Read it before adding a suite. Four things it
+changed. **`/products` had no `tests/Api` suite**: products are §47, built before the convention, and
+every module from §49 on has one — `tests/Api/products.php` now covers §65's eight API lines in order.
+**It found a 500 on its first run**, fixed in `ProductRepository::skuExists()`:
+`wc_get_product_id_by_sku()` excludes trashed products but `wc_product_meta_lookup` keeps their row, so
+the duplicate check said "free" for a SKU the insert then refused from inside `save()`. **SQL injection
+got two tests and nothing was wrong with the SQL** — `tests/Unit/SqlSafetyTest` walks all 60 `$wpdb` call
+sites statically (and proves it can still fail, against a hostile fixture), while
+`tests/Api/security.php` asserts the thing a concatenated `WHERE` actually fails: **a payload must not
+widen a result set**, because "200, no crash" is what one returns. And **CSRF is ruled out with an
+argument rather than tested** — `docs/SECURITY.md` → "CSRF", measured over real HTTP on 2026-08-16:
+the credential is an `Authorization` header a cross-origin page cannot set, and core forces
+`wp_set_current_user(0)` on any REST request with cookies and no `X-WP-Nonce`, so cookies are never
+sufficient whatever their state.
+
+**`tests/Api/security.php` reads the router, which is the one thing a per-feature suite cannot do.**
+Every route must declare a guard, with `/health`, the namespace index, `/locations/*` and `/webhooks/*`
+an explicit allowlist; and one Support Agent credential is swept across every GET route at once, which
+is what catches a route added later with the wrong guard. **The sweep carries a control and needs it**:
+where an administrator gets 200 the Support Agent must get **403**, not a 404 or a validation error —
+writing that control found two routes that refuse everybody for their own reasons and would otherwise
+have proved nothing. That discipline is the section's other output: a refusal and an unreachable route
+look identical from outside, so every negative test needs a positive control.
+
+**IDOR's owner half is named as untestable rather than skipped.** `Permissions::assertOwnsOr()` exists
+with no call sites, because every route carries a management capability and a shopper reading their own
+order needs §44's customer session. What *is* testable is type confusion — WordPress keeps posts,
+products, orders and attachments in one id space — and all thirteen crossings are asserted to 404.
+When §44 lands, the owner-scoped tests are part of it.
+
+**§68 added no version table, on purpose.** Five of its six components were already pinned by
+`compose.yaml`'s image tags; **WooCommerce was the sixth and nothing pinned it**, because it installs
+into the volume, so it is now declared in the same file under `x-tested-versions` and §66's `setup.sh`
+will install that version. A table in a document would be a second copy of numbers `compose.yaml` already
+states, and the copy is what drifts — so the record is a check: `scripts/test.sh versions` reads the pins
+out of `compose.yaml` and compares them against the running stack. Verified 2026-08-16, all matching.
+
+**§69 was partly satisfied already, and the gap was writes over the wire.** Every `tests/Api` suite goes
+through `rest_do_request()`, so no test had sent a POST or PATCH through Apache, the permalink rewrite
+and an `Authorization` header. `scripts/test-api.sh` → "CRUD over HTTP" is that walkthrough, and it lives
+there rather than in a document because a documented walkthrough is one nobody re-runs. It is thin on
+business rules by design — what it proves is the transport, and it is what found the 500.
 
 §63 is `src/Analytics/` — seven read-only endpoints (`overview`, `revenue`, `orders`, `products`,
 `customers`, `shipping`, `cod`) and **no migration**; `Schema::VERSION` is still 9.
@@ -335,8 +381,9 @@ national commune code, not a postal code.
 [docs/PLAN.md](docs/PLAN.md) — the functional specification — answers *what* we build.
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (layering, module map, provider abstraction, data/schema design) and
 [docs/SECURITY.md](docs/SECURITY.md) (read before touching auth, payments, webhooks, uploads, or any integration —
-its "Webhooks" section is the §55 rule every inbound endpoint follows, and its "File uploads" section is the
-§61 rule every route that writes a file follows) supersede the roadmap for their
+its "Webhooks" section is the §55 rule every inbound endpoint follows, its "File uploads" section is the
+§61 rule every route that writes a file follows, and its "CSRF" section is the §65 rule-out) and
+[docs/TESTING.md](docs/TESTING.md) (§65's map — read before writing a suite) supersede the roadmap for their
 topics. `docs/API.md` and `docs/DEPLOYMENT.md` do not exist yet.
 
 ## Architecture
@@ -471,12 +518,16 @@ those keys with blank values. `WP_PORT` is honoured — `compose.yaml` publishes
 `RateLimiter`, and passed through by nothing — and added them alongside `AC_RATE_LIMIT_UPLOADS` and
 `AC_MEDIA_MAX_BYTES`. `AC_ANALYTICS_CACHE_TTL` (§63) went in the same way.
 
-`scripts/test.sh` runs every stage — `syntax`, `unit`, `rest` (in-process, `tests/Api/`) and `http`
-(`scripts/test-api.sh`). Pass a stage name to run just one. The `http` stage is not redundant:
-`rest_do_request()` never parses an `Authorization` header, so nothing before it can see
-authentication or rate limiting. Run it before touching either. The rest of
-`scripts/{setup,reset,seed,health,backup}.sh` (§66) does not exist yet. `reset.sh` is destructive by
-design and must say so loudly, and `backup.sh` cannot use `wp db query`/`wp db export` — see §66.
+`scripts/test.sh` runs every stage — `versions` (§68), `syntax`, `unit`, `rest` (in-process,
+`tests/Api/`) and `http` (`scripts/test-api.sh`). Pass a stage name to run just one.
+**The `http` stage is not redundant, and is blind to nothing the others see**: `rest_do_request()` never
+parses an `Authorization` header, never runs `rest_pre_serve_request` (so CORS headers and §64's
+downloads are invisible to it), and cannot perform a real upload because `wp_handle_upload()` ends in
+`move_uploaded_file()`. Run it before touching authentication, rate limiting, CORS, uploads or any write
+path. [docs/TESTING.md](docs/TESTING.md) has the per-stage table and the conventions for adding a suite.
+The rest of `scripts/{setup,reset,seed,health,backup}.sh` (§66) does not exist yet. `reset.sh` is
+destructive by design and must say so loudly, and `backup.sh` cannot use `wp db query`/`wp db export` —
+see §66.
 
 ## API conventions
 
