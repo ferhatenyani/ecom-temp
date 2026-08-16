@@ -176,7 +176,12 @@ fi
 
 # --------------------------------------------------------------- woocommerce --
 step "woocommerce"
-INSTALLED=$(wpcli wp plugin get woocommerce --field=version 2>/dev/null || true)
+# Not through wpcli(), which folds stderr into stdout so the output can be
+# read. Here that would capture WP-CLI's "the 'woocommerce' plugin could not be
+# found" *as the version*, and the message below would then report an error
+# string as the installed release. On a fresh volume that is the normal path.
+INSTALLED=$(docker compose run --rm -T wpcli wp plugin get woocommerce --field=version 2>/dev/null \
+  | grep -v '^ Container' | tr -d '\r')
 
 if [[ "$INSTALLED" == "$WC_VERSION" ]]; then
   ok "WooCommerce ${WC_VERSION} already installed"
