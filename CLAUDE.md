@@ -272,6 +272,17 @@ signature — it binds to nothing, so a verified delivery means "go and re-fetch
 never "believe this payload". Per-client settings are the `ac_yalidine_settings` option — origin wilaya, insurance,
 parcel defaults — never `.env` and never constants, because the plugin is cloned per client.
 
+**No courier webhook has ever been received, and a live-API note does not cover one.** §56 and §57 verified
+the *outbound* APIs on 2026-08-14/15; the inbound half has never run. `ac_webhook_events` holds rows for
+`chargily` and the test double only, and neither courier's `*_WEBHOOK_SECRET` is set, so both routes 404
+today. Every test payload is *constructed* from published documentation, which proves each verifier matches
+the scheme as written and cannot prove the sender implements it — `grep -rn ASSUMPTION integrations/Yalidine
+integrations/ZRExpress`, and see `docs/SECURITY.md` → "A verifier written from a specification is not a
+verified verifier". Both failure modes are quiet 401s that look like silence rather than an error. Neither is
+an outage, because a verified courier event is only ever a hint to re-fetch and the poller keeps parcels
+current either way. **The ledger is the standing check**: a row with `provider` `yalidine` or `zr-express`
+means one genuinely arrived, and the markers come out then and not before.
+
 What the shop *charges* is separate from what a courier quotes: `ac_shipping_rates` (migration 005,
 `Schema::VERSION` is 6) holds the tariff, and `RateResolver` picks the narrowest matching rule — commune beats
 wilaya beats the national fallback, and rules are never added together. `GET /shipping/rates` returns both

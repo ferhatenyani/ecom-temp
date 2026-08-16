@@ -711,6 +711,20 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
      * That is stable across a genuine retransmission and distinct between real
      * events, which each carry their own `updated_at`.
      *
+     * **ASSUMPTION (unverified — no live webhook has ever arrived): that the
+     * field is called `security_token` and that it is sent in the JSON body.**
+     * Both come from Yalidine's documentation, and every payload in
+     * `tests/Unit/CourierWebhookTest` and `tests/Api/shipping-webhooks.php` is
+     * *constructed* from it — so the suite proves this verifier does what the
+     * documentation describes and cannot prove Yalidine sends it that way. That
+     * matters more here than for a signed scheme: if the real field is a header,
+     * or is spelled differently, every genuine event is refused with 401 and the
+     * shop sees only silence. Setting `YALIDINE_WEBHOOK_SECRET` registers the
+     * route; until a row with `provider = 'yalidine'` appears in
+     * `ac_webhook_events`, nothing has been received. Since a verified event is
+     * only ever a hint to re-fetch, the poller keeps parcels current either way
+     * — which is why this is a documented gap and not an outage.
+     *
      * @param array<string, mixed>  $payload
      * @param array<string, string> $headers
      */

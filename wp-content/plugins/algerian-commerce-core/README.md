@@ -1744,6 +1744,25 @@ nothing else was listening. The plugin bootstrap already carried exactly this re
 for `integrations/`; it had never been applied to `src/`, where a classmap makes it
 more necessary rather than less.
 
+### No courier webhook has ever been received
+
+Both verifiers are written from published documentation — Svix's scheme for ZR Express, Yalidine's
+`security_token` — and every payload in `tests/Unit/CourierWebhookTest` and
+`tests/Api/shipping-webhooks.php` is *constructed* from it. The suites prove each verifier matches the
+scheme as written; they cannot prove the sender implements it. §56's and §57's "verified against the live
+API" notes cover the **outbound** half only.
+
+Both failure modes are quiet: a wrong scheme or a wrong field name refuses genuine events with 401, and a
+courier retrying into a 401 tells the merchant nothing. Neither is an outage, because a verified courier
+event is only ever a hint to re-fetch and the hourly poller keeps parcels current regardless.
+
+`ac_webhook_events` is the standing check — it holds rows for `chargily` and the test double only, and a
+row whose `provider` is `yalidine` or `zr-express` proves one genuinely arrived. Neither
+`*_WEBHOOK_SECRET` is set today, so both routes 404 by §60's own rule and one could not arrive even if
+sent. See `grep -rn ASSUMPTION integrations/Yalidine integrations/ZRExpress` and docs/SECURITY.md → "A
+verifier written from a specification is not a verified verifier". Remove the markers when the ledger
+says so.
+
 ## CMS (§61)
 
 Five read endpoints over content WordPress already knows how to store. There is no write surface,

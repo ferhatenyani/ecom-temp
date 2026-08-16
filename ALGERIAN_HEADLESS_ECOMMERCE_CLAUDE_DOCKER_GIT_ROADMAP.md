@@ -3677,6 +3677,31 @@ secret and that every rejection is byte-identical across both couriers;
 service against a real database, including that a replayed delivery does not
 ask the courier a second time.
 
+## What is still unproven, and how to tell when it is not
+
+**No courier webhook has ever been received.** Both verifiers are written from
+published documentation — Svix's scheme for ZR Express, Yalidine's
+`security_token` — and every payload in both suites is *constructed* from it. So
+the tests prove each verifier matches the specification as written, and cannot
+prove the sender implements it. §56's and §57's "verified against the live API"
+notes cover the **outbound** half only; do not read them as covering this one.
+
+Both failure modes are quiet. A wrong scheme or a wrong field name refuses
+genuine events with 401, and a courier retrying into a 401 tells the merchant
+nothing — the shop sees silence, not an error. Neither is an outage, because a
+verified courier event is only ever a hint to re-fetch and the hourly poller
+keeps parcels current regardless. That is what makes this a documented gap and
+not a blocker.
+
+`ac_webhook_events` is the standing check and needs no maintenance: it holds
+rows for `chargily` and the test double only, and a row whose `provider` is
+`yalidine` or `zr-express` is proof one has genuinely been verified. Neither
+`*_WEBHOOK_SECRET` is set today, so both routes 404 by §60's own rule and one
+could not arrive even if sent. Marked at both call sites —
+`grep -rn ASSUMPTION integrations/Yalidine integrations/ZRExpress` — and in
+docs/SECURITY.md → "A verifier written from a specification is not a verified
+verifier". Remove the markers when the ledger says so, not before.
+
 ## Two things this section found
 
 ``` text

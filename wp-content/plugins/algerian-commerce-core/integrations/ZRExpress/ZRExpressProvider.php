@@ -34,6 +34,12 @@ use AlgerianCommerce\Shipping\StatusReport;
  * in production and **verified against the live API on 2026-08-15** with a
  * merchant account's credentials.
  *
+ * That live run covered the *outbound* API and nothing else. The webhook half
+ * has never received a real event, and what is unproven is marked
+ * `ASSUMPTION (unverified)`:
+ *
+ *     grep -rn 'ASSUMPTION' integrations/ZRExpress
+ *
  * ## Three ways it differs from Yalidine, and what each costs
  *
  *  - **Destinations are UUIDs**, and a parcel carries `cityTerritoryId` and
@@ -607,6 +613,18 @@ final class ZRExpressProvider implements ShippingProviderInterface, DestinationC
      * dependency: it is fifteen lines of HMAC against a documented string, the
      * house rule is that a package needs a stated reason, and a verifier this
      * codebase can read is worth more than one it cannot.
+     *
+     * **ASSUMPTION (unverified — no live webhook has ever arrived): that ZR
+     * Express signs exactly the scheme Svix publishes.** Every test payload in
+     * `tests/Unit/CourierWebhookTest` and `tests/Api/shipping-webhooks.php` is
+     * *constructed* from that specification, so the suite proves this verifier
+     * matches the published scheme and cannot prove the sender implements it —
+     * the header casing, the prefix handling and the signed-material order are
+     * all read from documentation, not observed. Unlike §57's live API run,
+     * there is no way to settle it without a merchant account receiving a real
+     * delivery. `ac_webhook_events` is the standing evidence: a row whose
+     * `provider` is `zr-express` means one has genuinely been verified, and
+     * today that table holds none.
      *
      * **A real signature may be acted on — and this one still is not.** The
      * webhook reference documents `state.name` as a display string ("Out for
