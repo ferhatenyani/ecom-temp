@@ -42,7 +42,19 @@ $table = $wpdb->prefix . 'ac_notifications';
 $service = Plugin::instance()->notificationService();
 
 $MAIL = 'ac-notif@example.test';
-$wpdb->query($wpdb->prepare("DELETE FROM {$table} WHERE recipient = %s", $MAIL));
+
+/*
+ * Start from an empty queue, for the reason scripts/test-api.sh clears the
+ * rate-limit counters before it asserts anything: a queue left full by an
+ * earlier suite makes every assertion below meaningless.
+ *
+ * Specifically, `drain()` takes the oldest N rows **globally**, so the orders
+ * that tests/Api/cart.php and tests/Api/coupons.php create — each of which
+ * legitimately queues a confirmation — filled the budget and this suite's own
+ * rows were never attempted. It passed when run alone and failed in the full
+ * run, which is the worst way to find out.
+ */
+$wpdb->query("DELETE FROM {$table}");
 
 echo PHP_EOL, "── the channel registry ──", PHP_EOL;
 
