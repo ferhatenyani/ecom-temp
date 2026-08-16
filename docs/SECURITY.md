@@ -495,19 +495,32 @@ than a test, and both arguments are in this document: CSRF above, and the owner 
 cannot be tested because no route in this API is owner-scoped yet — every one carries a management
 capability, and `Permissions::assertOwnsOr()` is written, unused, and waiting for a customer session.
 
-**That wait now has a step: roadmap 32c, written up as §59c.** Read it before building customer accounts.
-The short form, because it is the one authorization mistake this project is most likely to make: a shopper
-opens their order history, edits `/orders/123` to `/orders/124`, and reads a stranger's name, phone and
-address. Nothing errors, because the request is valid and only the authorization is absent. Three things
-must all hold, and the third is the one that gets skipped — the storefront asks for "my orders" rather
-than "orders for customer 5"; the Next.js server never forwards a browser-supplied id under its own
-privileged credential; and **this API checks ownership itself, in the service layer**, because a check
-that lives only in the storefront is a check the second client removes. Owner-scoped tests are part of
-that step, not a follow-up, and the shape is "customer A is refused customer B's order **and** served
-their own" — a refusal alone proves only that the route is broken.
+**That wait is over: roadmap 32c / §59c is built, and `AccountService` holds the first two call sites
+`assertOwnsOr()` has ever had.** All three conditions hold — `/account/orders` has no `customer_id`
+parameter to redirect it, the storefront's half lives in the Next.js repository, and **this API checks
+ownership itself in the service layer**, because a check that lives only in the storefront is a check the
+second client removes. `tests/Api/account.php` proves it in the shape this document insists on: *customer
+A is refused customer B's order **and** A is served their own*, against a real second account with a real
+order. A guest order (`customer_id` 0) is reachable by nobody, deliberately — the only evidence linking a
+shopper to one is an email address, and treating that as proof would make it readable by anyone who could
+name the address on it.
 
-The same question applies to every shopper-reachable resource taking an id: an order's notes, timeline,
-shipments and payments, a customer record, a saved address. Enumerate them when the step is built.
+**A shopper session is not a staff session, and both halves are asserted.** A customer never receives an
+Application Password, and an account holding any `ac_*` capability is refused at `/account/login` even
+with the right password — otherwise the customer door is a second login for administrators, minting a
+bearer token that bypasses the Application Passwords §44 chose. The session is a WordPress auth-cookie
+string, so logout, a password change and expiry all invalidate it without this project writing any
+crypto of its own.
+
+**Two things §59c found.** The brute-force guard hooks
+`application_password_failed_authentication` and therefore does **not** watch a customer login;
+`AccountService` records the failure itself and `scripts/test-api.sh` asserts the 429. And
+authentication must answer before input validation — `POST /account/password` validated its payload
+first, so an anonymous caller got a 400 listing the endpoint's fields instead of a 401.
+
+The same ownership question applies to every shopper-reachable resource taking an id. Today only orders
+are shopper-reachable; when notes, timelines, shipments or saved addresses become so, each needs the same
+pair of tests.
 
 Two properties of this list are worth keeping when adding to it. A refusal and an unreachable route look
 identical from outside, so **every negative test needs a positive control**. And an injection test that

@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Roadmap §1–§53, §55–§65, §68–§69 and §59b are implemented and `main` is deployable. The plugin at
+Roadmap §1–§53, §55–§65, §68–§69, §59b and §59c are implemented and `main` is deployable. The plugin at
 [wp-content/plugins/algerian-commerce-core/](wp-content/plugins/algerian-commerce-core/) holds real code — bootstrap,
 REST foundation, migrations, RBAC, audit trail, products, inventory, orders, COD, shipping, Yalidine,
 ZR Express, the payment abstraction, Chargily, the CMS, media, SEO, the marketing event layer, analytics,
-import/export and the cart and checkout — and its
+import/export, the cart and checkout and shopper accounts — and its
 [README](wp-content/plugins/algerian-commerce-core/README.md) is the reference for what exists and why each decision
 went the way it did. Read it before extending a module. [scripts/](scripts/) holds `test.sh` and `test-api.sh`; the
 rest of §66 and [backups/](backups/) are still empty placeholders.
@@ -16,12 +16,13 @@ rest of §66 and [backups/](backups/) are still empty placeholders.
 The single source of truth for what to build is
 [ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md](ALGERIAN_HEADLESS_ECOMMERCE_CLAUDE_DOCKER_GIT_ROADMAP.md) (81 sections). Read the
 relevant section before implementing a feature; section 4 gives the exact implementation order, section 3 the
-milestones, and section 29 the per-feature loop. **§50–§53, §55–§65, §59b and §68–§69 are done** — orders, notes,
+milestones, and section 29 the per-feature loop. **§50–§53, §55–§65, §59b–§59c and §68–§69 are done** — orders, notes,
 timeline, customers, the Algerian geography mechanism, cash on delivery, the shipping abstraction, §14's
 shipping rules, the Yalidine and ZR Express adapters, the security review, the payment abstraction and
 Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS and media endpoints,
 §62's SEO, §62b's marketing event layer, §63's analytics, §64's import/export, §65's testing audit,
-§68's version pinning, §69's API walkthrough and §59b's cart and checkout. **Next up is §66 (the five automation scripts) and
+§68's version pinning, §69's API walkthrough, §59b's cart and checkout and §59c's shopper
+accounts. **Next up is §66 (the five automation scripts) and
 §67 (seed data), which go together because `seed.sh` is §67's delivery mechanism.**
 
 **§59b is `src/Cart/` — seven cart routes and two checkout routes, no migration and no table**
@@ -61,8 +62,37 @@ a payment that fails must not orphan an order that succeeded. `RateResolver` is 
 than `ShippingService::rates()`, which asserts `ac_manage_shipping` — a shopper being quoted a delivery
 price is not reading the shop's shipping configuration.
 
-**Two steps were added to §4's build sequence after §69: `32b` cart and checkout (§59b, now built) and
-`32c` customer accounts and sessions (§59c).** They are not new scope — PLAN §53 always required `cart`,
+**§59c is `src/Account/` — seven routes, no migration and no table**; sessions live in WordPress's own
+`session_tokens` user meta. **The IDOR §65 named is closed, and `Permissions::assertOwnsOr()` finally has
+call sites** — written in §50, unused until now. `/account/orders` has no `customer_id` parameter to
+redirect it (the id comes from the session), and `AccountService::order()` checks ownership in the
+service layer, because a check living only in the storefront is one the second client removes. Proven as
+*A is refused B's order **and** A is served their own*, against a real second account with a real order.
+**A guest order is reachable by nobody** — `customer_id` 0 can never match a session, and the only
+evidence linking a shopper to one is an email address, which would make it readable by anyone who could
+name it.
+
+**The session is a WordPress auth-cookie string, not a token this project invented.**
+`wp_generate_auth_cookie()` / `wp_validate_auth_cookie()`, which buys five properties free and measured:
+a tampered payload, a logout, a password change and an expiry all invalidate it. It is returned in the
+**body**, not set as a cookie — this API cannot set one the storefront's origin would return, and a
+cross-site cookie is what §65's CSRF rule-out depends on not existing; the Next.js server puts it in its
+own HTTP-only cookie so the browser never holds it, which is what §44 protects. **Two §44 rules are
+asserted rather than assumed**: a customer receives no Application Password, and a staff account is
+refused at `/account/login` even with the right password (checked against the `ac_*` capability
+vocabulary, not the role name), or the customer door becomes a second admin login minting a bearer token.
+
+**Two things §59c found.** `RateLimitGuard` hooks `application_password_failed_authentication` and so
+does **not** watch a customer login — `AccountService` records the failure itself and
+`scripts/test-api.sh` asserts the 429, since only that stage sees a client IP; without it customer logins
+were unlimited. And **authentication must answer before input validation**: `POST /account/password`
+validated its payload first, so an anonymous caller got a 400 listing the endpoint's fields instead of a
+401. **Password reset by email is deliberately not built** — the delivery half has no home until
+`Notifications/` exists (PLAN §29, §30), and a reset link generated but never sent is worse than an
+absent feature because it looks like one that works.
+
+**Two steps were added to §4's build sequence after §69, and both are now built: `32b` cart and
+checkout (§59b) and `32c` customer accounts and sessions (§59c).** They are not new scope — PLAN §53 always required `cart`,
 `checkout`, `customer accounts` and `orders` of the storefront — but the only storefront entry in the
 list was step 44, one line reading "Next.js storefront", and §44 deferred customer sessions to "the
 storefront work" with no step to defer them to. Both have substantial backend consequences: a cart
@@ -456,7 +486,7 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `Cart/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`,
+`Customers/`, `Account/`, `Cart/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`,
 `Analytics/`, `ImportExport/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and

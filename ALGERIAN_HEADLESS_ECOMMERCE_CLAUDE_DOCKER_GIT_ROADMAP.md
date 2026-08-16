@@ -3809,6 +3809,102 @@ an order's notes, its timeline, its shipments, its payments, a customer record,
 a saved address. Enumerate them when the step is built rather than discovering
 them one at a time.
 
+## What was built
+
+`src/Account/` — seven routes, **no migration and no table** (`Schema::VERSION`
+is still 9). Sessions live in WordPress's own `session_tokens` user meta.
+
+``` text
+POST /account/register    POST /account/login     POST /account/logout
+GET  /account             PATCH /account          POST /account/password
+GET  /account/orders      GET /account/orders/{id}
+```
+
+**The IDOR is closed, and `Permissions::assertOwnsOr()` has its first two call
+sites** — written in §50 and unused until now. All three conditions above hold:
+
+``` text
+1. no customer_id parameter exists         structural: AccountSession takes no id
+2. the storefront's half                   lives in the Next.js repository
+3. ownership checked here, in the service  AccountService::order()
+```
+
+Proven in the shape §65 insists on — *A is refused B's order **and** A is served
+their own*, against a real second account with a real order, because a refusal
+alone proves only that the route is broken. `tests/Api/account.php` also fires
+`customer_id`, `customer`, `user_id`, `id` and `author` at `/account/orders` and
+asserts the list does not move.
+
+**A guest order belongs to nobody and stays unreachable.** `customer_id` 0 can
+never match a session, which is the correct answer rather than an oversight: the
+only evidence linking a shopper to a guest order is an email address, and
+treating that as proof would make the order readable by anyone who could name
+the address on it.
+
+## The session is a WordPress auth cookie, not a token we invented
+
+`wp_generate_auth_cookie()` in, `wp_validate_auth_cookie()` out. Measured before
+a line of the module was written, and every property comes free:
+
+``` text
+a valid token           -> the user id
+a tampered payload      -> false   (HMAC over wp_salt('logged_in'))
+after logout            -> false   (bound to a WP_Session_Tokens entry)
+after a password change -> false   (the HMAC covers a fragment of the hash)
+after expiry            -> false
+```
+
+Writing our own would have meant owning all five, and `Auth/AuthService` already
+declined to reimplement credential storage for the same reason. The revocation
+property is the one worth noticing: a shopper who changes their password logs
+every stolen session out, and nothing in this module had to arrange it.
+
+**It is returned in the response body, not set as a cookie**, and §44 still
+holds. This API cannot set a cookie the storefront's origin would return, and a
+cross-site cookie is exactly what §65's CSRF rule-out depends on not existing.
+The Next.js server puts the token in *its own* HTTP-only cookie, so the browser
+never holds it — which is the property §44 protects, satisfied more strictly
+than a cookie this API could set.
+
+## Two rules from §44, both asserted rather than assumed
+
+**A customer never receives an Application Password.** `tests/Api/account.php`
+checks the registered account holds none, because that failure is silent: an
+account quietly holding one would authenticate against every staff route with
+the credential this module handed it.
+
+**A staff account cannot use the customer door.** `authenticate()` refuses any
+account holding an `ac_*` capability even with the right password — checked
+against the capability vocabulary rather than the role name, because a site
+owner can add a capability to any role. Without it this endpoint would be a
+second login for administrators, minting a bearer token that bypasses both the
+Application Passwords §44 chose and the guard that watches them.
+
+## Two things this section found
+
+**The brute-force guard does not watch this door on its own.**
+`RateLimitGuard` hooks `application_password_failed_authentication`, which is
+WordPress's admin path; a customer login goes nowhere near it. `AccountService`
+records the failure itself, and `scripts/test-api.sh` asserts the 429 — only
+that stage can see a client IP. Without it the shop's customer logins would have
+been unlimited, which is the regression the application-password guard already
+shipped with once.
+
+**Authentication must answer before input validation.** `POST /account/password`
+validated its payload first, so an anonymous caller got a 400 listing the fields
+the endpoint wants instead of a 401. Backwards, and it told someone with no
+session more than the refusal should. Caught by `tests/Api/account.php`; the
+session is now required before the payload is looked at.
+
+## Deferred, with the reason
+
+**Password reset by email is not built.** The token half is easy; the delivery
+half has no home — `Notifications/` does not exist, PLAN §29 and §30 own email,
+and a reset link that is generated and never sent is worse than an absent
+feature because it looks like one that works. Registration already surfaces this:
+WooCommerce's new-account email fails in development with `sendmail: can't
+connect`, which is a configuration fact rather than a defect. Build it with §29.
+
 ------------------------------------------------------------------------
 
 # 60. Webhooks

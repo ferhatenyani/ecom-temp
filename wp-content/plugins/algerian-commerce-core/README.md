@@ -878,6 +878,97 @@ Three things cost real debugging time here:
 - **`wc_get_orders()` returns refunds by default.** `shop_order_refund` is in the default `type`, and
   `WC_Order_Refund` does not extend `WC_Order`. Ask for `'type' => 'shop_order'` explicitly.
 
+## Shopper accounts (§59c)
+
+```bash
+POST /account/register   {email, password, first_name?, last_name?}   -> {customer, token, expires_at}
+POST /account/login      {email, password}
+POST /account/logout
+GET  /account            PATCH /account      POST /account/password   {current_password, new_password}
+GET  /account/orders     GET   /account/orders/{id}
+```
+
+No migration and no table. Sessions live in WordPress's own `session_tokens` user meta.
+
+The session travels as the `X-Customer-Token` header (or a `customer_token` parameter) and is returned in
+the response body.
+
+### The IDOR this section exists to close
+
+Order history is where a shopper edits `/orders/123` to `/orders/124` and reads a stranger's name, phone
+and address — with nothing erroring, because the request is valid and only the authorization is missing.
+Three things had to hold and **the third is the one that gets skipped**:
+
+1. no `customer_id` parameter exists — `AccountSession` takes no user id, so the list cannot be
+   redirected by any spelling of one;
+2. the Next.js server never forwards a browser-supplied id under its privileged credential — that half
+   lives in the storefront repository;
+3. **this API checks ownership itself**, in `AccountService::order()`, because a check that lives only in
+   the storefront is a check the second client removes.
+
+`Permissions::assertOwnsOr()` was written in §50 and had no call sites until this module. It has two now.
+`tests/Api/account.php` proves it in the shape §65 requires — *A is refused B's order **and** A is
+served their own* — against a real second account with a real order, because a refusal alone proves only
+that the route is broken. It also fires `customer_id`, `customer`, `user_id`, `id` and `author` at
+`/account/orders` and asserts the list does not move.
+
+**A guest order belongs to nobody and stays unreachable.** `customer_id` 0 can never match a session.
+Deliberate: the only evidence linking a shopper to a guest order is an email address, and treating that
+as proof of ownership would make the order readable by anyone who could name the address on it.
+
+### The session is core's, not ours
+
+`wp_generate_auth_cookie()` in, `wp_validate_auth_cookie()` out. Five properties come free, all measured
+before the module was written:
+
+```text
+a valid token           -> the user id
+a tampered payload      -> false   (HMAC over wp_salt('logged_in'))
+after logout            -> false   (bound to a WP_Session_Tokens entry)
+after a password change -> false   (the HMAC covers a fragment of the hash)
+after expiry            -> false
+```
+
+Writing our own would mean owning all five; `Auth/AuthService` already declined to reimplement credential
+storage for the same reason. A shopper who changes their password logs every stolen session out, and
+nothing here arranges it.
+
+**Returned in the body, never set as a cookie.** This API cannot set a cookie the storefront's origin
+would return, and a cross-site cookie is precisely what §65's CSRF rule-out depends on not existing. The
+Next.js server puts the token in its own HTTP-only cookie, so the browser never holds it — which is the
+property §44 protects, satisfied more strictly than by a cookie this API could set.
+
+### Two §44 rules, asserted rather than assumed
+
+- **A customer never receives an Application Password.** Checked in the suite, because the failure is
+  silent: an account quietly holding one would authenticate against every staff route with the credential
+  this module handed it.
+- **A staff account cannot use the customer door.** `authenticate()` refuses any account holding an
+  `ac_*` capability even with the right password — checked against the capability vocabulary rather than
+  the role name, since a site owner can add a capability to any role. Otherwise this is a second login
+  for administrators, minting a bearer token that bypasses the Application Passwords §44 chose.
+
+Login failures answer with **one message for every cause**. A login that says "no such account" is a
+user-enumeration oracle over the shop's customer list. Registration is the one deliberate exception: a
+duplicate email is a 409, because a signup form that accepts a duplicate silently cannot tell a customer
+why they later cannot sign in.
+
+### Two things this section found
+
+- **The brute-force guard does not watch this door.** `RateLimitGuard` hooks
+  `application_password_failed_authentication`, WordPress's admin path; a customer login goes nowhere
+  near it. `AccountService` records the failure itself and `scripts/test-api.sh` asserts the 429 — only
+  that stage can see a client IP. Without it, customer logins were unlimited.
+- **Authentication must answer before input validation.** `POST /account/password` validated its payload
+  first, so an anonymous caller received a 400 listing the endpoint's fields rather than a 401.
+
+### Deferred
+
+**Password reset by email.** The token half is easy; delivery has no home until `Notifications/` exists
+(PLAN §29, §30). A reset link generated and never sent is worse than an absent feature, because it looks
+like one that works. Registration already shows the gap: WooCommerce's new-account email fails in
+development with `sendmail: can't connect`, which is a configuration fact rather than a defect.
+
 ## Cart and checkout (§59b)
 
 ```bash
