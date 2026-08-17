@@ -720,6 +720,110 @@ ac_assert(
 wp_delete_post($targetA, true);
 wp_delete_post($targetB, true);
 
+echo PHP_EOL, "=== a route capture is an address, never a writable field ===", PHP_EOL;
+
+/*
+ * The rule `pinRouteParams()` created, enforced rather than remembered.
+ *
+ * Pinning makes the URL the authority for every param the route captured, which
+ * is right for an address and wrong for anything a body may legitimately
+ * rewrite: `PATCH /cms/pages/{slug}` with a payload naming `slug` would have
+ * its rename silently overwritten by the path it came from, and answer 200.
+ *
+ * No such collision exists today — the only non-`id` captures are `key` and
+ * `code` (bodyless routes) and `slug` and `location` (read-only routes). It
+ * becomes reachable the moment §89 gives the CMS a write surface, which is
+ * exactly when nobody will be thinking about this file.
+ *
+ * **The coverage is stated rather than assumed.** Seven of the twenty-four
+ * `*Input` classes publish `allowedFields()`; the rest keep their list private
+ * under other names. Checking only the seven and reporting success would be a
+ * grep that matched nothing, so the classes it cannot read are listed by name
+ * and asserted against a baseline — a new one has to be added deliberately,
+ * which is the moment somebody has to think about it.
+ */
+/*
+ * Checked on the **route** side, which is the small side and the precise one.
+ *
+ * The first draft of this crossed every capture name against every Input
+ * class's `allowedFields()` and reported three collisions, all false:
+ * `ProductInput` accepts `slug` and so does the CMS page *route*, but they are
+ * different routes and never meet. Making that precise would need a route →
+ * Input map nothing publishes. So the question is asked the other way round,
+ * where it can be answered exactly: **which write routes are addressed by a
+ * name a payload might also carry?**
+ *
+ * An id cannot collide — every Input in this plugin drops `id` as read-only,
+ * asserted in each suite's round-trip test — so `id`, `*_id` and `uuid` are
+ * excluded and everything else has to be justified here by name.
+ */
+$mutableCaptures = [];
+$writeRoutes = 0;
+
+foreach ($routes as $route => $handlers) {
+    if (!str_starts_with((string) $route, '/algerian-commerce/v1')) {
+        continue;
+    }
+
+    $isWrite = false;
+
+    foreach ($handlers as $handler) {
+        foreach (array_keys((array) ($handler['methods'] ?? [])) as $method) {
+            if (in_array(strtoupper((string) $method), ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+                $isWrite = true;
+            }
+        }
+    }
+
+    if (!$isWrite) {
+        continue;
+    }
+
+    $writeRoutes++;
+
+    if (preg_match_all('/\(\?P<(\w+)>/', (string) $route, $found) === 0) {
+        continue;
+    }
+
+    foreach ($found[1] as $name) {
+        if ($name === 'id' || str_ends_with($name, '_id') || $name === 'uuid') {
+            continue;
+        }
+
+        $mutableCaptures[$name][(string) $route] = true;
+    }
+}
+
+/*
+ * Each entry is a write route addressed by something other than an id, and the
+ * reason it is safe. Adding one is the moment to check that the route's Input
+ * refuses the field — because `pinRouteParams()` will overwrite it with the
+ * path, and the write will answer 200 having changed nothing.
+ */
+$addressedByName = [
+    // LineInput accepts product_id, variation_id, quantity and options; there
+    // is no `key`, and a cart line is re-keyed by the server anyway.
+    'key' => 'cart line key — LineInput does not accept it',
+    // DELETE, so there is no body at all.
+    'code' => 'cart coupon code — the route takes no body',
+];
+
+$unjustified = array_diff(array_keys($mutableCaptures), array_keys($addressedByName));
+
+ac_assert(
+    'every write route addressed by a name rather than an id is accounted for',
+    $unjustified === []
+        ?: 'unjustified: ' . implode(', ', array_map(
+            static fn (string $name): string => $name . ' on ' . implode(' + ', array_keys($mutableCaptures[$name])),
+            $unjustified
+        )) . ' — confirm that route\'s Input refuses the field, then list it here with the reason'
+);
+
+ac_assert(
+    'and the sweep actually saw the write routes',
+    $writeRoutes >= 30 ?: "only {$writeRoutes} write routes examined"
+);
+
 // Tidy up, so a re-run starts where it started.
 wp_delete_post($probeProduct, true);
 wp_delete_post($probeAttachment, true);

@@ -358,6 +358,35 @@ ac_check('and that one round-trips too', ac_req('GET',
 ac_check('a SKU another product owns is still refused', ac_req('PATCH',
     "/products/{$varParentId}/variations/{$ownedId}", ['sku' => $SKU]), 409);
 
+/*
+ * The audit trail has to agree with the API about what `sku` means, or a reader
+ * comparing the two finds a variation that reports no SKU beside a row saying
+ * it was created with the parent's. And a deleted variation is identified by
+ * its attribute combination — without it the row says "a variation of product
+ * 1909 was deleted" and cannot say which.
+ */
+ac_req('DELETE', "/products/{$varParentId}/variations/{$inheritedId}", null, ['force' => true]);
+
+ac_check('the audit records the variation\'s own sku, not its parent\'s', ac_req('GET', '/audit-logs',
+    null, ['action' => 'product.variation_deleted', 'per_page' => 20]), 200,
+    function ($d) use ($inheritedId) {
+        foreach ($d['data'] as $row) {
+            if ($row['resource_id'] !== (string) $inheritedId) {
+                continue;
+            }
+
+            if (($row['metadata']['sku'] ?? null) !== '') {
+                return 'the row records sku ' . var_export($row['metadata']['sku'] ?? null, true)
+                    . ' for a variation that had none';
+            }
+
+            return ($row['metadata']['attributes'] ?? []) !== []
+                ?: 'the row cannot say which variation was deleted';
+        }
+
+        return 'no product.variation_deleted row for this variation';
+    });
+
 wp_delete_post($varParentId, true);
 
 echo PHP_EOL, "── duplicate ──", PHP_EOL;

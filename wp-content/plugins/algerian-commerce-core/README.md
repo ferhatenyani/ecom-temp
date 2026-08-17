@@ -3096,6 +3096,22 @@ rule that has to be remembered in every new controller is one the eleventh forge
 `tests/Api/security.php` asserts it, with the control that matters: the *other* product must be
 untouched, since a fix that refused both writes would pass the first half.
 
+**Pinning creates a rule of its own, and that rule is checked.** The URL winning is right for an
+address and wrong for anything a body may legitimately rewrite — `PATCH /cms/pages/{slug}` with a
+payload naming `slug` would have its rename overwritten by the path it came from and answer 200. No
+such collision exists today (the only non-id captures are `key` and `code`, on routes whose input
+refuses the one and whose method takes no body for the other), and §89 walks straight into one. So
+`tests/Api/security.php` asserts that **every write route addressed by something other than an id is
+listed with the reason it is safe**, and adding a route is what forces that decision.
+
+The first draft asked the question the other way round — every route capture crossed against every
+`allowedFields()` — and reported three collisions, all false: `ProductInput` accepts `slug` and so
+does the CMS page route, but they are different routes and never meet. Making that precise needs a
+route → Input map nothing publishes. Asking it on the route side needs no map and has no false
+positives. That draft also passed cleanly over **zero** classes on its first run, because
+`wp eval-file` eval()s the body and `__DIR__` is wp-cli's phar, so the glob matched nothing — the
+floor caught it, which is what a floor is for.
+
 **A second defect surfaced with it and is now fixed**: `WC_Product_Variation::get_sku()` falls back to
 `parent_data['sku']` in the default `view` context, so `ProductPresenter::variation()` published the
 parent's SKU as the variation's — a value this API then refused on the way back in, because the
