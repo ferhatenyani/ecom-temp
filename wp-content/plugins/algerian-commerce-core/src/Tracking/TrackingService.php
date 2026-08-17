@@ -6,8 +6,10 @@ namespace AlgerianCommerce\Tracking;
 
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Audit\AuditRepository;
+use AlgerianCommerce\Core\Config;
 use AlgerianCommerce\Core\Logger;
 use AlgerianCommerce\Geography\GeoRepository;
+use AlgerianCommerce\Security\ClientIp;
 use AlgerianCommerce\Security\RateLimiter;
 use AlgerianCommerce\Shipping\Shipment;
 use AlgerianCommerce\Shipping\ShipmentRepository;
@@ -82,7 +84,9 @@ final class TrackingService
         private readonly AuditRepository $audit,
         private readonly GeoRepository $geography,
         private readonly RateLimiter $rateLimiter,
-        private readonly Logger $logger
+        private readonly Logger $logger,
+        /* Optional, defaulting to the pre-§86 behaviour. See clientIp(). */
+        private readonly ?Config $config = null
     ) {
     }
 
@@ -301,18 +305,16 @@ final class TrackingService
     }
 
     /**
-     * REMOTE_ADDR only — the same rule as `RateLimitGuard` and the audit trail.
-     * `X-Forwarded-For` is client-controlled, and trusting it here would hand an
-     * attacker a fresh allowance on every request.
+     * One rule, in `Security\ClientIp` — the same rule as `RateLimitGuard` and
+     * the audit trail, which is now literally the same code rather than a third
+     * copy that agreed with them.
+     *
+     * This route is unauthenticated and its limit is 20 a minute, so the header
+     * being client-controlled would hand an attacker a fresh allowance per
+     * request; `ClientIp` reads it only from a configured proxy.
      */
     private function clientIp(): string
     {
-        $remote = $_SERVER['REMOTE_ADDR'] ?? '';
-
-        if (!is_string($remote) || filter_var($remote, FILTER_VALIDATE_IP) === false) {
-            return '';
-        }
-
-        return $remote;
+        return ClientIp::resolve($_SERVER, $this->config?->get('AC_TRUSTED_PROXIES'));
     }
 }

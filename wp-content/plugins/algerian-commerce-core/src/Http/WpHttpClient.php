@@ -23,6 +23,9 @@ use WP_Error;
  *  - **TLS verification is never turned off.** docs/SECURITY.md requires TLS to
  *    every provider, and a flag to disable it is a flag someone eventually
  *    sets in production.
+ *  - **The safe wrapper, so a provider URL cannot reach the VPS itself.** See
+ *    `request()`; this is the one place it can be got wrong for every
+ *    integration at once.
  */
 final class WpHttpClient implements HttpClientInterface
 {
@@ -39,7 +42,17 @@ final class WpHttpClient implements HttpClientInterface
         array $headers = [],
         ?string $body = null
     ): HttpResponse {
-        $response = wp_remote_request($url, [
+        /*
+         * `wp_safe_remote_request()` and never `wp_remote_request()`, which is
+         * the same call with `reject_unsafe_urls` off. The safe wrapper runs
+         * `wp_http_validate_url()`, which refuses loopback, link-local and
+         * private ranges — so a base URL that ever becomes attacker-influenced
+         * cannot be pointed at `169.254.169.254` or another service on the
+         * VPS. docs/SECURITY.md has required this since it was written; the
+         * §86 audit found the unsafe spelling here and this is the correction.
+         * `tests/Unit/OutboundHttpSafetyTest` keeps the next call site honest.
+         */
+        $response = wp_safe_remote_request($url, [
             'method' => strtoupper($method),
             'headers' => $headers,
             'body' => $body,

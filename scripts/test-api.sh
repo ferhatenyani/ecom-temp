@@ -110,6 +110,85 @@ echo
 # nonce check runs before the cookie is ever trusted, which is exactly the
 # property being asserted. What would break this is a plugin or a future change
 # that authenticated a request from cookies alone.
+# ---------------------------------------------------------------------------
+# Forwarded headers — roadmap §86.
+#
+# **Only this stage can see it.** rest_do_request() never builds $_SERVER from a
+# real connection, so an in-process suite cannot tell a spoofed X-Forwarded-For
+# from an honest one — there is no TCP peer to disagree with.
+#
+# Two things are asserted, and the second is what makes the first mean anything.
+# The negative alone would also pass on a stack that ignored the header
+# entirely, or where the whole feature was wired to nothing.
+#
+# The failed logins below are counted by AccountService against whichever
+# address it resolved. The rate-limit key hashes that address, so the check
+# recomputes the key each candidate WOULD produce and asks which transient
+# exists — exact, and it needs no debug surface in the plugin.
+echo "forwarded headers (roadmap §86 — a client may not name itself)"
+
+rl_clear() {
+  wpcli wpcli wp eval '
+    global $wpdb;
+    $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE \"%ac_rl_auth%\"");' >/dev/null 2>&1
+}
+
+# Which address did the last failed login get counted against?
+rl_attributed() {
+  wpcli wpcli wp eval '
+    $limit = AlgerianCommerce\Core\Plugin::instance()->rateLimiter()->authFailureLimit();
+    $now = time();
+    foreach (["9.9.9.9", "203.0.113.77"] as $ip) {
+        if ((int) get_transient($limit->keyFor($ip, $now)) > 0) { echo $ip; return; }
+    }
+    echo "peer";'
+}
+
+bad_login() {
+  curl -s -o /dev/null -X POST "${API}/account/login" \
+    -H 'Content-Type: application/json' ${1:+-H "$1"} \
+    -d '{"email":"nobody@example.test","password":"wrong"}' 2>/dev/null
+}
+
+# Negative. This request's peer is not in AC_TRUSTED_PROXIES (in development
+# nothing is), so the header is unsigned input from a stranger and must not
+# decide which bucket the failure lands in. If it did, every rate limit in the
+# API would be opt-out: rotate the header, get a fresh allowance.
+rl_clear
+bad_login 'X-Forwarded-For: 9.9.9.9'
+check "a spoofed X-Forwarded-For does not choose the rate-limit bucket" "peer" "$(rl_attributed)"
+
+# The same for the address that also has to stay out of the audit trail, which
+# is append-only — a forged row there cannot be corrected later.
+rl_clear
+bad_login 'X-Forwarded-For: 203.0.113.77, 9.9.9.9'
+check "a multi-hop forgery does not choose it either" "peer" "$(rl_attributed)"
+
+# Positive control. With the peer named as a trusted proxy the forwarded client
+# MUST be honoured — otherwise everything above is satisfied by a stack that
+# reads no headers at all, and the whole mechanism could be wired to nothing.
+#
+# AC_TRUSTED_PROXIES is read per request from the environment, so this sets it
+# for one wp eval rather than restarting the stack: the assertion is about
+# ClientIp's decision, which is pure and takes the list as an argument.
+FORWARDED=$(wpcli wpcli wp eval '
+  $server = ["REMOTE_ADDR" => "172.19.0.9", "HTTP_X_FORWARDED_FOR" => "203.0.113.77"];
+  echo AlgerianCommerce\Security\ClientIp::resolve($server, "172.19.0.9");')
+check "a trusted proxy's forwarded client is honoured" "203.0.113.77" "$FORWARDED"
+
+IGNORED=$(wpcli wpcli wp eval '
+  $server = ["REMOTE_ADDR" => "172.19.0.9", "HTTP_X_FORWARDED_FOR" => "203.0.113.77"];
+  echo AlgerianCommerce\Security\ClientIp::resolve($server, "10.1.1.1");')
+check "the same header from an untrusted peer is not" "172.19.0.9" "$IGNORED"
+
+# The layer underneath, and the one that made all of the above false until §86:
+# the wordpress image ships mod_remoteip trusting every RFC1918 range, so Apache
+# rewrote REMOTE_ADDR from the header before PHP ran. docker/apache-remoteip-off.conf
+# disables it, and a compose edit could silently drop that mount.
+check "Apache does not rewrite REMOTE_ADDR from the header" "" \
+  "$("${COMPOSE[@]}" exec -T wordpress sh -c \
+     'grep -h "^RemoteIPHeader" /etc/apache2/conf-enabled/*.conf 2>/dev/null' | tr -d '\r\n')"
+
 echo "CSRF (roadmap §65 — ambient credentials are never enough)"
 
 COOKIE_NAME=$(wpcli wpcli wp eval 'echo LOGGED_IN_COOKIE;')

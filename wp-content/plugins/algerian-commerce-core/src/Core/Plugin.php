@@ -552,12 +552,14 @@ final class Plugin
             new PaymentWebhookController(
                 $this->logger(),
                 $this->paymentProviders(),
-                $this->paymentService()
+                $this->paymentService(),
+                $this->config()
             ),
             new ShippingWebhookController(
                 $this->logger(),
                 $this->shippingProviders(),
-                $this->shippingService()
+                $this->shippingService(),
+                $this->config()
             ),
             new AccountController($this->logger(), $this->accountService(), $this->passwordResetService()),
             new CouponController($this->logger(), $this->couponService()),
@@ -935,7 +937,9 @@ final class Plugin
             $this->trackingService(),
             // Roadmap §85: the consent flag at registration, and the shopper's own
             // POST /account/marketing-consent. No staff route can set it.
-            $this->consent()
+            $this->consent(),
+            // Roadmap §86: which peer's X-Forwarded-For may be believed.
+            $this->config()
         );
     }
 
@@ -1077,7 +1081,8 @@ final class Plugin
             $this->auditRepository(),
             $this->geoRepository(),
             $this->rateLimiter(),
-            $this->logger()
+            $this->logger(),
+            $this->config()
         );
     }
 
@@ -1493,7 +1498,8 @@ final class Plugin
             $this->mailTransport(),
             $this->auditLogger(),
             $this->rateLimiter(),
-            $this->logger()
+            $this->logger(),
+            $this->config()
         );
     }
 
@@ -1660,7 +1666,7 @@ final class Plugin
 
     public function rateLimitGuard(): RateLimitGuard
     {
-        return $this->rateLimitGuard ??= new RateLimitGuard($this->rateLimiter());
+        return $this->rateLimitGuard ??= new RateLimitGuard($this->rateLimiter(), $this->config());
     }
 
     public function auditRepository(): AuditRepository
@@ -1672,7 +1678,7 @@ final class Plugin
 
     public function auditLogger(): AuditLogger
     {
-        return $this->auditLogger ??= new AuditLogger($this->auditRepository(), $this->logger());
+        return $this->auditLogger ??= new AuditLogger($this->auditRepository(), $this->logger(), $this->config());
     }
 
     public function migrations(): MigrationRunner

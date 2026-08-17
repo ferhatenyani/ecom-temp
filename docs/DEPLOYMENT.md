@@ -2,10 +2,146 @@
 
 Per-client deployment steps for this template.
 
-> **This document is incomplete.** Only the email section below is written. TLS termination,
-> off-site encrypted backups and upstream DDoS filtering are the remaining sections, and
-> `docs/SECURITY_AUDIT.md` → "What to do about the gaps" is the list they come from. Roadmap
-> §74–§76 is the section that owns them.
+> **This document is incomplete.** Email, TLS and DDoS are written. **Off-site encrypted
+> backups is the remaining section**, and `docs/SECURITY_AUDIT.md` → "What to do about the
+> gaps" is the list it comes from. Roadmap §74–§76 owns it.
+
+**Order matters.** TLS first — everything else assumes it, and §44's Application Passwords are
+refused over plain HTTP outside a `local` environment. Then email, then Cloudflare.
+
+---
+
+## TLS and the reverse proxy
+
+`docker compose --profile proxy up -d` adds Caddy in front of WordPress. Without the profile the
+stack is exactly what it was: plain HTTP on `WP_PORT`, nothing changed for development.
+
+### Why a proxy at all, when the app could serve HTTPS
+
+Certificates. Caddy gets one from Let's Encrypt on first request and renews it without a cron job,
+and an expired certificate on a shop is an outage that looks to the customer like a compromise. It
+also gives one place for HSTS and the other response headers, and one place to put Cloudflare's
+ranges later.
+
+### 1. Point DNS at the VPS
+
+An `A` record for the domain at the VPS's address. Do this **before** starting the proxy: Caddy
+requests a certificate on first use, and Let's Encrypt rate-limits failures.
+
+### 2. Set the four variables
+
+```
+SITE_DOMAIN=boutique.dz
+ACME_EMAIL=ops@boutique.dz
+WP_BIND=127.0.0.1
+AC_TRUSTED_PROXIES=172.16.0.0/12
+```
+
+**`WP_BIND=127.0.0.1` is a security control, not tidiness.** It stops the WordPress container
+publishing to the internet; Caddy reaches it over the compose network instead. A container that
+anyone can reach directly is one whose forwarded headers mean nothing, because anyone can write
+them — see "What a client may not tell you" below.
+
+`AC_TRUSTED_PROXIES` is the compose network, which is where Caddy sits. **One hop, never a CDN's
+ranges**: Cloudflare's list belongs in `docker/Caddyfile`, because Caddy is what talks to
+Cloudflare. Each layer knows only its own neighbour, so no layer holds a list that belongs to
+another and goes stale unnoticed.
+
+Also set `WP_ENVIRONMENT_TYPE=production`. It is what `scripts/reset.sh` refuses to run against.
+
+### 3. Start it
+
+```bash
+docker compose --profile proxy up -d
+curl -sI https://boutique.dz/wp-json/algerian-commerce/v1/health | head -1
+```
+
+Then tell WordPress its own address, or it will keep emitting `http://` links:
+
+```bash
+docker compose run --rm wpcli wp option update home    https://boutique.dz
+docker compose run --rm wpcli wp option update siteurl https://boutique.dz
+```
+
+### What a client may not tell you
+
+Everything a request claims about itself is attacker-controlled until a trusted proxy vouches for
+it. Three layers had to agree, and two of them were wrong by default:
+
+- **`Security\ClientIp`** reads `X-Forwarded-For` only when the TCP peer is in
+  `AC_TRUSTED_PROXIES`, and walks the list **right to left** — each proxy appends what it saw, so
+  the rightmost untrusted entry is the real client and everything left of it is whatever the
+  caller chose to send.
+- **`ClientIp::applyForwardedScheme()`**, called from the plugin bootstrap, is what makes
+  `is_ssl()` true behind the proxy. It is in the plugin and not in `wp-config.php` because the
+  `wordpress` image writes `WORDPRESS_CONFIG_EXTRA` only when it *creates* `wp-config.php` — on
+  an install that already exists the setting is accepted and does nothing.
+- **Apache's `mod_remoteip` is disabled** by `docker/apache-remoteip-off.conf`. The image ships it
+  trusting every RFC1918 range, and in Docker every peer is RFC1918 — so Apache rewrote
+  `REMOTE_ADDR` from the header before PHP ran, and no application-level check could tell.
+  Measured 2026-08-17: a plain `curl -H 'X-Forwarded-For: 9.9.9.9'` to the published port had its
+  failed login counted against `9.9.9.9`.
+
+Without those, rate limiting is opt-out — rotate one header, get a fresh allowance — and the
+append-only audit trail records whatever the caller typed. `scripts/test-api.sh` →
+"forwarded headers" asserts all of it, with a positive control, because a stack that ignored the
+header entirely would pass the negative half.
+
+### Verify
+
+```bash
+./scripts/test-api.sh https://boutique.dz
+```
+
+---
+
+## DDoS and Cloudflare
+
+Application rate limiting bounds a brute-force or forgery loop. It does **not** absorb a
+volumetric attack: every refused request still costs a PHP worker and a database round trip. That
+needs something upstream, and Cloudflare's free plan is enough.
+
+This is account and DNS configuration. There is no code, and nothing in this repository changes.
+
+### 1. Move DNS to Cloudflare
+
+Add the domain, point the registrar at Cloudflare's nameservers, and set the `A` record to
+**Proxied** (orange cloud). Set SSL/TLS mode to **Full (strict)** — Caddy has a real certificate,
+and anything less either breaks or leaves the origin hop unencrypted.
+
+### 2. Let Caddy see through Cloudflare
+
+With Cloudflare proxying, Caddy's peer is Cloudflare, so the address it forwards is Cloudflare's.
+Uncomment the `trusted_proxies` block at the end of `docker/Caddyfile` and fill it with the current
+list from <https://www.cloudflare.com/ips/>.
+
+### 3. Firewall the origin
+
+**This is the step that makes the rest real.** Until it is done, the VPS still answers on its own
+IP address and an attacker who finds it bypasses Cloudflare entirely — and the IP is not a secret,
+since it is in DNS history.
+
+```bash
+# allow only Cloudflare to 80/443; adjust for the VPS provider's firewall
+ufw allow from 173.245.48.0/20 to any port 443 proto tcp
+# … one line per range, then:
+ufw deny 80/tcp
+ufw deny 443/tcp
+```
+
+Keep SSH on a separate rule scoped to your own address, and confirm you can still reach it in a
+second terminal **before** closing the first.
+
+### 4. Turn on the free protections
+
+Under **Security**: Bot Fight Mode on, and a rate-limiting rule on `/wp-login.php` and
+`/xmlrpc.php` — neither is used by this headless backend, and both are the internet's favourite
+WordPress targets.
+
+**Do not put Cloudflare's cache in front of `/wp-json/algerian-commerce/v1/`.** The API serves
+per-customer data with `Cache-Control: no-store, private` on exports; a shared cache in front of an
+authenticated API is how one shopper is served another's order. Add a cache rule that bypasses the
+whole namespace.
 
 ---
 

@@ -7,12 +7,14 @@ namespace AlgerianCommerce\Account;
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Audit\AuditLogger;
 use AlgerianCommerce\Campaigns\Consent;
+use AlgerianCommerce\Core\Config;
 use AlgerianCommerce\Customers\CustomerInput;
 use AlgerianCommerce\Customers\CustomerPresenter;
 use AlgerianCommerce\Customers\CustomerRepository;
 use AlgerianCommerce\Orders\OrderPresenter;
 use AlgerianCommerce\Orders\OrderRepository;
 use AlgerianCommerce\Permissions\Capabilities;
+use AlgerianCommerce\Security\ClientIp;
 use AlgerianCommerce\Permissions\Permissions;
 use AlgerianCommerce\Security\RateLimiter;
 use AlgerianCommerce\Tracking\TrackingService;
@@ -67,7 +69,9 @@ final class AccountService
          * a service built without it registers accounts with no consent, which is
          * the correct default and what §59c did.
          */
-        private readonly ?Consent $consent = null
+        private readonly ?Consent $consent = null,
+        /* Optional, defaulting to the pre-§86 behaviour. See clientIp(). */
+        private readonly ?Config $config = null
     ) {
     }
 
@@ -418,11 +422,16 @@ final class AccountService
         }
     }
 
+    /**
+     * One rule, in `Security\ClientIp`.
+     *
+     * `0.0.0.0` when nothing resolves, because this is a rate-limit key and an
+     * empty one would put every unidentifiable caller in the same bucket as a
+     * misconfiguration rather than in a bucket of their own.
+     */
     private function clientIp(): string
     {
-        $ip = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
-
-        return $ip === '' ? '0.0.0.0' : $ip;
+        return ClientIp::resolve($_SERVER, $this->config?->get('AC_TRUSTED_PROXIES')) ?: '0.0.0.0';
     }
 
     private function requireCustomer(int $id): WC_Customer

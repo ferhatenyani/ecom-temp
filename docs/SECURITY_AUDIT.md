@@ -6,8 +6,8 @@ design documents. Where the two disagree, the disagreement is the finding — se
 
 | | |
 |---|---|
-| **Audited** | 2026-08-17 |
-| **Commit** | `f9693da` (§85 email campaigns merged; `main`, unpushed) |
+| **Audited** | 2026-08-17, against `f9693da` |
+| **Revised** | 2026-08-17, after §86 fixed TLS, SSRF and client-IP attribution. Rows changed by that work say so and carry the date; everything else is as first audited. |
 | **Scope** | `wp-content/plugins/algerian-commerce-core/` (`src/`, `integrations/`, `migrations/`), `compose.yaml`, `docker/`, `scripts/` |
 | **Method** | Read the code and cited it. A ✅ means the mechanism was located in a file, not that a document claims it. |
 | **Not covered** | The Next.js admin and storefront (separate repositories), the production host, and anything a live penetration test would find. This is a code audit. |
@@ -40,7 +40,7 @@ code. They are called out rather than averaged away.
 
 | Security Layer | Status | Notes |
 |---|---|---|
-| Encryption in transit — inbound | ❌ | Nothing in this repository terminates or enforces TLS. `compose.yaml:63` publishes `${WP_PORT:-8090}:80` over plain HTTP, and there is no `is_ssl()` gate, no `FORCE_SSL_ADMIN`, and no HSTS header anywhere in `src/` or `docker/`. `docs/SECURITY.md` lists "HTTPS in production" as a baseline requirement and no code satisfies it, because termination belongs to the production reverse proxy. **Timeline:** `docs/DEPLOYMENT.md`, which does not exist yet and is the last outstanding item in this repository (roadmap §74–§76, production separation). |
+| Encryption in transit — inbound | ✅ | **Built 2026-08-17 (§86).** Caddy (`caddy:2.10.2-alpine`) terminates TLS, behind a compose `proxy` profile so development is untouched — `docker/Caddyfile`, with automatic Let's Encrypt and no renewal cron to forget. HSTS, `nosniff`, `X-Frame-Options: DENY` and a `Referrer-Policy` are set there, and `Server`/`X-Powered-By` removed. `ClientIp::applyForwardedScheme()` makes `is_ssl()` true behind the proxy, which also restores §44 — `wp_is_application_passwords_supported()` checks it. Verified end to end on 2026-08-17 against a running Caddy. The certificate itself is per client: `docs/DEPLOYMENT.md` → "TLS and the reverse proxy". |
 | Encryption in transit — outbound | ✅ | `src/Http/WpHttpClient.php:47` sets `sslverify => true` on every provider call. Chargily and Meta settings reject any base URL not beginning `https://` (`integrations/Chargily/ChargilySettings.php:105`, `integrations/Meta/MetaSettings.php:75`). Chargily's `checkout_url` is upgraded to HTTPS on arrival because the provider returns `http://` — that URL is where a shopper types card details. |
 | Encryption at rest | ❌ | No application-level encryption: no `openssl_encrypt`, no `sodium_*`, no encrypted columns. MySQL runs with default settings and no InnoDB tablespace encryption. Sensitive rows sit in cleartext — `ac_shipments` (customer name, phone, full address, and Yalidine label URLs which are bearer credentials), `ac_campaign_recipients` (real email addresses), `ac_payment_transactions`. **Timeline: no timeline recorded.** The repository names the consequence but not a date; `docs/SECURITY.md` → "Backups" requires production backups be encrypted at rest off-site, which is the nearest committed statement. |
 | Secrets management | ✅ | `.env` only, read through `Config::secret()` (`src/Core/Config.php:153`) and handed to providers by the plugin bootstrap — one place per credential. `.env` is gitignored, `.env.example` mirrors keys with blank values. Never an option, never a constant, never a query parameter. `CHARGILY_WEBHOOK_SECRET` was **deleted** rather than left as a slot that could only be filled in wrongly. |
@@ -60,7 +60,8 @@ code. They are called out rather than averaged away.
 | XSS | ✅ | Escape on output; stored data is never trusted. Campaign templates are the sharp case: `wp_kses` runs **on save** via `wp_insert_post_data` (`src/Campaigns/EmailHtml.php:130`), not on send, so hostile markup never reaches the database where a later reader might not sanitise. The allowlist is email-safe rather than `wp_kses_post()`'s — no `<script>`, `<iframe>`, `<form>`, `on*` attribute or `javascript:` URL. |
 | Template injection / RCE | ✅ | `Campaigns\TemplateRenderer` is pure and does one thing: an allowlist of token names replaced by values. No `eval`, no `do_shortcode()`, no `do_blocks()`, no callable in a token map — rendering a user-authored template as code would be RCE granted to whoever holds `ac_manage_marketing`. An unknown token renders empty and is reported. |
 | Email header injection | ✅ | A rendered subject is stripped of CR, LF and tab before `wp_mail()` writes it into a `Subject:` header, where a newline in a merge value could add a `Bcc:`. Merge values are escaped with `htmlspecialchars(ENT_QUOTES)` for the HTML part — `ENT_COMPAT` would let `x' onclick='…` break out of `href="{{unsubscribe_url}}"`. |
-| SSRF | ⚠️ | **Documented control not implemented as written.** `docs/SECURITY.md:53` requires `wp_safe_remote_*`; the single outbound call site is `wp_remote_request()` (`src/Http/WpHttpClient.php:42`), and `reject_unsafe_urls` is set nowhere — so WordPress's private-IP and loopback blocking is not active. Mitigating: every base URL is validated `https://` and comes from an operator-set option (`ac_chargily_settings`, `ac_meta_settings`), never from a shopper, and `Settings\SettingsInput` refuses to accept one. Residual risk is an admin-level SSRF reaching e.g. `https://169.254.169.254/`. See [Discrepancies found](#discrepancies-found). |
+| SSRF | ✅ | **Fixed 2026-08-17 (§86).** `WpHttpClient` now calls `wp_safe_remote_request()`, which sets `reject_unsafe_urls` and runs `wp_http_validate_url()` — loopback, link-local and private ranges are refused, so a provider URL cannot reach the VPS's own services or `169.254.169.254`. The audit found the unsafe spelling against a rule `docs/SECURITY.md:53` had stated since it was written. `tests/Unit/OutboundHttpSafetyTest` scans `src/` and `integrations/` for the unsafe wrappers and asserts its own reach first, so the next call site cannot quietly reintroduce it. |
+| Client IP attribution | ✅ | **A layer that was wrong by default until §86 found it.** Every rate limit and every audit row keys on the caller's address, and the `wordpress` image ships `mod_remoteip` enabled and trusting all of `10/8`, `172.16/12`, `192.168/16`, `169.254/16` and `127/8` — in Docker every peer is RFC1918, so Apache overwrote `REMOTE_ADDR` from a client-written header before PHP ran. Measured 2026-08-17: `curl -H 'X-Forwarded-For: 9.9.9.9, 8.8.8.8'` to the published port arrived as `8.8.8.8`, and the failed login it carried was counted against that address. `docker/apache-remoteip-off.conf` disables it, and `Security\ClientIp` owns the decision instead — the header is read only from a peer in `AC_TRUSTED_PROXIES`, walking right to left. Asserted over real HTTP with a positive control. |
 | Explicit timeouts | ✅ | `WpHttpClient` sets an explicit 15s timeout rather than inheriting WordPress's 5s default. `YalidineSettings::MAX_TIMEOUT` and `ZRExpressSettings::MAX_TIMEOUT` **cap** a client's configured value at 60s — a setting raisable to ten minutes removes the explicit timeout as surely as never setting one, and would hold a PHP worker on the checkout path. |
 | Error handling & information disclosure | ✅ | `src/API/AbstractController.php:97` — an `ApiException` returns its declared code; **anything else is logged with its real message and returned as a generic internal error**. Clients never receive a stack trace, an exception class or a file path. `GET /health` returns check names and statuses only, no versions or paths. A webhook 401 says nothing about which check failed, because a verifier that distinguishes "bad timestamp" from "bad signature" is an oracle for building a valid one. |
 | Enumeration resistance | ✅ | Password reset returns a byte-identical response for a known, unknown and staff address, asserted as identity rather than matching wording. `/orders/track` answers **404** for anything that does not verify and **410** only for a valid-but-expired MAC. A forged unsubscribe token answers identically to a real one. |
@@ -116,7 +117,7 @@ code. They are called out rather than averaged away.
 | Backups | ✅ | `scripts/backup.sh` dumps from inside the `db` container (never `wp db export`, broken here for the `caching_sha2_password` reason), takes uploads out of the volume, and writes `.env` at `0600` into a `0700` directory under a `backups/.gitignore` that ignores everything but itself. A backup is a copy of every secret and every customer. |
 | Tested restore | ✅ | An untested backup is not a backup, so the rule is a second script: `scripts/restore.sh --verify` starts a throwaway MySQL of the pinned version, restores into it and compares every table's `COUNT(*)` against the manifest — the running stack untouched, which is what makes the drill get done. Verified 2026-08-16: **62 tables, every count matching**. It refuses to pass when it compared nothing, because `docker exec -i` once ate the manifest from stdin and reported success in green. |
 | Off-site encrypted backups | ❌ | `backups/` is local development only. `docs/SECURITY.md` → "Backups" states production backups belong off-site and encrypted at rest, because the threat model of a dump on someone's laptop is not that of the running database. No off-site target, schedule or encryption step exists in `scripts/`. **Timeline:** `docs/DEPLOYMENT.md` (roadmap §74–§76), not yet written. |
-| DDoS protection | ❌ | Application-level rate limiting only, which bounds a forgery or brute-force loop but does **not** absorb a volumetric attack — it still costs a PHP worker and a database round trip per request. No WAF, no CDN, no upstream filtering, and `compose.yaml` publishes the container port directly. This is infrastructure rather than code. **Timeline:** `docs/DEPLOYMENT.md` (roadmap §74–§76). `AC_RATE_LIMIT_TRUSTED_IPS` already exists for the proxy hop, so the application side is ready for one. |
+| DDoS protection | ⚠️ | **The application side is ready and the runbook is written; the account is the client's.** Application rate limiting bounds a brute-force or forgery loop but does not absorb a volumetric attack — every refused request still costs a PHP worker and a database round trip. §86 added what this repository can own: `WP_BIND=127.0.0.1` keeps the container off the internet, Caddy is the single ingress, and `AC_TRUSTED_PROXIES` plus Caddy's own `trusted_proxies` resolve the real client through a CDN. `docs/DEPLOYMENT.md` → "DDoS and Cloudflare" is the procedure, including the step that makes the rest real — firewalling the origin to Cloudflare's ranges, without which the VPS still answers on its own address. **Remaining, per client:** a Cloudflare account, the DNS move and the firewall rules. |
 | Database exposure | ✅ | The `db` service publishes no host port — reachable only on the compose network. MySQL 8.4 LTS, supported to 2032-04-30, authenticating with `caching_sha2_password`. |
 | Version pinning | ✅ | Every image tag in `compose.yaml` is an exact build, and WooCommerce — which installs into a volume and so is not pinned by a tag — is declared under `x-tested-versions`. The record is a **check, not a table**: `scripts/test.sh versions` reads the pins and compares them against the running stack, because a table in a document is a second copy of numbers that drifts. |
 | Bundled plugin removal | ✅ | Akismet and Hello Dolly are **deleted**, not deactivated — neither does anything headless and unused code still has to be patched. They live in the volume, so `setup.sh` re-deletes them after a fresh install. |
@@ -138,27 +139,24 @@ code. They are called out rather than averaged away.
 
 ## Discrepancies found
 
-Three places where the code and `docs/SECURITY.md` do not agree, or where a control is thinner than the
-document implies. Listed because an audit that only confirms the documentation is not an audit.
+Three places where the code and `docs/SECURITY.md` did not agree, or where a control was thinner than the
+document implied. Listed because an audit that only confirms the documentation is not an audit. **Two were
+fixed on 2026-08-17 (§86); the notes are kept rather than deleted, because what was wrong and why is the
+part worth reading.**
 
-**1. SSRF — `wp_remote_request()` where the rule says `wp_safe_remote_*`.**
-`docs/SECURITY.md:53` requires `wp_safe_remote_*` with an explicit timeout, naming SSRF as the reason. The
-single outbound call site is `wp_remote_request()` (`src/Http/WpHttpClient.php:42`) and `reject_unsafe_urls`
-is set nowhere, so WordPress's loopback and private-range blocking is inactive. The timeout half of the rule
-*is* obeyed, and `sslverify` is on. Reachability is limited: base URLs are `https://`-validated and come from
-operator-set options that `Settings\SettingsInput` refuses to accept over the API, so exploiting it requires
-option-write access — WP admin or the database. The residual case is a privileged operator or a
-config-write bug pointing a provider at `https://169.254.169.254/` or another internal service. Either change
-the call to `wp_safe_remote_request()`, or amend the rule to say why this client is exempt. **Not fixed —
-this audit changes no code.**
+**1. SSRF — `wp_remote_request()` where the rule says `wp_safe_remote_*`. — RESOLVED 2026-08-17.**
+`docs/SECURITY.md:53` had required `wp_safe_remote_*` since it was written; the single outbound call site
+spelled it the unsafe way, with `reject_unsafe_urls` set nowhere. Fixed in §86, and the fix is guarded by
+`tests/Unit/OutboundHttpSafetyTest` rather than by remembering — it scans `src/` and `integrations/` for the
+unsafe wrappers, proves it can still fail against a hostile fixture, and asserts it found the safe call sites
+it is guarding so a regex matching nothing cannot report success.
 
-**2. TLS is a baseline requirement with no implementation and no deployment document.**
-"HTTPS in production" is the first line of `docs/SECURITY.md` → "Baseline requirements", and nothing in the
-repository enforces, terminates or even documents it. That is defensible — termination belongs to the
-production proxy — but the document it should be written in does not exist. Several rows above resolve to
-the same missing file: TLS, off-site encrypted backups, DDoS filtering, and SPF/DKIM/DMARC. `docs/DEPLOYMENT.md`
-is the single largest open security item in this repository, and the §85 implementer flagged the same gap
-independently.
+**2. TLS had no implementation and no deployment document. — LARGELY RESOLVED 2026-08-17.**
+"HTTPS in production" is the first line of `docs/SECURITY.md` → "Baseline requirements" and nothing satisfied
+it. §86 added the Caddy `proxy` profile, the forwarded-header handling underneath it, and
+`docs/DEPLOYMENT.md` → "TLS and the reverse proxy" and "DDoS and Cloudflare". **Still outstanding in that
+file: off-site encrypted backups.** Getting TLS working also turned up the `mod_remoteip` defect above, which
+no amount of reading would have shown — the row that says a deployment step is done should be one somebody ran.
 
 **3. Retention is a rule in three files and a purge in one.**
 `AuditRepository`, `MovementRepository` and `PaymentController` each name retention pruning as a separate
@@ -195,7 +193,7 @@ Plain-language triage of the thirteen open items. **Effort** is rough developer 
 
 | Layer | Effort | Why |
 |---|---|---|
-| **Encryption in transit (TLS)** | Hours | Without HTTPS every admin password, API credential, session token and customer address crosses the network readable by anyone on the path — a café wifi, an ISP, a hotel router. It undoes almost every other control in this document. This is the single item to do first. It is a reverse proxy and a certificate, not application code. |
+| ~~**Encryption in transit (TLS)**~~ | **Done 2026-08-17** | Was the single item to do first, because without HTTPS every admin password, API credential, session token and customer address crosses the network readable by anyone on the path. §86 added the Caddy `proxy` profile and `docs/DEPLOYMENT.md` → "TLS and the reverse proxy". Per client, all that remains is a DNS record and four variables. |
 | **Off-site encrypted backups** | A day | Backups exist and restores are tested, but they sit on the same machine. One dead server, one ransomware event, one bad `docker compose down -v` and the shop is gone. Encrypted, because the backup contains every customer's address and every provider key. |
 | **SPF / DKIM / DMARC** | Hours, per client | §85 can now mail thousands of customers. Without these records that mail lands in spam, and anyone can send email pretending to be the shop. You already built the campaign engine; this is what makes it work. **The template half is done** — `docs/DEPLOYMENT.md` → "Email" has the Brevo setup and the exact records, and `wp algerian-commerce mail-check` verifies them. What remains is per client and unavoidable: publish three DNS records on their domain, then run the command. |
 | **Privacy notice + lawful basis** | Writing, not code | Algeria's Law 18-07 applies the moment you hold customer data, and you already send hashed emails to Meta. This is a page on the storefront and a decision about consent — cheap now, and awkward to retrofit after complaints. Have counsel or the client confirm the wording. |
@@ -204,8 +202,8 @@ Plain-language triage of the thirteen open items. **Effort** is rough developer 
 
 | Layer | Effort | Why |
 |---|---|---|
-| **SSRF (finish it)** | Minutes | Change one call to `wp_safe_remote_request()`. It is nearly free, and it closes the gap between what `docs/SECURITY.md` promises and what the code does. Low risk today because only an admin can set those URLs — but the fix is so cheap that leaving it is hard to justify. |
-| **DDoS protection** | Hours | Put Cloudflare (or equivalent) in front. Rate limiting protects the *data*; it does not stop the site falling over, because every blocked request still costs a PHP worker. Mostly DNS and configuration, and it gives you TLS and a CDN at the same time. |
+| ~~**SSRF (finish it)**~~ | **Done 2026-08-17** | One call changed to `wp_safe_remote_request()`, plus a scan that stops the next call site reintroducing it. |
+| **DDoS protection** | Hours, per client | Put Cloudflare in front. Rate limiting protects the *data*; it does not stop the site falling over, because every blocked request still costs a PHP worker. **The repository side is done** — `docs/DEPLOYMENT.md` → "DDoS and Cloudflare", `WP_BIND`, and the client-IP handling that keeps rate limits correct behind a CDN. What remains is the account, the DNS move, and firewalling the origin to Cloudflare's ranges — skip that last step and the VPS still answers on its own address. |
 | **Data retention** | Days | Audit logs, inventory movements and payment rows grow forever and hold customer data. Two problems later: the database gets slow, and you cannot honour a deletion request for data you never planned to delete. Write the pruning commands while the tables are still small. |
 
 ### 🟡 Do when triggered
@@ -226,10 +224,14 @@ Plain-language triage of the thirteen open items. **Effort** is rough developer 
 
 ### If you only do four things
 
-1. **TLS** — everything else assumes it.
-2. **Off-site encrypted backups** — the only gap that can end the business outright.
-3. **SPF/DKIM/DMARC** — or the email feature you just built does not really work.
-4. **The one-line SSRF fix** — because it costs minutes.
+~~1. **TLS**~~ — done 2026-08-17 (§86).
+~~4. **The one-line SSRF fix**~~ — done 2026-08-17 (§86).
 
-The first three all belong in `docs/DEPLOYMENT.md`, which does not exist yet. That missing file is the
-common thread behind most of this list.
+Two left, and they are the two that can still hurt:
+
+1. **Off-site encrypted backups** — the only gap on this list that can end the business outright. Backups
+   and tested restores exist; they sit on the same machine as the thing they protect.
+2. **SPF/DKIM/DMARC** — per client, and without them the email feature does not really work. The procedure
+   and the `mail-check` verification are written; publishing three DNS records is the client-side step.
+
+Both belong in `docs/DEPLOYMENT.md`, which now exists and has the second.

@@ -1,0 +1,78 @@
+# Reverse proxy and TLS termination — roadmap §86, docs/DEPLOYMENT.md → "TLS".
+#
+# Caddy rather than nginx for one reason: certificates. Automatic HTTPS means
+# there is no renewal cron to forget, and an expired certificate on a shop is an
+# outage that looks like a hack to the customer. This file is cloned per client
+# and the only thing that changes is SITE_DOMAIN.
+#
+# **localhost is the default on purpose.** Caddy issues from its own internal CA
+# for localhost and *.localhost without contacting Let's Encrypt, so the proxy
+# profile runs and is testable offline. Set SITE_DOMAIN to a real name and the
+# same file gets a real certificate, with no other edit.
+
+{
+	# Where Let's Encrypt sends expiry warnings.
+	#
+	# compose.yaml guarantees this is non-empty, and that is load-bearing:
+	# `{$VAR:default}` fills in only when a variable is *unset*, so an empty one
+	# passed through renders as a bare `email` and Caddy refuses to start. Found
+	# by running the profile rather than by reading it.
+	email {$ACME_EMAIL}
+}
+
+{$SITE_DOMAIN:localhost} {
+	encode zstd gzip
+
+	# Belt and braces with the application. WordPress and this plugin set none
+	# of these, and the ones that matter here cost nothing to add:
+	#
+	#  - HSTS, so a customer who types the bare domain is never sent over
+	#    plain HTTP again after the first visit. Six months rather than the
+	#    two years preload wants: this is a template, and a shop that later
+	#    moves off TLS should not be unreachable for two years.
+	#  - nosniff, because /wp-content/uploads serves customer-supplied images
+	#    and content sniffing is the other half of the polyglot problem that
+	#    Media\UploadPolicy's re-encode closes.
+	#  - DENY framing: this API has no UI to embed, and the storefront is a
+	#    different origin.
+	header {
+		Strict-Transport-Security "max-age=15768000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Apache and PHP both volunteer their versions otherwise.
+		-Server
+		-X-Powered-By
+	}
+
+	# WordPress is reached over the compose network, never over a published
+	# port — that is what makes X-Forwarded-* trustworthy on the other side.
+	# Caddy sets X-Forwarded-For, -Proto and -Host itself; they are not written
+	# here, because a header_up that restates a default is a second place for
+	# them to disagree.
+	reverse_proxy wordpress:80 {
+		# A courier webhook or a large CSV import must not be cut off mid-body.
+		flush_interval -1
+	}
+}
+
+# --- Cloudflare -------------------------------------------------------------
+#
+# With Cloudflare in front, Caddy's peer is Cloudflare and not the shopper, so
+# the address it puts in X-Forwarded-For is Cloudflare's. Uncomment the block
+# below with the current ranges from https://www.cloudflare.com/ips/ and Caddy
+# will resolve past them.
+#
+# This list lives here rather than in AC_TRUSTED_PROXIES because Caddy is what
+# talks to Cloudflare. The plugin only ever needs to trust Caddy — one hop each,
+# so no layer holds a list that belongs to another and goes stale unnoticed.
+#
+# {
+# 	servers {
+# 		trusted_proxies static 173.245.48.0/20 103.21.244.0/22 ...
+# 	}
+# }
+#
+# Firewall the VPS to Cloudflare's ranges on 80/443 as well. Without it the
+# origin is reachable directly by its IP address and the DDoS protection is a
+# suggestion.

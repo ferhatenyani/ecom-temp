@@ -6,7 +6,9 @@ namespace AlgerianCommerce\Account;
 
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Audit\AuditLogger;
+use AlgerianCommerce\Core\Config;
 use AlgerianCommerce\Core\Logger;
+use AlgerianCommerce\Security\ClientIp;
 use AlgerianCommerce\Notifications\MailTransport;
 use AlgerianCommerce\Security\RateLimiter;
 use AlgerianCommerce\Settings\SettingsRepository;
@@ -63,7 +65,9 @@ final class PasswordResetService
         private readonly MailTransport $mail,
         private readonly AuditLogger $audit,
         private readonly RateLimiter $rateLimiter,
-        private readonly Logger $logger
+        private readonly Logger $logger,
+        /* Optional, defaulting to the pre-§86 behaviour. See clientIp(). */
+        private readonly ?Config $config = null
     ) {
     }
 
@@ -278,10 +282,15 @@ final class PasswordResetService
         }
     }
 
+    /**
+     * One rule, in `Security\ClientIp`.
+     *
+     * `0.0.0.0` when nothing resolves, because this is a rate-limit key and an
+     * empty one would put every unidentifiable caller in the same bucket as a
+     * misconfiguration rather than in a bucket of their own.
+     */
     private function clientIp(): string
     {
-        $ip = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
-
-        return $ip !== '' ? $ip : '0.0.0.0';
+        return ClientIp::resolve($_SERVER, $this->config?->get('AC_TRUSTED_PROXIES')) ?: '0.0.0.0';
     }
 }

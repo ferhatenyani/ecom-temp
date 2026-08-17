@@ -85,6 +85,13 @@ final class Config
              */
             'AC_MAIL_FROM',
             'AC_ADMIN_EMAIL',
+            /*
+             * Addresses whose `X-Forwarded-For` may be believed — the reverse
+             * proxy, and nothing else. Empty means the header is never read,
+             * which is the behaviour every call site had before §86. See
+             * `Security\ClientIp`.
+             */
+            'AC_TRUSTED_PROXIES',
             'AC_LOG_LEVEL',
             'AC_CORS_ORIGINS',
             'AC_RATE_LIMIT_READS',

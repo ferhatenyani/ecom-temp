@@ -6,6 +6,7 @@ namespace AlgerianCommerce\Security;
 
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\API\Response;
+use AlgerianCommerce\Core\Config;
 use WP_REST_Request;
 use WP_REST_Response;
 
@@ -20,8 +21,11 @@ use const AlgerianCommerce\REST_NAMESPACE;
  */
 final class RateLimitGuard
 {
-    public function __construct(private readonly RateLimiter $limiter)
-    {
+    public function __construct(
+        private readonly RateLimiter $limiter,
+        /* Optional, defaulting to the pre-§86 behaviour. See clientIp(). */
+        private readonly ?Config $config = null
+    ) {
     }
 
     public function register(): void
@@ -232,19 +236,21 @@ final class RateLimitGuard
     }
 
     /**
-     * REMOTE_ADDR only — the same rule as the audit trail. X-Forwarded-For is
-     * client-controlled, and trusting it here would let an attacker rotate the
-     * header to get a fresh allowance on every request. Revisit when a trusted
-     * proxy exists.
+     * One rule, in `Security\ClientIp`.
+     *
+     * **The "revisit when a trusted proxy exists" this used to end with is what
+     * §86 did.** The old reasoning — X-Forwarded-For is client-controlled, and
+     * trusting it lets an attacker rotate the header for a fresh allowance on
+     * every request — is exactly why `ClientIp` reads it only from an address
+     * in `AC_TRUSTED_PROXIES`.
+     *
+     * Both directions matter here and only here. Reading the header when we
+     * should not hands out unlimited requests; *not* reading it behind a proxy
+     * collapses every caller into one bucket, so one shopper exhausts the
+     * limit for the shop and the 10-failure lockout locks out everybody at once.
      */
     private function clientIp(): string
     {
-        $remote = $_SERVER['REMOTE_ADDR'] ?? '';
-
-        if (!is_string($remote) || filter_var($remote, FILTER_VALIDATE_IP) === false) {
-            return '';
-        }
-
-        return $remote;
+        return ClientIp::resolve($_SERVER, $this->config?->get('AC_TRUSTED_PROXIES'));
     }
 }
