@@ -58,7 +58,8 @@ final class VariationService
         $this->audit->record('product.variation_created', 'product_variation', $variation->get_id(), [
             'parent_id' => $productId,
             'attributes' => $input->attributes,
-            'sku' => $variation->get_sku(),
+            // `edit`, for the reason given on the delete event below.
+            'sku' => $variation->get_sku('edit'),
         ]);
 
         return $variation;
@@ -110,7 +111,21 @@ final class VariationService
         $parent = $this->requireVariableParent($productId);
         $variation = $this->requireVariation($parent, $variationId);
 
-        $sku = $variation->get_sku();
+        /*
+         * `edit` context, matching what `ProductPresenter::variation()` now
+         * publishes: the variation's own SKU, empty when it inherits. In `view`
+         * context WooCommerce substitutes the parent's, which put a SKU in this
+         * row that the variation never had — and once the presenter was
+         * corrected, made the trail and the API disagree about one field name.
+         *
+         * A variation is identified by its attribute combination, not by a SKU
+         * it may not have, so the combination is recorded beside it. Without it
+         * this row says a variation of some parent was deleted and cannot say
+         * which — the question the trail is opened to answer. The create event
+         * has carried `attributes` since §47; this is the other half.
+         */
+        $sku = $variation->get_sku('edit');
+        $attributes = VariationRepository::normalizeCombination($variation->get_attributes());
 
         if (!$this->variations->delete($variation, $force)) {
             throw ApiException::internal('The variation could not be deleted.');
@@ -118,6 +133,7 @@ final class VariationService
 
         $this->audit->record('product.variation_deleted', 'product_variation', $variationId, [
             'parent_id' => $productId,
+            'attributes' => $attributes,
             'sku' => $sku,
             'permanent' => $force,
         ]);

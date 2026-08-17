@@ -305,6 +305,15 @@ and the term case is the likelier of the two to be hit.
 > panel is unaffected in behaviour — it never sends a conflicting id — but Part V's "GET then PATCH
 > the whole object" advice depended on it.
 
+> **§89 must not name its page-rename field `slug`.** Pinning makes the URL authoritative for every
+> param the route captured, and `/cms/pages/(?P<slug>…)` captures `slug` — so a write payload
+> carrying `slug` would have it silently overwritten by the path and answer 200 having renamed
+> nothing. Use `path` (the parameter already takes a full path, so the name is more honest anyway) or
+> a distinct `new_path`. `tests/Api/security.php` fails the build on any write route addressed by a
+> name that is not an id and not listed with its reason, so this decision is forced at the moment the
+> route is registered rather than discovered afterwards. Verified against a route of exactly that
+> shape.
+
 ---
 
 ## §89 — CMS writes
