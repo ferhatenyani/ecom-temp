@@ -194,13 +194,28 @@ final class ProductPresenter
         ];
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * `sku` is the variation's **own**, and empty means it inherits the
+     * parent's.
+     *
+     * `WC_Product_Variation::get_sku()` falls back to `parent_data['sku']` in
+     * the default `view` context, so this used to publish the parent's SKU as
+     * the variation's — a value this API then refused on the way back in,
+     * because the parent already owns it. `GET` then `PATCH` the whole object,
+     * which docs/API.md promises works, was a 409 on `sku`.
+     *
+     * `edit` is the context that returns what is actually stored, and the
+     * invariant it restores is that the API emits what it accepts. A client
+     * needing the effective SKU has the parent product in the same route.
+     *
+     * @return array<string, mixed>
+     */
     public static function variation(WC_Product_Variation $variation): array
     {
         return [
             'id' => $variation->get_id(),
             'parent_id' => $variation->get_parent_id(),
-            'sku' => $variation->get_sku(),
+            'sku' => $variation->get_sku('edit'),
             'status' => $variation->get_status(),
             'description' => $variation->get_description(),
             'price' => $variation->get_price(),
