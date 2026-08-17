@@ -860,7 +860,11 @@ final class Plugin
 
     public function cmsService(): CmsService
     {
-        return $this->cmsService ??= new CmsService($this->cmsRepository(), $this->logger());
+        return $this->cmsService ??= new CmsService(
+            $this->cmsRepository(),
+            $this->logger(),
+            $this->auditLogger()
+        );
     }
 
     /**

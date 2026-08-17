@@ -17,25 +17,43 @@ use WP_Term;
  * Content is returned **rendered**: `the_content` runs, so shortcodes and
  * blocks resolve here rather than in a Next.js component that would have to
  * reimplement them. What comes back is HTML by design, and it is HTML that only
- * an `ac_manage_content` holder can author — WordPress already runs
- * `wp_kses_post` over anything saved by a user without `unfiltered_html`.
+ * an `ac_manage_content` holder can author.
  *
- * A storefront still renders it as HTML and therefore trusts it; that trust
- * stops at the same boundary the capability does, which is why no route here
- * accepts content and why §61 has no write surface.
+ * **§61 said WordPress already runs `wp_kses_post` over anything saved by a
+ * user without `unfiltered_html`, and the clause carried more weight than it
+ * looked like.** An administrator *holds* `unfiltered_html`, so `kses_init()`
+ * removes every filter for exactly the caller most able to do damage — measured
+ * 2026-08-17, `wp_insert_post()` as an administrator stored
+ * `<script>alert(1)</script>` and an `onclick` byte for byte. §89 stopped
+ * depending on it: every field written through this API goes through
+ * `ContentHtml`, whoever is signed in. Content that predates §89, or that was
+ * written in wp-admin, carries no such guarantee — a storefront renders this
+ * HTML and therefore trusts it, and that trust stops where the capability does.
  */
 final class CmsPresenter
 {
     /** @return array<string, mixed> */
     public static function page(WP_Post $page): array
     {
+        $parentId = (int) $page->post_parent;
+
         return [
             'id' => (int) $page->ID,
+            /*
+             * The address, and the field that changes it, side by side. `path`
+             * is what `/cms/pages/{path}` takes and is read-only here; `slug`
+             * and `parent_path` are the two halves a write may move. Publishing
+             * both spellings of the same fact is what makes "GET, edit, PATCH"
+             * work without a client having to know how a path is assembled.
+             */
+            'path' => (string) get_page_uri($page),
             'slug' => $page->post_name,
+            'parent_path' => $parentId > 0 ? (string) get_page_uri($parentId) : '',
+            'status' => (string) $page->post_status,
             'title' => self::title($page),
             'content' => self::content($page),
             'excerpt' => self::excerpt($page),
-            'parent_id' => (int) $page->post_parent,
+            'parent_id' => $parentId,
             'menu_order' => (int) $page->menu_order,
             'image' => MediaPresenter::image((int) get_post_thumbnail_id($page)),
             'seo' => SeoResolver::resolve(new SeoSubject(
@@ -72,6 +90,7 @@ final class CmsPresenter
             'caption' => self::content($banner),
             'link' => $link,
             'placement' => $placement === '' ? ContentTypes::DEFAULT_PLACEMENT : $placement,
+            'status' => (string) $banner->post_status,
             'position' => (int) $banner->menu_order,
             'image' => MediaPresenter::image((int) get_post_thumbnail_id($banner)),
             'date_modified' => mysql_to_rfc3339($banner->post_modified_gmt),
@@ -92,8 +111,27 @@ final class CmsPresenter
             'question' => self::title($faq),
             'answer' => self::content($faq),
             'categories' => self::terms((int) $faq->ID),
+            'status' => (string) $faq->post_status,
             'position' => (int) $faq->menu_order,
             'date_modified' => mysql_to_rfc3339($faq->post_modified_gmt),
+        ];
+    }
+
+    /** @param list<WP_Term> $terms @return list<array<string, mixed>> */
+    public static function faqCategories(array $terms): array
+    {
+        return array_values(array_map([self::class, 'faqCategory'], $terms));
+    }
+
+    /** @return array<string, mixed> */
+    public static function faqCategory(WP_Term $term): array
+    {
+        return [
+            'id' => (int) $term->term_id,
+            'slug' => (string) $term->slug,
+            'name' => (string) $term->name,
+            'description' => (string) $term->description,
+            'count' => (int) $term->count,
         ];
     }
 
