@@ -527,6 +527,45 @@ identical from outside, so **every negative test needs a positive control**. And
 asserts only "no crash" passes against a concatenated query, so **assert that a payload does not widen a
 result set**, which is the thing a vulnerable query actually fails.
 
+## Password reset
+
+Two public endpoints, and every rule on them exists because the obvious implementation leaks something.
+
+**It refuses before it mints.** Both calls check the shop can actually send email *and* knows its
+storefront's address before creating a token — 503 `mail_not_configured` or `storefront_url_not_set`.
+Roadmap §59c deferred this feature with the argument that "a reset link generated but never sent is worse
+than an absent feature, because it looks like one that works". Failing loudly is the answer to that, not
+sending optimistically.
+
+**The request call is not an enumeration oracle.** A known address, an unknown address and a staff
+address all produce a byte-identical response. `tests/Api/account.php` asserts the identity rather than
+the wording, because a message that drifts apart is the same disclosure. The unknown path does the same
+work and simply does not send, so the timing does not answer the question either.
+
+**A staff account cannot be reset through the customer door.** `AccountSession::isShopper()` gates it,
+the same predicate that refuses a staff login at `/account/login` — without it, the §44 rule that keeps
+administrators on Application Passwords would have a second door straight past it.
+
+**The destination is configuration, never input.** The link is built from `store.storefront_url`, and
+there is no `redirect_to` parameter. Accepting one is how reset-link poisoning works: the attacker
+requests somebody else's reset, supplies the host, and the victim's link arrives pointing at them.
+
+**Tokens are WordPress's** — `get_password_reset_key()`, `check_password_reset_key()`,
+`reset_password()` — which buys the hashing, the 24-hour expiry and the single use, and means one code
+path honours them. Expired, wrong and already-used all return the same message; which of the three it was
+is information about somebody else's mailbox.
+
+**A reset does not issue a session.** A token that arrived by email is weaker evidence than a password;
+turning one into a live session means whoever reads the mailbox is signed in, rather than merely able to
+set a password the owner will notice. It returns `sessions_revoked: true` instead — the password change
+invalidates every existing session, which is what makes a reset useful after an account is stolen.
+
+**Both calls share the failed-login rate limiter.** A reset endpoint without one is an open mail relay
+pointed at a single address, and an enumeration oracle with unlimited attempts.
+
+The SMTP password reaches PHPMailer and stops. `wp algerian-commerce mail-check` reports whether it is
+set, never what it is.
+
 ## Backups
 
 Maintain backups of database and uploads, and **test restores** — an untested backup is not a backup.

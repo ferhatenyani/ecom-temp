@@ -2592,6 +2592,60 @@ than taken from input. Errors always come back in the envelope, so a client neve
 checked in `scripts/test-api.sh` — the in-process suite is structurally blind to them, exactly as it is to
 a real media upload.
 
+## Mail, and password reset (PLAN §29, §30)
+
+Two things that had to arrive together, because neither is useful alone.
+
+### The SMTP settings were wired to nothing
+
+`SMTP_HOST`, `SMTP_USERNAME` and `SMTP_PASSWORD` were documented in `.env.example` and read by `Config`
+from the beginning — and passed to nothing. They were not even forwarded into the containers by
+`compose.yaml`, so `getenv()` returned nothing whatever anyone put in the file. **A variable this
+repository documents and wires to nothing is a knob that turns nothing**, which is exactly the fault §61
+found across the whole `AC_RATE_LIMIT_*` group.
+
+`Notifications\MailTransport` closes it: one `phpmailer_init` hook, registered from the bootstrap
+because a transport nobody instantiated configures nothing and fails identically to a wrong password.
+`SMTP_PORT` and `SMTP_ENCRYPTION` were added because they genuinely vary — 587 with STARTTLS and 465 with
+implicit TLS are both common, and guessing one from the other produces a connection that succeeds and
+then hangs. An unrecognised encryption falls back to `tls`, never to `none`: a typo must not silently
+send credentials in the clear.
+
+With no `SMTP_HOST` it does nothing at all. That failure stays honest rather than becoming a half-working
+transport.
+
+`wp algerian-commerce mail-check [--to=<address>]` reports what is configured and, with `--to`, actually
+sends — the only check that can fail for the real reason. It prints whether the password is set and never
+what it is.
+
+### Password reset, and the argument §59c made against it
+
+§59c deferred this with: *"a reset link generated but never sent is worse than an absent feature, because
+it looks like one that works."* That argument is answered rather than dropped. Both calls check the shop
+can send **and** knows its storefront's address **before** minting a token, and answer 503 naming which
+half is missing. Neither precondition is about the caller, so neither leaks anything.
+
+It does not go through the notification queue. That queue drains every five minutes, and a shopper
+staring at "check your email" will not wait five minutes — they will request another. The rest of §29 is
+deferred *because* it is deferrable; a reset is the one message that is not.
+
+Four rules, each because the obvious implementation leaks something:
+
+- **A known address, an unknown address and a staff address answer identically.** The suite asserts the
+  responses are identical rather than that the wording matches, because a message that drifts apart is
+  the same disclosure.
+- **A staff account cannot be reset here**, gated by the same `AccountSession::isShopper()` that refuses
+  a staff login — otherwise §44's rule keeping administrators on Application Passwords has a second door
+  straight past it.
+- **The link's destination is configuration, never input.** There is no `redirect_to`; accepting one is
+  how reset-link poisoning works.
+- **A successful reset issues no session.** A token that arrived by email is weaker evidence than a
+  password. It reports `sessions_revoked: true` instead — the password change invalidates every existing
+  session, which is what makes a reset useful after an account is stolen.
+
+Tokens are WordPress's own, so the hashing, the 24-hour expiry and the single use come free, and expired,
+wrong and already-used all answer the same way.
+
 ## Client configuration (§71)
 
 `src/Settings/` — `GET` and `PATCH /settings`, no migration and no table beyond one option.
@@ -2965,6 +3019,7 @@ wp algerian-commerce unlock <ip|login>          # lift a brute-force lockout
 wp algerian-commerce import-algeria [--dry-run] # §51 geography
 wp algerian-commerce seed [--dry-run] [--as=<login>] [--keep-notifications]
 wp algerian-commerce settings [--from=<file>] [--format=table]  # §71 client config
+wp algerian-commerce mail-check [--to=<address>]  # can this shop send email?
 wp algerian-commerce shipping-check             # can this store ship anything?
 wp algerian-commerce sync-destinations --provider=<name> [--dry-run] [--gaps=<n>]
 wp algerian-commerce sync-shipments [--provider=] [--limit=] [--min-age=]

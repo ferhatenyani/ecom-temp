@@ -4009,6 +4009,42 @@ cash on delivery, so the payment message is queued only when `$order->is_paid()`
 — WooCommerce's own answer — or every COD customer would be told their money had
 arrived.
 
+### Password reset — built after the fact, and the deferral's argument answered
+
+This section deferred password reset with: *"a reset link generated but never
+sent is worse than an absent feature, because it looks like one that works."*
+That argument is now answered rather than dropped, and the answer is not to send
+optimistically — it is to **refuse before minting a token**.
+
+Two gaps had to close together. **The SMTP settings were wired to nothing**:
+`SMTP_HOST`, `SMTP_USERNAME` and `SMTP_PASSWORD` were documented in
+`.env.example` and read by `Config`, but never forwarded into the containers by
+`compose.yaml`, so `getenv()` returned nothing whatever anyone put in the file —
+§61's `AC_RATE_LIMIT_*` finding a second time. `Notifications\MailTransport` is
+one `phpmailer_init` hook registered from the bootstrap, with `SMTP_PORT` and
+`SMTP_ENCRYPTION` added because 587/STARTTLS and 465/implicit-TLS are both
+common and guessing one from the other produces a connection that succeeds and
+then hangs. An unrecognised encryption falls back to **`tls`, never `none`**.
+
+`POST /account/password/reset` and `/reset/confirm` then check the shop can send
+**and** knows its storefront's address before creating anything, answering 503
+`mail_not_configured` or `storefront_url_not_set`. Neither precondition is about
+the caller, so neither leaks. It sends synchronously rather than through §29's
+queue: that drains every five minutes, and a shopper staring at "check your
+email" will request another rather than wait.
+
+Four rules, each because the obvious implementation leaks something: a known, an
+unknown and a **staff** address answer identically (asserted as identical
+responses, not as matching wording); a staff account cannot be reset through the
+customer door, gated by the same `AccountSession::isShopper()` that refuses a
+staff login, or §44's Application-Password rule has a second door straight past
+it; the link's destination is configuration with **no `redirect_to`**, which is
+how reset-link poisoning works; and a successful reset issues **no session**,
+because a token that arrived by email is weaker evidence than a password.
+
+`wp algerian-commerce mail-check [--to=<address>]` is the operator's tool, and
+prints whether the SMTP password is set rather than what it is.
+
 ### Deferred, with the reason
 
 **Password reset by email**, again — §30 lists it, and it does not belong in this

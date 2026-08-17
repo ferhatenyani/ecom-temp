@@ -31,6 +31,35 @@ already declares all nine and `GET /settings` reports them. What is left in *thi
 `docs/DEPLOYMENT.md` and §74–§76's production separation. **SMS and WhatsApp are deliberately not
 implemented** — no messaging, notifications or automations — beyond the flags that would gate them.
 
+**Password reset exists, and the SMTP settings finally reach WordPress** — PLAN §29/§30, the one thing
+§59c deferred. Two gaps were closed together because neither was useful alone. **`SMTP_HOST`,
+`SMTP_USERNAME` and `SMTP_PASSWORD` were documented in `.env.example`, read by `Config`, and passed to
+nothing** — not even forwarded into the containers by `compose.yaml`, so `getenv()` returned nothing
+whatever anyone put in the file. That is §61's whole `AC_RATE_LIMIT_*` finding again.
+`Notifications\MailTransport` is one `phpmailer_init` hook registered from the bootstrap, because a
+transport nobody instantiated configures nothing and fails identically to a wrong password. `SMTP_PORT`
+and `SMTP_ENCRYPTION` are new and separate, because 587/STARTTLS and 465/implicit-TLS are both common and
+guessing one from the other yields a connection that succeeds and then hangs; an unrecognised value falls
+back to **`tls`, never `none`**, so a typo cannot send credentials in the clear.
+`wp algerian-commerce mail-check [--to=]` is the operator's check, and prints whether the password is set
+rather than what it is.
+
+**§59c's argument against password reset is answered rather than dropped.** It read: *a reset link
+generated but never sent is worse than an absent feature, because it looks like one that works.* So both
+calls verify the shop can send **and** knows its storefront address **before** minting a token, and
+answer 503 naming which half is missing — `mail_not_configured` or `storefront_url_not_set` (§71 stores
+that URL; §62 refused to guess the same value for canonical URLs). Neither precondition is about the
+caller, so neither leaks. **It does not use the notification queue**: that drains every five minutes, and
+a shopper staring at "check your email" will request another rather than wait. Four rules, each because
+the obvious implementation leaks something — a known, an unknown and a **staff** address answer
+identically (asserted as identical responses, not matching wording); a staff account cannot be reset
+through the customer door, gated by the same `AccountSession::isShopper()` that refuses a staff login, or
+§44's Application-Password rule has a second door past it; the link's destination is configuration and
+there is **no `redirect_to`**, which is how reset-link poisoning works; and a successful reset issues
+**no session**, because a token that arrived by email is weaker evidence than a password — it reports
+`sessions_revoked: true` instead. Tokens are WordPress's own, so hashing, the 24-hour expiry and single
+use come free, and expired/wrong/already-used all answer the same way.
+
 **§71 is `src/Settings/` — `GET`/`PATCH /settings`, no migration, one option — and the design is that
 almost nothing is stored.** §71 and PLAN §48 both describe an outcome ("configuration rather than
 forks"); the mechanism is **one document assembled from the systems that already own each value**, not
@@ -207,9 +236,9 @@ does **not** watch a customer login — `AccountService` records the failure its
 `scripts/test-api.sh` asserts the 429, since only that stage sees a client IP; without it customer logins
 were unlimited. And **authentication must answer before input validation**: `POST /account/password`
 validated its payload first, so an anonymous caller got a 400 listing the endpoint's fields instead of a
-401. **Password reset by email is deliberately not built** — the delivery half has no home until
-`Notifications/` exists (PLAN §29, §30), and a reset link generated but never sent is worse than an
-absent feature because it looks like one that works.
+401. **Password reset is now built** (PLAN §29, §30) — see the mail section above. The deferral's argument
+was answered rather than dropped: it refuses with a 503 when the shop cannot send, instead of minting a
+token that goes nowhere.
 
 **Two steps were added to §4's build sequence after §69, and both are now built: `32b` cart and
 checkout (§59b) and `32c` customer accounts and sessions (§59c).** They are not new scope — PLAN §53 always required `cart`,
@@ -292,9 +321,10 @@ was placed. `ac_shipment_saved` is the one hook this project added, in `Shipment
 rather than the service, because the poller writes without going through the service and "delivered"
 almost always arrives from a poll. **Low stock claims once and is re-armed on restock** — WooCommerce
 provides the first half and not the second. **A COD order is not a paid order**: the payment message is
-gated on `$order->is_paid()`, or every COD customer is told their money arrived. Deferred with reasons:
-password reset (needs a synchronous mail path, not a five-minute drain) and §29's other four channels
-(no credentials — each is one class plus one `add()`).
+gated on `$order->is_paid()`, or every COD customer is told their money arrived. **Password reset is deliberately not in this queue** and never was going to be: a five-minute drain is
+not a password reset. It sends synchronously through `MailTransport` — see above. §29's other four
+channels stay deferred for want of credentials; each is one class plus one `add()`, and **SMS and
+WhatsApp are explicitly out of scope**.
 
 §63 is `src/Analytics/` — seven read-only endpoints (`overview`, `revenue`, `orders`, `products`,
 `customers`, `shipping`, `cod`) and **no migration**; `Schema::VERSION` is still 9.

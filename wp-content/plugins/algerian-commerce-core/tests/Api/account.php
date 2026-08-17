@@ -431,6 +431,156 @@ ac_check(
     401
 );
 
+// ----------------------------------------------------------- password reset --
+/*
+ * Deferred at §59c "until a synchronous mail path exists", which `MailTransport`
+ * now provides. Three properties are worth asserting, and all three go wrong
+ * quietly.
+ *
+ * **It refuses rather than pretends.** A reset link generated and never sent is
+ * worse than an absent feature, so the endpoint checks it can actually send
+ * *before* minting a token, and answers 503 naming which half is missing.
+ *
+ * **It is not an enumeration oracle.** A known and an unknown address must
+ * produce byte-identical responses, or the endpoint is a free list of who shops
+ * here.
+ *
+ * **A staff account is refused exactly as an unknown one is** — the §44 rule,
+ * applied to the door §59c did not have. Without it the customer reset path
+ * resets an administrator's password, which would make
+ * `AccountSession::authenticate()`'s refusal of staff logins pointless.
+ *
+ * The route is driven for the unconfigured case, which is the state a fresh
+ * install is in and the one the suite runs in. The configured cases build the
+ * service directly against a `Config` this file controls: the alternative is a
+ * test-only method on `Plugin` to re-read the environment mid-request, and a
+ * production class should not grow a door that exists for a test.
+ */
+echo PHP_EOL, "── password reset ──", PHP_EOL;
+
+use AlgerianCommerce\Account\PasswordResetService;
+use AlgerianCommerce\Core\Config;
+use AlgerianCommerce\Core\Logger;
+use AlgerianCommerce\Core\Plugin;
+use AlgerianCommerce\Notifications\MailTransport;
+use AlgerianCommerce\Settings\SettingsRepository;
+
+$settingsBefore = get_option(SettingsRepository::OPTION, []);
+
+ac_check(
+    'over the route, with no mail transport, reset is 503 rather than a lie',
+    ac_req('POST', '/account/password/reset', ['email' => $EMAIL_A]),
+    503,
+    static fn (array $d): bool|string => ($d['error']['code'] ?? '') === 'mail_not_configured'
+        ? true : 'code was ' . ($d['error']['code'] ?? '?')
+);
+
+ac_check(
+    'the confirm half refuses for the same reason',
+    ac_req('POST', '/account/password/reset/confirm', [
+        'login' => 'anyone', 'key' => 'anything', 'password' => 'LongEnoughPassphrase',
+    ]),
+    503
+);
+
+$plugin = Plugin::instance();
+$settings = new SettingsRepository();
+
+$configured = static fn (): PasswordResetService => new PasswordResetService(
+    new SettingsRepository(),
+    new MailTransport(new Config(['SMTP_HOST' => 'smtp.example.test']), new Logger('test', Logger::ERROR)),
+    $plugin->auditLogger(),
+    $plugin->rateLimiter(),
+    new Logger('test', Logger::ERROR)
+);
+
+// A link needs somewhere to point, and this backend cannot derive it — §71
+// stores it, §62 refused to guess the same value for canonical URLs.
+$cleared = get_option(SettingsRepository::OPTION, []);
+$cleared['store']['storefront_url'] = '';
+update_option(SettingsRepository::OPTION, $cleared, false);
+
+try {
+    $configured()->request($EMAIL_A);
+    ac_assert('with no storefront URL, reset refuses', 'it did not refuse');
+} catch (AlgerianCommerce\API\ApiException $e) {
+    ac_assert(
+        'with no storefront URL, reset refuses rather than sending a broken link',
+        $e->getCode() === 'storefront_url_not_set' || str_contains($e->getMessage(), 'storefront')
+            ? true : 'threw ' . $e->getMessage()
+    );
+}
+
+$settings->save(['store' => ['storefront_url' => 'https://shop.example.test']]);
+
+$known = $configured()->request($EMAIL_A);
+$unknown = $configured()->request('nobody-here@example.test');
+$staffAnswer = $configured()->request($staffEmail);
+
+ac_assert(
+    'a known and an unknown address answer identically',
+    $known === $unknown ? true : 'the endpoint distinguishes them, which is an enumeration oracle'
+);
+ac_assert(
+    'a staff address is answered exactly as an unknown one',
+    $staffAnswer === $unknown ? true : 'staff addresses are distinguishable'
+);
+ac_assert(
+    'and no reset token was minted for the staff account',
+    (string) get_user_by('email', $staffEmail)->user_activation_key === ''
+        ? true : 'a staff account was issued a reset key'
+);
+
+$userA = get_user_by('email', $EMAIL_A);
+$resetKey = get_password_reset_key($userA);
+
+try {
+    $configured()->confirm($userA->user_login, $resetKey, 'short');
+    ac_assert('a short password is refused', 'it was accepted');
+} catch (AlgerianCommerce\API\ApiException $e) {
+    ac_assert('a short password is refused', isset($e->details()['fields']['password']));
+}
+
+try {
+    $configured()->confirm($userA->user_login, 'not-the-key', 'ANewCorrectHorseBattery');
+    ac_assert('a wrong key is refused', 'it was accepted');
+} catch (AlgerianCommerce\API\ApiException $e) {
+    ac_assert('a wrong key is refused', isset($e->details()['fields']['key']));
+}
+
+$done = $configured()->confirm($userA->user_login, $resetKey, 'ANewCorrectHorseBattery');
+ac_assert('the reset completes', ($done['reset'] ?? false) === true);
+
+/*
+ * A reset must not sign anybody in. A token that arrived by email is weaker
+ * evidence than a password, and handing back a live session means whoever reads
+ * the mailbox is signed in rather than merely able to set a password the real
+ * owner will notice.
+ */
+ac_assert('a reset does not hand back a session', !isset($done['token']));
+
+// Single use: WordPress clears the activation key inside reset_password().
+try {
+    $configured()->confirm($userA->user_login, $resetKey, 'YetAnotherPassphrase');
+    ac_assert('the same link cannot be used twice', 'the key was accepted a second time');
+} catch (AlgerianCommerce\API\ApiException $e) {
+    ac_assert('the same link cannot be used twice', isset($e->details()['fields']['key']));
+}
+
+ac_check(
+    'the new password signs in',
+    ac_req('POST', '/account/login', ['email' => $EMAIL_A, 'password' => 'ANewCorrectHorseBattery']),
+    200
+);
+
+ac_check(
+    'and the old one does not',
+    ac_req('POST', '/account/login', ['email' => $EMAIL_A, 'password' => $PASS_A]),
+    401
+);
+
+update_option(SettingsRepository::OPTION, $settingsBefore, false);
+
 // ------------------------------------------------------------------ cleanup --
 $orderA->delete(true);
 $orderB->delete(true);

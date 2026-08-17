@@ -36,7 +36,7 @@ real upload can only happen in `http`.
 
 ## §65's five categories
 
-### Unit — 1,313 tests, 2,942 assertions, 76 files
+### Unit — 1,331 tests, 2,962 assertions, 77 files
 
 | §65 asks for | Covered by |
 |---|---|

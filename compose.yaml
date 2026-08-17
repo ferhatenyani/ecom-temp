@@ -94,6 +94,16 @@ services:
       AC_ANALYTICS_CACHE_TTL: ${AC_ANALYTICS_CACHE_TTL:-}
       AC_ADMIN_EMAIL: ${AC_ADMIN_EMAIL:-}
       AC_MAIL_FROM: ${AC_MAIL_FROM:-}
+      # The mail transport. WordPress sends through PHP mail() unless something
+      # configures PHPMailer, and neither container has an MTA — so without
+      # these every send fails with "sendmail: can't connect". `MailTransport`
+      # feeds them to WordPress; before it existed they were documented in
+      # .env.example, read by Config, and passed through by nothing at all.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_ENCRYPTION: ${SMTP_ENCRYPTION:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       # Provider credentials and feature flags. Config reads getenv(), so a
       # variable in .env reaches the plugin only if it is listed here — an
       # adapter whose keys are not passed through simply never registers, and
@@ -174,6 +184,16 @@ services:
       AC_ANALYTICS_CACHE_TTL: ${AC_ANALYTICS_CACHE_TTL:-}
       AC_ADMIN_EMAIL: ${AC_ADMIN_EMAIL:-}
       AC_MAIL_FROM: ${AC_MAIL_FROM:-}
+      # The mail transport. WordPress sends through PHP mail() unless something
+      # configures PHPMailer, and neither container has an MTA — so without
+      # these every send fails with "sendmail: can't connect". `MailTransport`
+      # feeds them to WordPress; before it existed they were documented in
+      # .env.example, read by Config, and passed through by nothing at all.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_ENCRYPTION: ${SMTP_ENCRYPTION:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       # Provider credentials and feature flags. Config reads getenv(), so a
       # variable in .env reaches the plugin only if it is listed here — an
       # adapter whose keys are not passed through simply never registers, and
