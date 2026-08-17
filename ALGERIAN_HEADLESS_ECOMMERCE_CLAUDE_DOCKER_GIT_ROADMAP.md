@@ -5457,6 +5457,43 @@ Prefer your stable:
 
 contract.
 
+## Done — `docs/API.md`, and it is a check rather than a document
+
+The rule this section states was already obeyed: the API is
+`/algerian-commerce/v1`, nothing in it depends on `/wp/v2` or `/wc/v3`, and
+`Cors` serves an allowlist. What did not exist was the **contract written down**
+— the thing a storefront developer reads before writing a line. `docs/API.md` is
+that: the envelope, the error codes, the three credentials, CORS, rate limits,
+pagination, every route with its capability, a checkout walkthrough end to end,
+and a list of what bites people.
+
+**Three credentials, and confusing them is the integration mistake this document
+exists to prevent.** A staff Application Password over `Authorization: Basic`; a
+shopper session over `X-Customer-Token`; a cart token over `Cart-Token`. They are
+not interchangeable — a customer session opens no `ac_*` route, and a staff
+account is refused at `/account/login`. The document leads with that because
+every other question follows from it.
+
+**A reference that drifts from the router is worse than none**, so it is
+verified rather than trusted. `scripts/test-api.sh` → "documented contract"
+fetches the namespace index over HTTP, normalises `(?P<id>\d+)` to `{id}`, and
+asserts every registered route appears in `docs/API.md`. It carries a floor —
+fewer than 80 routes found is a failure — because a grep that matched nothing
+would report a fully documented API in exactly the way a fully documented API
+does. This is §68's argument a second time: the copy is what goes stale, so the
+copy is what gets checked.
+
+**It found two defects on its first run**, both the kind a human proof-read
+would miss: the CMS page route is registered as `{slug}` while the document
+wrote `{path}` (it takes a full path, and the document now says so under its
+real name), and `/inventory/lookup` had been written with its query string
+attached, so it matched nothing.
+
+The check is deliberately one-directional. Every *registered* route must be
+documented; a documented route with no registration is legitimate, because the
+Yalidine and ZR Express webhooks are 404 until their secrets are configured and
+must still be documented for whoever configures them.
+
 ------------------------------------------------------------------------
 
 # 71. Client Configuration

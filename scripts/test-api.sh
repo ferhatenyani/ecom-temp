@@ -626,5 +626,65 @@ check "a lockout is recorded" "locked" "$SEEN"
 check "a valid credential works again after unlock" 200 "$(status -u "$CRED" "${API}/products")"
 echo
 
+# ---------------------------------------------------- the documented contract --
+#
+# Roadmap §70: the frontend is built against `/algerian-commerce/v1`, and
+# docs/API.md is the document it is built from. A reference that drifts from the
+# router is worse than none — it sends somebody to an endpoint that does not
+# exist, or hides one that does.
+#
+# So the document is a **check**, the way §68's version pins are. This is the
+# same reasoning that kept the tested versions in compose.yaml rather than in a
+# table: the copy is the thing that goes stale, so the copy has to be verified.
+#
+# It runs here rather than in a tests/Api suite because docs/ is not inside the
+# plugin, and only the plugin directory is mounted into the containers. This
+# stage is on the host and can read both halves — the live routes over HTTP,
+# and the file on disk.
+#
+# Direction matters: this asserts every **registered** route is documented, not
+# the reverse. A route in the document with no registration is legitimate —
+# docs/API.md lists the Yalidine and ZR Express webhooks, which by design are
+# 404 until their secrets are configured.
+echo "documented contract (roadmap §70)"
+
+DOC="docs/API.md"
+
+if [[ ! -f "$DOC" ]]; then
+  check "docs/API.md exists" "yes" "no"
+else
+  # `(?P<id>\d+)` in the router is `{id}` in prose. Normalising here rather than
+  # writing regexes into the document keeps the document readable, which is the
+  # only reason anyone opens it.
+  mapfile -t ROUTES < <(
+    curl -s -m 15 "${API}" \
+      | grep -o '\\/algerian-commerce\\/v1[^"]*' \
+      | sed 's|\\/|/|g' \
+      | sed 's|/algerian-commerce/v1||' \
+      | sed -E 's|\(\?P<([a-z_]+)>[^)]*\)|{\1}|g' \
+      | grep -v '^$' \
+      | sort -u
+  )
+
+  # The floor. A grep that quietly matched nothing would report a fully
+  # documented API in exactly the same way a fully documented API does — the
+  # failure this repository has already shipped once.
+  check "the namespace index lists the routes" "yes" \
+    "$([[ ${#ROUTES[@]} -ge 80 ]] && echo yes || echo "no (${#ROUTES[@]} found)")"
+
+  UNDOCUMENTED=()
+  for route in "${ROUTES[@]}"; do
+    grep -qF -- "\`${route}\`" "$DOC" || UNDOCUMENTED+=("$route")
+  done
+
+  if [[ ${#UNDOCUMENTED[@]} -eq 0 ]]; then
+    check "every registered route is in docs/API.md" "0" "0"
+  else
+    check "every registered route is in docs/API.md" "0" "${#UNDOCUMENTED[@]}"
+    printf '         %s\n' "${UNDOCUMENTED[@]}"
+  fi
+fi
+echo
+
 printf '=== %d passed, %d failed ===\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]
