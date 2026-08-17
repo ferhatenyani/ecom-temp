@@ -35,6 +35,15 @@ final class CustomerPresenter
             'role' => $customer->get_role(),
             // WooCommerce's own flag, set on the first paid order.
             'is_paying_customer' => $customer->get_is_paying_customer(),
+            /*
+             * Roadmap §85. **Reported here and writable from nowhere in this module**
+             * — a shop has to be able to see who consented, and `CustomerInput`
+             * deliberately does not accept it, because a flag staff could tick is not
+             * a consent record. The customer sets it at registration or through
+             * `POST /account/marketing-consent`, and clears it with the one-click
+             * unsubscribe link in every campaign.
+             */
+            'marketing_consent' => \AlgerianCommerce\Campaigns\Consent::has($customer->get_id()),
             'billing' => self::billing($customer),
             'shipping' => self::shipping($customer),
             'date_created' => self::date($customer->get_date_created()),

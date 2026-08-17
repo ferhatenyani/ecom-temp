@@ -178,6 +178,13 @@ $publicPrefixes = [
     // token, a malformed one, a tampered MAC, another order's MAC, a revoked
     // link and an expired one — each beside a positive control.
     '/algerian-commerce/v1/orders/track',
+    // §85. "An unsubscribe link in every campaign email, mandatory, one click, no
+    // login" — a customer holding a link from an email has no session, and requiring
+    // an account to unsubscribe is how a shop's domain ends up on a blocklist. The
+    // signed token is the authorization, checked in CampaignService::unsubscribe(),
+    // and the route answers identically for a valid and an invalid one so it cannot
+    // be an oracle for "is this a customer id". tests/Api/campaigns.php proves both.
+    '/algerian-commerce/v1/marketing/unsubscribe',
 ];
 
 $guarded = [];

@@ -36,7 +36,7 @@ real upload can only happen in `http`.
 
 ## §65's five categories
 
-### Unit — 1,516 tests, 3,431 assertions, 85 files
+### Unit — 1,683 tests, 4,019 assertions, 89 files
 
 | §65 asks for | Covered by |
 |---|---|
@@ -46,15 +46,17 @@ real upload can only happen in `http`.
 | provider mapping | `YalidineStatusMapTest`, `YalidineParcelTest`, `ZRExpressProviderTest`, `ChargilyProviderTest`, `MetaProviderTest`, `CourierWebhookTest` |
 | validation | every `*InputTest` — 14 of them — plus `ProductFiltersTest` for the read side and `OptionSetTest` for §83's document |
 | permissions | `CapabilitiesTest`, `IdentityTest` |
-| credentials this project mints | `TrackingTokenTest` — §84's token is the only one, and the properties it must have are arithmetic |
+| credentials this project mints | `TrackingTokenTest`, and `CampaignInputTest`'s unsubscribe half — the properties a token must have are arithmetic |
 | what a public payload may say | `TrackingPresenterTest` — §84's disclosure list, key by key |
+| rendering user-authored content | `TemplateRendererTest`, `EmailHtmlTest` — §85's placeholders and its email-safe allowlist |
+| audience definitions | `SegmentCriteriaTest` — §85's criteria, both strict and lenient, plus the pure aggregate comparison |
 
 Everything here is pure: no WordPress, no database, no clock. That is a deliberate constraint rather than
 an accident — `AnalyticsRange` takes the current instant as an argument so that "what does `7d` mean at a
 timezone boundary" is decidable in a test, and `AnalyticsCache::key()` is pure so that "a payload with
 money in it never shares a key with one without" is a unit test rather than an argument.
 
-### Integration — 26 suites in `tests/Api/`
+### Integration — 27 suites in `tests/Api/`
 
 §65's four words (WordPress, WooCommerce, custom plugin, database) are not four separate suites here.
 Every `tests/Api/` suite is an integration test by that definition: it runs inside a booted WordPress,
@@ -252,6 +254,31 @@ of `label` passes the first and fails the second.
 This is the same discipline as "assert a payload does not widen a result set": the assertion has to be one
 the broken implementation actually fails.
 
+#### A filter that must not be argued away needs the path most likely to argue
+
+§85's consent filter lives in `AudienceResolver` rather than in any caller, and the test that matters is
+**not** "a customer without consent is absent". It is the pair, on the path a future reader is most likely
+to treat as an override: `audience_type: "ids"`, where an admin typed the customer id by hand.
+
+`tests/Api/campaigns.php` sends the same campaign twice — once to a customer with no consent, once to a
+customer with it — and asserts a 409 naming "nobody" against a successful freeze of one recipient. The
+negative alone would pass against a resolver that returned nothing for any reason at all, which is exactly
+what a broken `meta_query` looks like.
+
+Consent is also asserted as a **delta**: withdrawing one customer's flag must move a segment's count by
+exactly one, and restoring it must move it back. A count that simply came back zero, or that never moved,
+fails both halves.
+
+#### An idempotent drain is tested by interrupting it
+
+§85's per-recipient table earns its place on one property — "a drain interrupted at recipient 3,000 resumes
+at 3,001" — and the only way to test that is to interrupt one. The suite drains with a batch of **1**,
+asserts exactly one row is `sent` and the campaign is *not* complete, drains the rest, and then asserts
+every customer id appears exactly once across the sent rows. A third drain must attempt **zero**.
+
+The same shape covers the claim: a second `send` must be a 409 **and** must not have added a single
+recipient row. Asserting only the 409 would pass against a claim that refused after writing.
+
 #### Privilege escalation — the sweep is the new part
 
 Each feature's own suite asserts a 403 for the wrong capability on its own routes. What none of them can
@@ -347,6 +374,13 @@ That block also asserts the *separation* of the counters, which is the part that
 tracking is throttled, an authenticated read must still answer 200 and a wrong customer login must still
 answer **401 rather than 429**. If the tracking group had been wired to the failed-login counter, any
 forwarded tracking link would be a denial of service against the shop's own customers signing in.
+
+**§85's unsubscribe route is here for a different reason: "no credential at all" is a claim only this stage
+can make.** Every `tests/Api` suite runs as an already-signed-in administrator, so a route that had quietly
+acquired a `permission_callback` would answer 200 in-process and 401 to the customer holding a link from an
+email. The block also asserts the property that keeps the route from being an oracle — a forged token
+answers byte-identically to a real one — and carries the control that a forged one withdrew nobody's
+consent, without which "identical responses" could mean the route does nothing at all.
 
 ## Conventions for the next suite
 

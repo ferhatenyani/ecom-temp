@@ -898,6 +898,113 @@ section become the place deployment documentation gets written.
 - **HTTP stage**: the unsubscribe route with no credential at all, since `rest_do_request()`
   does not exercise the real request path.
 
+## What was built
+
+**§85 is `src/Campaigns/` — eighteen classes, three migrations (011 `ac_campaigns`, 012
+`ac_campaign_recipients`, 013 `ac_customer_segments`), one CLI command and no new capability.**
+`Schema::VERSION` is now **13**. Eight of the eighteen are pure — `CampaignStatus`, `Campaign`,
+`CampaignInput`, `SegmentCriteria`, `Segment`, `TemplateRenderer`, `EmailHtml`,
+`UnsubscribeToken` — which is what makes §85's own test list mostly unit tests.
+
+**§86 predicted this would be the largest of the four by a distance and it was**: 3 migrations,
+a second queue, a consent model, a template renderer, a second aggregate-SQL exception, and a
+deliverability prerequisite that lives outside this repository.
+
+### The parts that went as §85 wrote them
+
+**Two tables and two drains**, because the unique key runs the other way: `ac_notifications`
+collapses eight firings into one message and a campaign needs five thousand rows each with its
+own status. And because a 5,000-recipient send sharing the transactional queue delays every
+order confirmation behind it. `wp algerian-commerce send-campaigns` is a separate command from
+`send-notifications` for the same reason.
+
+**Nothing is sent on a request path.** `POST /campaigns/{id}/send` resolves, freezes, claims and
+returns 202. **The claim is one `UPDATE … WHERE status = 'draft'`** — the
+write-whose-failure-is-the-answer discipline of `WebhookEventRepository`, expressed as an update
+because the row already exists — with `UNIQUE (campaign_id, customer_id)` as the second
+guarantee. Verified: a second `send` is a 409 **and** adds not one recipient row.
+
+**Consent is default-false user meta, and a withdrawal deletes it rather than writing `'0'`** —
+because a stored no invites a later query written `!= '0'`, which reads every customer who never
+answered as a yes. **The filter is in `AudienceResolver::candidates()` and every path goes
+through it**, including an explicit list of ids an admin typed, which is the path a future reader
+is most likely to treat as an override. That is the pair `tests/Api/campaigns.php` asserts, in
+§65's shape: the same campaign to a non-consenting customer is a 409 naming "nobody", and to a
+consenting one freezes exactly one recipient.
+
+**The segment is a stored query and an empty one is refused**, because empty would mean
+*everyone* and "everyone eligible" already has its own `audience_type` — the one mistake in this
+module that cannot be undone once the mail has gone out. `Segment::fromRow()` reports an
+unreadable document rather than reading it as "no criteria", which is §83's `OptionSet` rule
+where the stakes are highest.
+
+**Templates are `ac_email_template` posts with `wp_kses` on save**, and HTML reverses
+`NotificationMessages`' plain-text decision with the argument written down rather than made
+quietly. Sanitising on *save* rather than on send is the load-bearing half: a stored XSS fires in
+the admin's own preview, and sanitising on the way out would leave the markup in the database for
+whoever reads it next.
+
+### Four things §85 did not settle, decided here
+
+**`AudienceResolver` is the second file in the plugin running aggregate SQL over the order
+tables, and the deviation is named rather than smuggled.** `Plugin` describes
+`AnalyticsRepository` as the only one and §84 repeated that it was not to become two. The reason
+is a measurement: §85's criteria are per-customer aggregates, WooCommerce publishes no API for any
+of them (`wc_get_orders()` counts; it cannot sum, group or rank), and the alternative is one
+`customerOrderSummaries()` per candidate — a query per customer on a request path. **And the
+rollup tables that would answer it hold nothing.** Measured 2026-08-17 on this install:
+`wc_customer_lookup` **8 rows against 15 customers and 302 orders**, `wc_order_stats` and
+`wc_order_product_lookup` **0 rows**. That is §63's finding again and worse than an absent table,
+because reading them returns rows. The same four rules bound it — no `WC_Order` loaded or
+returned, the table name from `OrderUtil::get_table_for_orders()`, **501 rather than zeros on a
+legacy install**, every query read-only.
+
+**The unsubscribe token keys on the customer, not on the recipient row**, and §85's own words are
+why: it says "a per-recipient signed token" two paragraphs before it says recipient rows are
+purged. A token bound to a row would stop working exactly when somebody finally clicked it, and a
+dead unsubscribe link is how a sending domain gets blocklisted — the outcome the one-click rule
+exists to prevent. It carries nothing about the campaign either: unsubscribing is from marketing,
+not from one newsletter. **A forged token answers byte-identically to a real one**, asserted as
+identical responses rather than matching wording, because a 404 on this public route would answer
+"is this a customer id" for anyone who asked.
+
+**Checkout is deliberately not a consent surface**, where §85 offers "registration or checkout".
+Two reasons, both named in `Consent`: a **guest** checkout has no account for the flag to live on,
+and an authenticated checkout can set it through `POST /account/marketing-consent` in the same
+session — so a consent checkbox on a payment form buys nothing and is exactly where a pre-ticked
+box ends up by accident. The trigger for revisiting is `ac_marketing_contacts`, which is a bigger
+question than a checkbox: it needs its own unsubscribe identity and its own purge rule.
+
+**The rate cap is the batch size, and the `usleep` is off by default.** §85 asks for "a batch size
+and a rate cap"; both exist, and the default is `--limit=50` with no gap, because a `usleep`
+inside a WP-Cron request holds that request open for the whole batch. Fifty a minute is three
+thousand an hour, inside every SMTP provider's tolerance; `--rate` adds a minimum gap for a
+provider that throttles harder. `docs/DEPLOYMENT.md` is where the scheduler line and §85's SPF,
+DKIM and DMARC prerequisites belong, and it still does not exist.
+
+### What the tests found
+
+**Two bugs, both in the refusal paths, and both found by writing the assertion §85 asks for
+rather than by reading the code.** `CampaignInput::checkAudience()` overwrote a specific
+complaint with a generic one — "at least one customer id" replaced the message that said the list
+was over the cap or held a name — because `customerIds()` returns `[]` on every failure. And two
+refusals (`claimed_at`, `completed_at`) were one-sentence stubs where the rest of the list explains
+itself; the unit test asserting a refusal must carry a reason is what caught them.
+
+**One test artefact worth knowing, carried over from §84**: an arrow function cannot take a `use`
+clause, and `wp eval-file` reports that as a bare "critical error" with the line number inside an
+`eval()`'d string. If a `tests/Api` suite dies with no output, that is the first thing to check.
+
+**Verified 2026-08-17 against this stack.** 100 assertions in `tests/Api/campaigns.php`, 167 unit
+tests across the four pure suites, 12 checks in `scripts/test-api.sh`. The idempotency test drains
+with a batch of **1**, asserts exactly one row is `sent` and the campaign is *not* complete, drains
+the rest, and then asserts every customer id appears exactly once — with a third drain attempting
+zero. **Nothing asserts a successful send**: there is no SMTP server in this stack, so `pre_wp_mail`
+is short-circuited and the drain's *bookkeeping* is what is under test, which is the half that has
+rules.
+
+**Nothing here is an assumption** — `grep -rn ASSUMPTION src/Campaigns` is empty.
+
 ------------------------------------------------------------------------
 
 # 86. Build Order and Definition of Done

@@ -29,13 +29,16 @@ admin and storefront, which are separate repositories.** §70's contract is writ
 client configuration and §73's provisioning flow are built, and §72 needed no work — `Config::FLAGS`
 already declares all nine and `GET /settings` reports them. What is left in *this* repository is
 `docs/DEPLOYMENT.md` and §74–§76's production separation. **SMS and WhatsApp are deliberately not
-implemented** — no messaging, notifications or automations — beyond the flags that would gate them.
+implemented** — no message, notification or campaign ever leaves on either channel, beyond the flags that
+would gate them. **Email does**: §59d's transactional queue and §85's campaigns both send through
+`wp_mail()`, and the current schema head is **migration 013 / `Schema::VERSION` 13** (the per-section notes
+below record what the version was when each landed, which is not the same thing).
 
 [ROADMAP_PHASE_2.md](ROADMAP_PHASE_2.md) is the companion document and adds **§82–§85 / steps 45–48**:
 advanced filtering and faceted search, product configurators, order tracking and email marketing
-campaigns. It supersedes nothing — where the two disagree about a rule, the first one wins. **§82, §83
-and §84 are built; §85 is not.** Each of the four is done only when its "What was built" subsection
-is written into that document, so read the section *and* its outcome before extending one.
+campaigns. It supersedes nothing — where the two disagree about a rule, the first one wins. **All four
+(§82–§85) are built, so steps 45–48 are complete.** Each is done only when its "What was built"
+subsection is written into that document, so read the section *and* its outcome before extending one.
 
 **§82 is `src/Products/ProductFilters.php`, `AttributeCatalogue.php` and `FacetResolver.php` — nine new
 filters on `GET /products` plus an opt-in `meta.facets` block, no migration and no new `$wpdb` call
@@ -109,6 +112,40 @@ not recurse** and a **variation inherits its parent's set**; both are named limi
 **partially-refundable bundle**, which is out of scope. Free text is capped and stripped of markup and
 control characters, but **a leading `=` is deliberately left alone** — §64's escape belongs at the CSV
 boundary where `CsvWriter` already does it, and stripping it here would mangle "A=B" on a keepsake.
+
+**§85 is `src/Campaigns/` — eighteen classes, migrations 011–013 (`ac_campaigns`,
+`ac_campaign_recipients`, `ac_customer_segments`), `Schema::VERSION` is now 13, one CLI command
+(`wp algerian-commerce send-campaigns`) and no new capability.** **A campaign is not a notification and
+the difference is the unique key**: `ac_notifications`' `UNIQUE (channel, dedupe_key)` collapses eight
+firings into one message, while a campaign needs five thousand rows each with its own status, attempts and
+error — and a 5,000-recipient send sharing that queue delays every order confirmation behind it. Two
+tables, two drains. **Nothing is sent on a request path**: `send` resolves, freezes, claims and returns
+202; **the claim is one `UPDATE … WHERE status = 'draft'`**, with `UNIQUE (campaign_id, customer_id)` as
+the second guarantee. Verified: a second `send` is a 409 and adds no row; a drain interrupted at one row
+resumes and mails every recipient exactly once. **Consent is default-false user meta whose absence is the
+no, and a withdrawal deletes it** rather than writing `'0'` (a stored no invites `!= '0'`, which reads
+silence as consent). **The filter is in `AudienceResolver` and every path goes through it**, including an
+explicit id list an admin typed; **no staff route can set the flag** — `CustomerInput` refuses it,
+`CustomerPresenter` reports it — and **consent is re-checked at send time**, so somebody who unsubscribes
+mid-drain is not mailed by the second batch. **Checkout is deliberately not a consent surface** (a guest
+has no account for it; `ac_marketing_contacts` is the named trigger). **The unsubscribe token keys on the
+customer, not the recipient row**, because those rows are purged and a token bound to one would die when
+somebody finally clicked it; **a forged token answers byte-identically to a real one**. **A segment is a
+stored query and an empty one is refused** — empty would mean everyone, and "everyone eligible" has its
+own `audience_type`. `wilaya_id` comes off the shipment, never the address. **Templates are
+`ac_email_template` posts with `wp_kses` on *save*** — a stored XSS fires in the admin's own preview —
+and HTML reverses `NotificationMessages`' plain-text decision with the argument written down.
+**`AudienceResolver` is the second file running aggregate SQL over the order tables, and the measurement
+is the argument**: verified 2026-08-17, `wc_customer_lookup` held **8 rows against 15 customers and 302
+orders** and `wc_order_stats`/`wc_order_product_lookup` held **0** — §63's finding again — and the same
+four rules bound it (no `WC_Order`, `OrderUtil::get_table_for_orders()`, **501** on legacy, read-only).
+**Recipient rows are purged 30 days after completion** and the counts live on `ac_campaigns` so a shop can
+still say a campaign reached 4,812 people and no longer who they were; **every send audits the count,
+never the list**. **Sending additionally requires `ac_manage_customers`** — a Marketing Manager can draft,
+preview and test and cannot send. **The rate cap is the batch size**; the `usleep` is off by default,
+because one inside WP-Cron holds the request open. No open/click tracking, no drip sequences, no SMS or
+WhatsApp, no third-party ESP — each named. **SPF/DKIM/DMARC are a `docs/DEPLOYMENT.md` prerequisite and
+that file still does not exist.**
 
 **§84 is `src/Tracking/` — `TrackingToken`, `TrackingLink`, `TrackingPresenter`, `TrackingService`,
 `TrackingController` — one public route, no migration, no table and no new capability.** Two doors:
@@ -769,7 +806,8 @@ events, shipment records, payment transactions, notification events, analytics a
 
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
-`Customers/`, `Account/`, `Cart/`, `Coupons/`, `Notifications/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`,
+`Customers/`, `Account/`, `Cart/`, `Coupons/`, `Notifications/`, `COD/`, `Payments/`, `Shipping/`, `Tracking/`,
+`Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`, `Campaigns/`,
 `Analytics/`, `ImportExport/`, `Seed/`, `Settings/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and

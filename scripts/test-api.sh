@@ -576,6 +576,83 @@ if ($order) { $order->delete(true); }
 echo "cleaned";' >/dev/null
 echo
 
+# ------------------------------------------------------------ unsubscribe --
+#
+# §85: "an unsubscribe link in every campaign email, mandatory, one click, no login.
+# A per-recipient signed token and a public route. Requiring an account to unsubscribe
+# is how a shop's domain ends up on a blocklist."
+#
+# §85 names this stage for it, and the reason is narrow: rest_do_request() does not
+# exercise the real request path, so "no credential at all" is a claim only this stage
+# can make. A route that had quietly acquired a permission_callback would answer 401
+# here and 200 in tests/Api/campaigns.php, because in-process the suite is already a
+# logged-in administrator.
+#
+# The other property is the one that keeps the route from being an oracle: a forged
+# token must answer **identically** to a real one. This route is unauthenticated, so a
+# 404 on a bad token would answer "is this a customer id" for anybody who asked.
+echo "campaign unsubscribe (roadmap §85)"
+
+UNSUB=$(wpcli -e AC_EMAIL=ac-http-unsub@example.test wpcli wp eval '
+$email = getenv("AC_EMAIL");
+$existing = get_user_by("email", $email);
+if ($existing) { wp_delete_user($existing->ID); }
+$id = wp_insert_user(["user_login" => $email, "user_email" => $email,
+                      "user_pass" => wp_generate_password(24),
+                      "display_name" => "Http Unsub", "role" => "customer"]);
+AlgerianCommerce\Core\Plugin::instance()->consent()->set((int) $id, true, "test");
+echo (int) $id, ":", AlgerianCommerce\Campaigns\UnsubscribeToken::mint((int) $id, wp_salt("auth"));
+')
+
+UNSUB_ID="${UNSUB%%:*}"
+UNSUB_TOKEN="${UNSUB#*:}"
+
+consent_state() {
+  wpcli -e AC_ID="${UNSUB_ID:-0}" wpcli wp eval '
+    echo AlgerianCommerce\Campaigns\Consent::has((int) getenv("AC_ID")) ? "yes" : "no";'
+}
+
+check "a consenting customer was created" "yes" "$(consent_state)"
+check "a token was minted" "true" "$([[ ${#UNSUB_TOKEN} -gt 20 ]] && echo true || echo false)"
+
+# THE PROPERTY THIS BLOCK EXISTS FOR: no credential of any kind.
+check "GET /marketing/unsubscribe needs no credential" 200 \
+  "$(status "${API}/marketing/unsubscribe?token=${UNSUB_TOKEN}")"
+check "...and it actually withdrew the consent" "no" "$(consent_state)"
+check "...and clicking again is idempotent" 200 \
+  "$(status "${API}/marketing/unsubscribe?token=${UNSUB_TOKEN}")"
+
+# A forged token must be indistinguishable from a real one.
+REAL_BODY=$(curl -s -m 15 "${API}/marketing/unsubscribe?token=${UNSUB_TOKEN}")
+FORGED_BODY=$(curl -s -m 15 "${API}/marketing/unsubscribe?token=${UNSUB_ID}.00000000000000000000000000000000")
+check "a forged token answers identically to a real one" "same" \
+  "$([[ "$REAL_BODY" == "$FORGED_BODY" ]] && echo same || echo different)"
+check "no token at all answers the same way too" "same" \
+  "$([[ "$REAL_BODY" == "$(curl -s -m 15 "${API}/marketing/unsubscribe")" ]] && echo same || echo different)"
+
+# ...and the control: a forged token changed nothing. Re-consent first, so the
+# assertion is about the forgery and not about the click above.
+wpcli -e AC_ID="${UNSUB_ID:-0}" wpcli wp eval '
+  AlgerianCommerce\Core\Plugin::instance()->consent()->set((int) getenv("AC_ID"), true, "test");
+  echo "reconsented";' >/dev/null
+status "${API}/marketing/unsubscribe?token=${UNSUB_ID}.00000000000000000000000000000000" >/dev/null
+check "a forged token withdraws nobody's consent" "yes" "$(consent_state)"
+
+# The drafting routes are private, which the router sweep also asserts in-process —
+# repeated here because only this stage can send a real Authorization header, and a
+# Support Agent credential is what catches a guard added later with the wrong
+# capability.
+check "GET /campaigns without credentials" 401 "$(status "${API}/campaigns")"
+check "GET /campaigns with an admin credential" 200 "$(status -u "$CRED" "${API}/campaigns")"
+check "GET /segments without credentials" 401 "$(status "${API}/segments")"
+check "a Support Agent reaches no campaign route" 403 "$(status -u "$SUPPORT_CRED" "${API}/campaigns")"
+
+wpcli -e AC_EMAIL=ac-http-unsub@example.test wpcli wp eval '
+$u = get_user_by("email", getenv("AC_EMAIL"));
+if ($u) { wp_delete_user($u->ID); }
+echo "cleaned";' >/dev/null
+echo
+
 # ---------------------------------------------------------------- exports --
 # THE THIRD REGRESSION TEST.
 #

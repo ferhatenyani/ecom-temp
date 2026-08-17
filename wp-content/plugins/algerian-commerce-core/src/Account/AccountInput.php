@@ -47,7 +47,16 @@ final class AccountInput
         public readonly string $email,
         public readonly string $password,
         public readonly string $firstName,
-        public readonly string $lastName
+        public readonly string $lastName,
+        /**
+         * Marketing consent — roadmap §85, **default false**.
+         *
+         * Absent means no. Never inferred from having registered, and never from
+         * having placed an order: a customer who bought something consented to an
+         * order confirmation, not to a newsletter. `Campaigns\Consent` carries the
+         * rest of the rule, including why no staff route can set it.
+         */
+        public readonly bool $marketingConsent = false
     ) {
     }
 
@@ -65,7 +74,7 @@ final class AccountInput
             }
         }
 
-        $known = ['email', 'password', 'first_name', 'last_name'];
+        $known = ['email', 'password', 'first_name', 'last_name', 'marketing_consent'];
 
         foreach (array_keys($payload) as $field) {
             if (!in_array($field, $known, true) && !isset(self::REJECTED[$field])) {
@@ -95,11 +104,27 @@ final class AccountInput
             $errors['last_name'] = 'At most 100 characters.';
         }
 
+        /*
+         * §85's consent flag, and the parsing is the rule. Only a real boolean true
+         * or the strings a JSON client sends for one count as a yes — **`"0"`,
+         * `"false"`, `""` and an absent field are all no**, which is what makes the
+         * default false rather than "whatever PHP thinks is truthy". A checkbox that
+         * arrived as the string `"false"` must not opt somebody in.
+         */
+        $consent = $payload['marketing_consent'] ?? null;
+        $consented = $consent === true
+            || (is_string($consent) && in_array(strtolower(trim($consent)), ['1', 'true', 'yes', 'on'], true))
+            || (is_int($consent) && $consent === 1);
+
+        if ($consent !== null && !is_bool($consent) && !is_scalar($consent)) {
+            $errors['marketing_consent'] = 'Must be a boolean.';
+        }
+
         if ($errors !== []) {
             throw ApiException::invalidRequest('The registration is invalid.', ['fields' => $errors]);
         }
 
-        return new self($email, $password, $firstName, $lastName);
+        return new self($email, $password, $firstName, $lastName, $consented);
     }
 
     /**

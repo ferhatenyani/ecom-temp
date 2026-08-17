@@ -53,6 +53,13 @@ src/Shipping/                ShippingProviderInterface, ShippingController, Ship
                              DestinationMatcher, DestinationSyncPlan,
                              DestinationSyncService, ProviderDestination,
                              DestinationDirectoryInterface, GeoDestinationDirectory
+src/Campaigns/               CampaignStatus, Campaign, CampaignInput, SegmentCriteria,
+                             Segment, TemplateRenderer, EmailHtml, UnsubscribeToken
+                             (all pure), CampaignRepository, RecipientRepository,
+                             SegmentRepository, AudienceResolver (the aggregate SQL),
+                             Consent (the flag), EmailTemplates (the post type +
+                             the kses-on-save), CampaignService, SegmentService,
+                             CampaignController
 src/Tracking/                TrackingToken (the MAC, pure), TrackingLink (the nonce
                              and the storefront URL), TrackingPresenter (§84's
                              disclosure list, pure), TrackingService,
@@ -227,6 +234,13 @@ Rules that the runner enforces or relies on:
 | --- | --- | --- |
 | `{prefix}ac_audit_logs` | 001 | append-only record of privileged actions |
 | `{prefix}ac_inventory_movements` | 002 | append-only stock ledger — every change to a quantity |
+| `{prefix}ac_campaigns` | 011 | §85: one marketing campaign, its message and the counts that survive the purge |
+| `{prefix}ac_campaign_recipients` | 012 | §85: one row per recipient — status, attempts, error. **Holds real addresses; purged.** |
+| `{prefix}ac_customer_segments` | 013 | §85: a saved audience *definition*, never a membership list |
+
+The three §85 tables are the current head, so `Schema::VERSION` is **13**. `ac_campaign_recipients` is the
+only table in this plugin that stores a customer's email address as its own column, which is why
+migration 012's docblock states the purge rule where somebody reading the schema will see it.
 
 `ac_audit_logs` is indexed on `actor_id`, `action`, `(resource_type, resource_id)` and `created_at`.
 Rows are never updated; `created_at` is indexed so retention pruning is a ranged `DELETE`. The
@@ -1310,6 +1324,142 @@ with no link is useless, while "your parcel is on its way, tracking number X" is
 `AC_RATE_LIMIT_TRACKING`, 20 a minute per IP. Not the read limit, which is 600 and was sized for an admin
 dashboard holding a credential. And **not** the failed-login counter, which password reset does share — see
 "Rate limiting" above for why coupling them would make a forwarded email a denial of service.
+
+## Email marketing campaigns (§85)
+
+```bash
+POST   /campaigns              {name, subject, body_html, body_text, audience_type, segment_id}
+GET    /campaigns/{id}/preview                   # rendered, for a sample recipient
+POST   /campaigns/{id}/test    {to}              # one copy, synchronous, no recipient row
+POST   /campaigns/{id}/send                      # 202 — resolves, freezes, returns a count
+GET    /campaigns/{id}/recipients                # who got this?  + ac_manage_customers
+GET    /segments  POST /segments  GET /segments/{id}/preview
+GET    /email-templates                          # read-only; authored in wp-admin
+GET    /marketing/unsubscribe?token=…            # public, one click, idempotent
+wp algerian-commerce send-campaigns [--limit=50] [--campaign=<id>] [--rate=<per-minute>]
+```
+
+**Three migrations — 011 `ac_campaigns`, 012 `ac_campaign_recipients`, 013 `ac_customer_segments` —
+and `Schema::VERSION` is now 13.** No new capability.
+
+### A campaign is not a notification, and the difference is the unique key
+
+`ac_notifications` carries `UNIQUE (channel, dedupe_key)`, and that index *is* §29's guarantee: eight order
+hooks produce one email, enforced by the database rather than by a comparison that has to be right in eight
+places. **A campaign has the opposite requirement** — one message, thousands of recipients, each needing its
+own status, attempt count and error, so a drain interrupted at recipient 3,000 resumes at 3,001.
+
+And the reason that decides it: **a 5,000-recipient campaign sharing the transactional queue delays every
+order confirmation behind it.** A customer waiting to learn their order was received is not going to wait out
+a newsletter. Two tables, two drains, two CLI commands.
+
+### Nothing is sent on a request path
+
+`send()` resolves the audience, freezes one row per recipient, claims the campaign and returns 202.
+`wp algerian-commerce send-campaigns` sends. §62b settled this for conversions, §63 for rollups and §29 for
+transactional mail; at five thousand recipients it is not close.
+
+**The claim is one `UPDATE … WHERE status = 'draft'`.** Two requests arriving together: exactly one affects a
+row, the other is told the campaign is already sending — the write-whose-failure-is-the-answer discipline of
+`WebhookEventRepository`, expressed as an update because the row already exists.
+`UNIQUE (campaign_id, customer_id)` is the second guarantee, so resolving twice inserts nothing.
+
+**A send refuses before it resolves** with no `SMTP_HOST` (503, `PasswordResetService`'s rule at scale), and
+refuses rather than marking a campaign `sent` when the audience matches nobody (409) — an audience of nobody
+is almost always a wrong segment or a customer list with no consent yet.
+
+### Consent, which is the section's legal and practical core
+
+**A customer who bought something consented to an order confirmation. They did not consent to a
+newsletter.** Four things make that hold rather than be remembered:
+
+- **Default false.** User meta whose *absence* is the no. A withdrawal **deletes** the meta rather than
+  writing `'0'`, because a stored no invites a later `!= '0'` that reads silence as consent.
+- **Only the customer sets it** — at registration, or `POST /account/marketing-consent`. **No staff route
+  can**: `CustomerInput` deliberately does not accept it and `CustomerPresenter` reports it read-only, since
+  a flag staff could tick is not a consent record. Checkout is deliberately *not* a consent surface either;
+  `Consent`'s docblock names the two reasons and names `ac_marketing_contacts` as the trigger for guest
+  consent.
+- **The filter is in `AudienceResolver`, not in any caller**, and every path goes through it — including an
+  explicit list of ids an admin typed, which is the path most likely to be read as an override.
+- **Consent is re-checked at send time.** A customer who unsubscribes after the freeze — possibly from the
+  first batch of the same campaign — is not mailed by the second.
+
+**Transactional mail is not gated on it.** Nothing in `Notifications/` reads `Consent`.
+
+**The unsubscribe link is mandatory, one click, no login**, and its token keys on the **customer** rather
+than on the recipient row — because those rows are purged, and a token bound to one would die exactly when
+somebody finally clicked it. A forged token answers **identically** to a real one: the route is public, so a
+404 would answer "is this a customer id" for anyone who asked.
+
+### A segment is a stored query, not a stored membership list
+
+"Customers in Alger who ordered in the last 90 days" is a definition; materialising it means it is wrong the
+next day. **Empty criteria are refused** — they would mean *everyone*, and "everyone eligible" already has
+its own `audience_type`; that is the one mistake here which cannot be undone once the mail has gone out.
+`Segment::fromRow()` reports an unreadable document rather than reading it as "no criteria", which is §83's
+`OptionSet` rule where it matters most.
+
+`wilaya_id` comes off the **shipment**, never the address — the guess `ShipmentInput` refuses and §63
+refused again — so an order nobody has shipped has no wilaya and cannot match. Named, not hidden.
+
+### `AudienceResolver` is the second file running aggregate order SQL, and the measurement is the argument
+
+`AnalyticsRepository` is described above as the only one, and §84 repeated that it was not to become two.
+This is the second, and the reason is measured rather than preferred: §85's criteria are per-customer
+aggregates, WooCommerce publishes no API for any of them (`wc_get_orders()` counts; it cannot sum, group or
+rank), and **the rollup tables that would answer them hold nothing**. Measured 2026-08-17 on this install:
+`wc_customer_lookup` **8 rows against 15 customers and 302 orders**, `wc_order_stats` and
+`wc_order_product_lookup` **0 rows** — §63's finding again, and worse than an absent table because reading
+them returns rows.
+
+The same four rules bound it: no `WC_Order` loaded or returned, the table name from
+`OrderUtil::get_table_for_orders()`, a legacy install answers **501** rather than zeros, every query
+read-only.
+
+### Templates: HTML, which reverses a decision `NotificationMessages` made on purpose
+
+That class is plain text *deliberately* — "an HTML template is a rendering concern", and text is the shape
+that survives SMS and WhatsApp. **That argument is correct and it does not transfer**: a campaign is
+email-only and there is no SMS version of a newsletter layout. So the reversal is stated rather than made
+quietly.
+
+`ac_email_template` is a post type (§61's "WordPress stores content"), authored in wp-admin where revisions
+and the media library already are; the API reads it. **`wp_kses` runs on save, not on send** — a template is
+stored and re-rendered, so a stored XSS fires in the admin's own preview, and sanitising on the way out
+would leave the markup in the database for the next reader.
+
+**Placeholders, never code**: no `eval`, no shortcodes, no `do_blocks()`. An unknown token renders empty and
+is **reported**. `{{unsubscribe_url}}` is **appended when absent** rather than rejected, because rejecting is
+the rule a hurried admin works around by pasting a dead link. Multipart always, with the text part
+*authored* rather than stripped from the HTML.
+
+### PII, and the one place this project cannot avoid it
+
+`Marketing\UserData` hashes on the way in so nothing en route to an ad network holds an address. **That
+cannot work here**: SMTP needs a real address and the recipient row outlives the request. So the table holds
+real addresses, it is covered by §66's backup rules, **rows are purged 30 days after a campaign completes**,
+and the counts live on `ac_campaigns` precisely so a shop can still say a campaign reached 4,812 people and
+can no longer say who they were. No address reaches a log, and **every send audits the count, never the
+list** — an audit row is append-only, so a trail of five thousand addresses is PII the purge cannot remove.
+
+### Two capabilities, and the second is on the send
+
+`ac_manage_marketing` drafts, previews and tests. **`send`, the recipient list and a segment count also
+require `ac_manage_customers`** — §63's pattern, and the stronger fact that a campaign *reaches* every
+customer record in the shop. A Marketing Manager holds the first and not the second, so it is a live
+restriction; `tests/Api/campaigns.php` asserts both halves.
+
+### Not built, each named
+
+No open or click tracking — a per-recipient identifier in a URL is a consent question and a PII question at
+once, and when it is built it is built *with* this consent machinery. No drip sequences or abandoned-cart
+flows: those are triggered campaigns, and this project has ruled twice that WP-Cron is not a driver it will
+depend on. No SMS or WhatsApp. No third-party ESP; the seam for one is `NotificationChannelInterface`.
+
+**Deliverability is the part that will actually fail first**, and it is a deployment concern: SPF, DKIM and
+DMARC on the sending domain, and a `From` on the shop's own domain. `docs/DEPLOYMENT.md` is where that
+belongs and it does not exist yet.
 
 ## Cash on delivery
 
@@ -2416,7 +2566,11 @@ do not.
 | POST | `/marketing/events/purchase` | `ac_manage_marketing` | mint and queue the Purchase → `{ event_id, … }` |
 
 Plus `wp algerian-commerce sync-marketing [--provider=] [--limit=] [--summary]`, and a cron event every
-five minutes. `ac_marketing_events` is migration 009 (`Schema::VERSION` is 9).
+five minutes. `ac_marketing_events` is migration 009.
+
+**§85's campaign routes carry the same capability and are a different feature** — see "Email marketing
+campaigns" above. `/campaigns`, `/segments` and `/email-templates` are drafting surfaces;
+`GET|POST /marketing/unsubscribe` is public and token-owned.
 
 ### This repository owns the server half only
 

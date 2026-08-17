@@ -197,12 +197,12 @@ decide what to render.
 | `ac_manage_products` | products, variations, categories, product import/export |
 | `ac_manage_inventory` | stock, movements, inventory import/export |
 | `ac_manage_orders` | orders, notes, timeline, COD attempts, order export |
-| `ac_manage_customers` | customers, their orders, customer export |
+| `ac_manage_customers` | customers, their orders, customer export; also required to **send** a campaign |
 | `ac_manage_coupons` | coupons |
 | `ac_manage_shipping` | shipments, rates, rules, providers |
 | `ac_manage_payments` | transactions, payment creation, verification |
 | `ac_manage_content` | CMS reads, media |
-| `ac_manage_marketing` | pixel config, conversion events |
+| `ac_manage_marketing` | pixel config, conversion events, campaigns, segments, email templates |
 | `ac_view_analytics` | all analytics; **money additionally needs `ac_manage_orders`** |
 | `ac_manage_settings` | the client configuration — **Super Admin only** |
 | `ac_view_audit_logs` | the audit trail |
@@ -424,6 +424,7 @@ can make to a WordPress user, so the refusal is explicit rather than incidental.
 | POST | `/account/password` | customer token |
 | POST | `/account/password/reset` | public |
 | POST | `/account/password/reset/confirm` | public |
+| POST | `/account/marketing-consent` | customer token |
 | GET | `/account/orders` | customer token |
 | GET | `/account/orders/{id}` | customer token |
 
@@ -438,6 +439,12 @@ than on an identity.
 `GET /account/orders/{id}` carries a `shipment` block — the parcel, its status and its history — or
 `shipment: null` when nothing has shipped yet, which is the ordinary state of a `pending` order. It never
 carries the courier's provider metadata; see the tracking section for why.
+
+`POST /account/register` accepts an optional `marketing_consent` boolean, **default false**.
+`POST /account/marketing-consent` with `{ "consent": true|false }` is how a shopper changes it later; it
+answers `{ marketing_consent, changed }` and is idempotent. **No staff route can set this flag** — see
+[Email marketing](#email-marketing-campaigns). Send an unticked checkbox, never a pre-ticked one, and
+never infer it from a purchase.
 
 ### Password reset
 
@@ -742,6 +749,138 @@ no response, ever.
 **The backend mints the event id and tells you.** Send the same `event_name` and `event_id` from the
 browser or Meta will count the conversion twice. Only server-witnessed events are sent here — `PageView`,
 `Search` and `ViewContent` are the browser's to report.
+
+## Email marketing campaigns
+
+| Method | Route | Guard |
+|---|---|---|
+| GET, POST | `/campaigns` | `ac_manage_marketing` |
+| GET, PATCH, DELETE | `/campaigns/{id}` | `ac_manage_marketing` |
+| GET | `/campaigns/{id}/preview` | `ac_manage_marketing` |
+| POST | `/campaigns/{id}/test` | `ac_manage_marketing` |
+| POST | `/campaigns/{id}/cancel` | `ac_manage_marketing` |
+| POST | `/campaigns/{id}/send` | `ac_manage_marketing` **+ `ac_manage_customers`** |
+| GET | `/campaigns/{id}/recipients` | `ac_manage_marketing` **+ `ac_manage_customers`** |
+| GET, POST | `/segments` | `ac_manage_marketing` |
+| GET, PATCH, DELETE | `/segments/{id}` | `ac_manage_marketing` |
+| GET | `/segments/{id}/preview` | `ac_manage_marketing` **+ `ac_manage_customers`** |
+| GET | `/email-templates` | `ac_manage_marketing` |
+| GET | `/email-templates/{id}` | `ac_manage_marketing` |
+| GET, POST | `/marketing/unsubscribe` | public — signed token |
+
+**Sending needs a second capability, and a Marketing Manager does not have it.** A campaign discloses
+nothing, but it *reaches* every customer record in the shop, so the person permitted to mail the customer
+list is the person already trusted with it. Drafting, previewing and test-sending need only
+`ac_manage_marketing`; `send`, the recipient list and a segment count also need `ac_manage_customers`. A
+403 from `send` with a 201 from `POST /campaigns` is not a bug.
+
+### Consent, which is not optional
+
+**Only customers who have given marketing consent are ever in an audience** — including when you name them
+by id. The filter is in the resolver, not in the caller, so there is no argument that turns it off. The flag
+is default-false, set by the customer at registration or through `POST /account/marketing-consent`, and
+cleared by the unsubscribe link. Transactional mail is **not** gated on it: an unsubscribed customer still
+gets order confirmations.
+
+`GET /customers/{id}` reports `marketing_consent`; `PATCH /customers/{id}` refuses it by name.
+
+### A campaign
+
+```json
+POST /campaigns
+{
+  "name": "August rugs",
+  "subject": "{{shop_name}} — something for you, {{first_name}}",
+  "body_html": "<p>Hello {{first_name}}</p>",
+  "body_text": "Hello {{first_name}}",
+  "audience_type": "segment",
+  "segment_id": 4
+}
+```
+
+`audience_type` is `ids` (with `customer_ids`, at most 1,000), `segment` (with `segment_id`) or `all`
+(everyone eligible). A campaign may instead name a `template_id`; its own body wins where both exist.
+
+**Refused by name, with a reason**: `status`, `recipients_total`, `recipients_sent`, `recipients_failed`,
+`recipients`, `emails`, `to`, `bcc`, `from`, `tracking_pixel`, `open_tracking`, `claimed_at`,
+`completed_at`, `created_by`, `id`. An audience is a *definition* and never a list of addresses — that
+would bypass the consent filter and make this an open relay.
+
+**Statuses**: `draft → sending → sent`, with `cancelled` reachable from the first two. Only a draft can be
+edited or deleted. A sent campaign is kept — it is the record of mail that left the building.
+
+### Templates
+
+`ac_email_template` is a WordPress post type: author them in wp-admin, where revisions and the media
+library already are. The API reads them. **Every save runs `wp_kses` with an email-safe allowlist** — no
+`<script>`, no `<iframe>`, no `on*`, no `javascript:` — because a template is stored and re-rendered, so a
+stored XSS fires in your own preview.
+
+**Placeholders, not code.** `{{customer_name}}`, `{{first_name}}`, `{{shop_name}}`, `{{order_number}}`,
+`{{unsubscribe_url}}`. An unknown token renders **empty** and is listed in `unknown_tokens` on the preview
+and on the template — check it. `{{unsubscribe_url}}` is **appended automatically when absent** rather than
+rejected.
+
+Every campaign sends an HTML part *and* a text part. The text part is authored, not stripped from the HTML.
+
+### Sending
+
+```
+GET  /campaigns/{id}/preview           → rendered HTML and text for a sample recipient
+POST /campaigns/{id}/test  { to }      → one copy, sent synchronously, writes no recipient row
+POST /campaigns/{id}/send              → 202, freezes the audience, returns a count
+```
+
+**`send` sends nothing.** It resolves the audience, writes one row per recipient, marks the campaign
+`sending` and returns `202` with `recipients` and a `next` block. The drain is
+`wp algerian-commerce send-campaigns [--limit=50] [--campaign=<id>] [--rate=<per-minute>]`, and a
+deployment schedules it — a five-minute WP-Cron is a convenience, not the mechanism.
+
+A second `send` is a **409** and changes nothing: the claim is one `UPDATE … WHERE status = 'draft'`.
+
+`send` answers **503 `mail_not_configured`** when the shop has no `SMTP_HOST`, before writing any rows, and
+**409** when the audience currently matches nobody — which is almost always a segment that is wrong or a
+customer list with no consent yet, and is never silently reported as "sent to 0 people".
+
+`GET /campaigns/{id}/recipients` answers "who got this?", with `meta.purged` once the addresses are gone.
+**Recipient addresses are purged 30 days after a campaign completes**; the counts on the campaign survive.
+
+### Unsubscribe
+
+```
+GET  /marketing/unsubscribe?token=…
+POST /marketing/unsubscribe   { token }
+```
+
+Public, one click, no login, idempotent. **A forged token answers identically to a real one**, because a
+404 here would answer "is this a customer id" for anybody who asked. Build your storefront page at
+`{storefront_url}/marketing/unsubscribe` if you want one; with no `store.storefront_url` set, the link in
+the email points at this API's own route instead — a mandatory link that is sometimes absent is worse than
+one on an unlovely domain.
+
+### Segments
+
+```json
+POST /segments
+{ "name": "Alger regulars", "criteria": { "wilaya_id": 16, "ordered_after": "2026-05-01", "min_orders": 2 } }
+```
+
+**A segment is a stored query, not a stored membership list** — edit it and every campaign that names it
+follows. Criteria: `min_spent`, `max_spent`, `min_orders`, `max_orders`, `ordered_after`,
+`ordered_before`, `registered_after`, `registered_before`, `wilaya_id`, `bought_product_id`,
+`not_bought_product_id`. Money is a decimal string, dates are `Y-m-d`.
+
+**Empty criteria are refused**: they would match every customer, and "everyone eligible" already has its
+own `audience_type`. `consent`, `email`, `email_contains`, `role`, `commune_id`, `limit` and `sql` are
+refused by name with the reason.
+
+`wilaya_id` comes off the **shipment**, never the address, so an order nobody has shipped has no wilaya and
+cannot match. `GET /segments/{id}/preview` gives a live count. A segment a campaign uses cannot be deleted.
+
+### Not in this version
+
+No open or click tracking. No drip sequences or abandoned-cart flows. No SMS or WhatsApp campaigns. No
+third-party ESP integration.
 
 ## Webhooks
 
