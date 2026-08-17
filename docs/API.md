@@ -205,6 +205,7 @@ decide what to render.
 | `ac_manage_marketing` | pixel config, conversion events, campaigns, segments, email templates |
 | `ac_view_analytics` | all analytics; **money additionally needs `ac_manage_orders`** |
 | `ac_manage_settings` | the client configuration — **Super Admin only** |
+| `ac_manage_users` | staff accounts, roles, application passwords — **Super Admin only** |
 | `ac_view_audit_logs` | the audit trail |
 
 ---
@@ -936,11 +937,91 @@ a link.
 Writes are audited **by field name, never by value**: the shop's trade-register numbers do not belong in
 a table nobody cleans.
 
+## Staff users and roles
+
+| Method | Route | Guard |
+|---|---|---|
+| GET, POST | `/users` | `ac_manage_users` — **Super Admin only** |
+| GET, PATCH, DELETE | `/users/{id}` | `ac_manage_users` |
+| GET, POST | `/users/{id}/application-passwords` | `ac_manage_users` |
+| DELETE | `/users/{id}/application-passwords/{uuid}` | `ac_manage_users` |
+| GET | `/roles` | `ac_manage_users` |
+
+**`/users` is staff and `/customers` is shoppers, and no account is in both.** An account is staff
+when it holds one of the seven roles or is a WordPress administrator; everything else is a customer.
+`GET /users/{id}` on a shopper is a 404, and so is `GET /customers/{id}` on a staff account.
+
+A role is **required** on create — an account with no role is a customer created through the wrong
+door. `GET /roles` publishes §45's matrix (role, display name, capabilities) and is the role picker's
+source. **There is no way to create a role**: the matrix is code, it is unit-tested, and a role
+invented at runtime is a capability set nothing has reviewed.
+
+**Refused by name, with the reason**: `password` and `user_pass` (a password set by somebody else is
+one its owner cannot trust), `capabilities` (they come from the role), `roles` (an account holds
+exactly one — use `role`), `user_login` (a login is an identity, not a field).
+
+### The five refusals that make this safe
+
+| Refused | Status | Why |
+|---|---|---|
+| `administrator`, `editor`, `shop_manager`, `customer`, … | 400 | This API grants commerce roles. A WordPress role carries platform access — installing plugins, editing files — that no capability in the matrix models. |
+| A role holding capabilities the caller lacks | 403 | Naming the missing capabilities. Otherwise `ac_manage_users` is a one-step path to every other capability. |
+| Changing your own role | 403 | A demotion you can perform on yourself is one you cannot undo. |
+| Deleting or suspending yourself | 403 | A shop with no Super Admin has no route back except wp-admin. |
+| Deleting an account that owns orders | 409 | With the count. `wp_delete_user()` reassigns posts and knows nothing about HPOS, so the orders would become rows no report can attribute. Suspend instead. |
+
+**Promoting a customer to staff is allowed**, and it is the only case where `PATCH /users/{id}`
+accepts an id that `GET /users/{id}` would 404. It needs a `role` in the payload; anything else
+against a non-staff id is the 404 it would have been. The response reports it in
+`meta.promoted_from_customer`, and the audit row carries the same flag.
+
+### Suspension
+
+`PATCH /users/{id}` with `{"status": "suspended"}`. A suspended account's credentials answer **401
+`account_suspended` at every route in this namespace**, including `/auth/me` and `/health`. Reactivate
+with `{"status": "active"}`.
+
+This is what to do when somebody leaves, because deletion is refused for any account that owns orders.
+It does **not** revoke access to `/wp/v2` or wp-admin — that is WordPress's own to grant, and this
+plugin does not decide who may open a dashboard it does not own. Revoke the account's application
+passwords to close that door.
+
+### Application passwords
+
+The onboarding step, and the reason these routes exist. WordPress shows an application password
+exactly once, at creation, in wp-admin — the dashboard PLAN §52 says routine administration must not
+require.
+
+```
+POST /users/{id}/application-passwords   { "name": "Admin panel — Karim's iPhone" }
+→ 201 { "uuid": "…", "name": "…", "created": "…", "last_used": null,
+        "password": "abcd EFGH ijkl MNOP qrst UVWX" }
+```
+
+**`password` appears in that one response and nowhere else** — not on the collection, not on
+`GET /users/{id}`, not in the audit event, not in a log. Show it once and do not store it; if it is
+lost, revoke and mint another. That is why the name identifies a device.
+
+A duplicate name is a **409**: this list is a "revoke this device" screen, and two entries called
+"iPhone" are two entries nobody can tell apart. A suspended account is a **409** too — the credential
+would not work. `last_ip` is deliberately not published; it describes a person rather than a
+credential.
+
+**503 `application_passwords_unavailable`** means the install cannot issue them at all: WordPress
+requires HTTPS unless `WP_ENVIRONMENT_TYPE` is `local`. That is a deployment fact, not a request
+problem — see `docs/DEPLOYMENT.md`.
+
 ## Audit
 
 | Method | Route | Guard |
 |---|---|---|
 | GET | `/audit-logs` | `ac_view_audit_logs` |
+
+§87's writes record `user.created`, `user.role_changed`, `user.suspended`, `user.reactivated`,
+`user.updated`, `user.deleted`, `user.app_password_created` and `user.app_password_revoked`. A role
+change names both roles, because "somebody's role changed" answers none of the questions the trail is
+read to answer — the one place the field-names-never-values rule gives way, since here the value *is*
+the security fact.
 
 ---
 
@@ -976,7 +1057,10 @@ reuse.
 - **You cannot set prices.** Anything resembling money in a cart payload is refused by name.
 - **`GET` then `PATCH` the whole object works** — read-only fields are dropped, not rejected.
 - **A 400 lists every bad field**, so render `details.fields` rather than the top-level message.
-- **A 404 can mean "not configured"** on webhook routes, and "not yours" on `/account/orders/{id}`.
+- **A 404 can mean "not configured"** on webhook routes, "not yours" on `/account/orders/{id}`, and
+  "that is a customer, not staff" on `/users/{id}`.
+- **A 401 can mean "suspended".** Read `error.code`: `account_suspended` is not a signed-out session
+  and signing in again will not fix it.
 - **Statuses have rules.** Read the 409 body; it tells you which moves are legal.
 - **Add your origin to `AC_CORS_ORIGINS`** before wondering why the browser fails and curl does not.
 - **Exports are files.** Do not parse them as JSON.

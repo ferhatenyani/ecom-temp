@@ -3000,6 +3000,112 @@ a *present* one that fails to apply stops the setup, because a shop deployed wit
 details is worse than one with none. JSON has no comments, so keys beginning `_` are ignored rather than
 rejected: `client.json.example` is a file a human fills in, and it needs somewhere to explain itself.
 
+## Staff users and roles (§87)
+
+`src/Users/` — ten classes, five routes, no migration, no table and no new capability.
+
+`ac_manage_users` was declared in §45's matrix and had **zero call sites** until this. It was the only
+capability in the vocabulary that gated nothing, which meant Super Admin's defining privilege — the one
+thing an Admin holding the other eleven management capabilities cannot do — was unexercisable through the
+API. `docs/ADMIN_PANEL.md` §87 is the design; `docs/API.md` → "Staff users and roles" is the contract.
+
+### `/users` is staff, `/customers` is shoppers, and no account is in both
+
+`CustomerRepository::find()` already refused any user without the `customer` role, for the reason its
+docblock gives: `WC_Customer` wraps *any* WordPress user, so without the check a Support Agent could read
+an administrator's name and email. `UserRepository::find()` is the same check in the other direction, and
+between them every WordPress user is readable through exactly one door.
+
+**Staff is defined by role, not by capability**, and the two would give different answers. A capability
+granted directly to one account — by another plugin, or by hand in `functions.php` — would make that
+account staff under a capability test while remaining unfindable by `WP_User_Query`, which filters on
+roles. One rule the list and the single read can both honour is worth more than a wider rule the list
+cannot, so: one of §45's seven roles, or `administrator`. An administrator is included because
+`Roles::install()` grants them every `ac_*` capability, and the account with the most access is the worst
+one to leave off the list.
+
+### There is no way to create a role
+
+`GET /roles` publishes the matrix and nothing writes it. `Capabilities::roles()` is pure data, unit-tested,
+and `Roles::install()` is the copy — a role invented at runtime and stored in the options table would be a
+capability set no test enumerates and no review has seen. §63's argument against an analytics rollup and
+§68's against a version table, applied to authorization.
+
+### The five refusals are the whole point
+
+§45's test list names privilege escalation, so the guards are named and separate rather than folded into
+the writes. Each answers with its reason in the body, because a refusal a client cannot explain is one a
+user works around by asking somebody with more access to do it for them.
+
+- **Core roles** — 400. This API grants commerce roles; `administrator` installs plugins and edits files,
+  and `shop_manager` carries WooCommerce capabilities this matrix does not model.
+- **A role holding capabilities the caller lacks** — 403, naming them. Empty for every legitimate caller
+  today, because `ac_manage_users` is Super Admin's and Super Admin holds `Capabilities::ALL`. That is the
+  point: the rule exists so the eighth role cannot open a path nobody thought to re-check. Constructing
+  the test needed a capability granted by hand, and it carries the control — the same caller *can* grant
+  a role at or below their own.
+- **Changing your own role** — 403. A demotion you can perform on yourself is one you cannot undo, because
+  the capability that would undo it is the one you just gave away.
+- **Deleting or suspending yourself** — 403. A shop with no Super Admin has no route back except wp-admin.
+- **Deleting an account that owns orders** — 409 with the count. `wp_delete_user()` reassigns *posts* and
+  knows nothing about HPOS, so an order keyed to the deleted `customer_id` becomes a row no report can
+  attribute. The error offers suspension, which is what a shop actually wants on the day somebody leaves.
+
+`UserInput` refuses `password`, `user_pass`, `capabilities`, `roles` and `user_login` by name — the
+`CustomerInput` device. **It is that class's mirror image and the pair is the design**: `CustomerInput`
+refuses a role because `ac_manage_customers` is Support Agent's, and this one accepts a role because it
+sits behind Super Admin's. Account and credential management lives on exactly one side of that line.
+
+### Suspension, and where it is enforced
+
+`status` is one user meta key. **Absence means active**, which is the opposite of §85's consent flag and
+for the opposite reason: consent is a permission somebody gives, so silence is a no, while suspension is
+one being taken away and no existing account has had it taken. Reactivating *deletes* the row rather than
+writing `'active'` — §85's argument for how a withdrawn consent is stored.
+
+`SuspensionGuard` hooks **`rest_pre_dispatch`**, and the hook choice is load-bearing.
+`rest_authentication_errors` is where core reports a bad credential and is the obvious home, but
+`rest_do_request()` does not fire it — so every in-process suite in `tests/Api` would be blind to the
+guard, and a security property only the HTTP stage can see is one that gets verified once.
+`rest_pre_dispatch` fires for both, which is why `RateLimitGuard` already uses it. Priority 9, ahead of
+the rate limiter at 10, so a refused account does not spend anyone's allowance.
+
+Scoped to this namespace, as CORS and rate limiting are. A suspended account can still reach `/wp/v2` and
+wp-admin — a named limitation, not an oversight: revoking platform access is WordPress's own job. Revoke
+the account's application passwords to close that door.
+
+### Minting an application password is the onboarding step
+
+This is why the endpoint exists. WordPress shows an application password **once**, at creation, in
+wp-admin — the dashboard PLAN §52 says routine administration must not require. Without it, per-user staff
+credentials have no onboarding path that avoids the very screen the admin panel replaces.
+
+`password` appears in that one 201 and nowhere else: not on the collection, not on `GET /users/{id}`, not
+in the audit event, not in a log. `Logger::SENSITIVE` already masks any key containing "password", and
+`AuditEvent` runs `Logger::redact()` over every metadata array — but the service still never puts one
+there, because being correct only by virtue of a redactor elsewhere is how that redactor's next edit
+becomes a leak. `tests/Api/users.php` asserts the **outcome**: the minted string appears nowhere in the
+trail, under any key.
+
+A duplicate name is a 409, which WordPress does not check: this list is a "revoke this device" screen, and
+two entries called "iPhone" are two nobody can tell apart. `last_ip` is stored and deliberately not
+published — the one field here describing a person rather than a credential.
+
+`canIssueApplicationPasswords()` calls `wp_is_application_passwords_supported()` and **not**
+`wp_is_application_passwords_available()`, which is filtered: `RateLimitGuard` returns false from that
+filter for an address that has spent its failure budget, so reading it would answer a rate-limited caller
+with "this install does not support application passwords" — a true-sounding statement about the wrong
+thing. The underlying rule is `is_ssl() || wp_get_environment_type() === 'local'`, and failing it is a
+**503** naming the cause, in §59c's `mail_not_configured` shape.
+
+### What the suite found
+
+`username_exists()` returns the id or **false**, never null. Written as `!== null`, `usernameExists()`
+reported every username as taken and `POST /users` was a 409 for every payload. The duplicate-username
+test passed against it — a broken uniqueness check looks exactly like a working one from that side — and
+what caught it was the **positive control** two lines earlier, the ordinary create that must succeed.
+§65's rule again: every negative test needs one.
+
 ## Development seed (§67)
 
 `src/Seed/` and `data/seed/` — 5 categories, 12 products, 5 variations, 6 customers, 4 coupons and 11

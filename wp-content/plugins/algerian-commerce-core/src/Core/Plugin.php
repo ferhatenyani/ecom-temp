@@ -30,6 +30,10 @@ use AlgerianCommerce\Seed\Seeder;
 use AlgerianCommerce\Settings\SettingsController;
 use AlgerianCommerce\Settings\SettingsRepository;
 use AlgerianCommerce\Settings\SettingsService;
+use AlgerianCommerce\Users\SuspensionGuard;
+use AlgerianCommerce\Users\UserController;
+use AlgerianCommerce\Users\UserRepository;
+use AlgerianCommerce\Users\UserService;
 use AlgerianCommerce\Account\PasswordResetService;
 use AlgerianCommerce\Notifications\MailDns;
 use AlgerianCommerce\Notifications\MailTransport;
@@ -208,6 +212,9 @@ final class Plugin
     private ?RateLimitStore $rateLimitStore = null;
     private ?RateLimiter $rateLimiter = null;
     private ?RateLimitGuard $rateLimitGuard = null;
+    private ?SuspensionGuard $suspensionGuard = null;
+    private ?UserRepository $userRepository = null;
+    private ?UserService $userService = null;
     private ?AttributeCatalogue $attributeCatalogue = null;
     private ?OptionSetRepository $optionSetRepository = null;
     private ?OptionPriceSubscriber $optionPriceSubscriber = null;
@@ -306,6 +313,12 @@ final class Plugin
         $this->cors()->register();
         // Before the routes run, and scoped to our namespace only.
         $this->rateLimitGuard()->register();
+        /*
+         * Priority 9 on the same hook the rate limiter uses at 10: a suspended
+         * account is refused before it can spend anyone's request allowance —
+         * roadmap §87.
+         */
+        $this->suspensionGuard()->register();
         /*
          * Not tied to the REST API: WooCommerce moves order stock from
          * wp-admin, WP-CLI, cron and payment gateways too, and the ledger has
@@ -573,6 +586,7 @@ final class Plugin
             new AnalyticsController($this->logger(), $this->analyticsService()),
             new ImportExportController($this->logger(), $this->importService(), $this->exportService()),
             new SettingsController($this->logger(), $this->settingsService()),
+            new UserController($this->logger(), $this->userService()),
         ]);
     }
 
@@ -1667,6 +1681,30 @@ final class Plugin
     public function rateLimitGuard(): RateLimitGuard
     {
         return $this->rateLimitGuard ??= new RateLimitGuard($this->rateLimiter(), $this->config());
+    }
+
+    public function suspensionGuard(): SuspensionGuard
+    {
+        return $this->suspensionGuard ??= new SuspensionGuard();
+    }
+
+    public function userRepository(): UserRepository
+    {
+        return $this->userRepository ??= new UserRepository();
+    }
+
+    /**
+     * Takes the order repository for one reason: deleting a staff account that
+     * owns orders is refused, and the count comes from the only file allowed to
+     * read an order. The dependency runs one way, as `CustomerService`'s does.
+     */
+    public function userService(): UserService
+    {
+        return $this->userService ??= new UserService(
+            $this->userRepository(),
+            $this->orderRepository(),
+            $this->auditLogger()
+        );
     }
 
     public function auditRepository(): AuditRepository
