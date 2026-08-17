@@ -31,6 +31,7 @@ use AlgerianCommerce\Settings\SettingsController;
 use AlgerianCommerce\Settings\SettingsRepository;
 use AlgerianCommerce\Settings\SettingsService;
 use AlgerianCommerce\Account\PasswordResetService;
+use AlgerianCommerce\Notifications\MailDns;
 use AlgerianCommerce\Notifications\MailTransport;
 use AlgerianCommerce\CLI\MailCheckCommand;
 use AlgerianCommerce\CLI\SyncDestinationsCommand;
@@ -489,7 +490,7 @@ final class Plugin
         WP_CLI::add_command('algerian-commerce settings', new SettingsCommand($this->settingsService()));
         WP_CLI::add_command(
             'algerian-commerce mail-check',
-            new MailCheckCommand($this->mailTransport(), $this->passwordResetService())
+            new MailCheckCommand($this->mailTransport(), $this->passwordResetService(), new MailDns())
         );
         WP_CLI::add_command('algerian-commerce sync-destinations', new SyncDestinationsCommand($this->destinationSync()));
         WP_CLI::add_command('algerian-commerce sync-shipments', new SyncShipmentsCommand($this->shipmentPoller()));
