@@ -81,7 +81,9 @@ src/
                  rather than reimplementing its 40-column product format
   Seed/          the development fixtures loader (§67) — writes only through
                  the services above, never $wpdb
-  CMS/  Marketing/  Notifications/  Settings/
+  Settings/      the client configuration document (§71) — assembled from
+                 whoever owns each value, never a copy of them
+  CMS/  Marketing/  Notifications/
   Audit/         audit event recording
   Security/      validation, sanitization, rate limiting, webhook verification
 integrations/

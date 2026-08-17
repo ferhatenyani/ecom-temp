@@ -233,6 +233,28 @@ wpcli wp algerian-commerce roles || die "role installation failed"
 note "database migrations"
 wpcli wp algerian-commerce migrate || die "migrations failed"
 
+# ---------------------------------------------------- client configuration --
+#
+# Roadmap §73's flow reads: clone the template, copy .env, **set client
+# configuration**, docker compose up, setup.sh, configure integrations, deploy.
+# Every step but the third was already a command. This is the third.
+#
+# Optional on purpose. A development machine has no client, and a missing
+# client.json must not stop a setup — but a *present* one that fails to apply
+# must stop it loudly, because a shop deployed with somebody else's contact
+# details and trade register is worse than one with none.
+step "client configuration"
+#
+# Fed over STDIN rather than by path: client.json sits at the repository root
+# and only the plugin directory is mounted into the containers, so `--from` with
+# a path would look for a file the container cannot see.
+if [[ -f client.json ]]; then
+  wpcli wp algerian-commerce settings --from=- < client.json || die "client.json was refused — see above"
+  ok "applied client.json"
+else
+  ok "no client.json — using defaults (copy client.json.example to set one)"
+fi
+
 # --------------------------------------------------------------------- data --
 if [[ $SEED -eq 1 ]]; then
   step "development data"
