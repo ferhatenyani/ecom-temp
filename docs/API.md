@@ -287,6 +287,8 @@ can make to a WordPress user, so the refusal is explicit rather than incidental.
 | POST | `/account/logout` | customer token |
 | GET, PATCH | `/account` | customer token |
 | POST | `/account/password` | customer token |
+| POST | `/account/password/reset` | public |
+| POST | `/account/password/reset/confirm` | public |
 | GET | `/account/orders` | customer token |
 | GET | `/account/orders/{id}` | customer token |
 
@@ -296,7 +298,38 @@ B's order gets **403**, and is served their own order normally. Both halves are 
 
 **Guest orders are reachable by nobody here.** An order placed without an account has no owner to match.
 
-There is **no password reset by email** yet — it needs a synchronous mail path that does not exist.
+### Password reset
+
+Two public calls, because a shopper who cannot sign in holds no session.
+
+```
+POST /account/password/reset          { email }
+POST /account/password/reset/confirm  { login, key, password }
+```
+
+**Both answer 503 if the shop cannot actually send email**, with `error.code` naming which half is
+missing — `mail_not_configured` (no `SMTP_HOST`) or `storefront_url_not_set` (no `store.storefront_url`
+in `/settings`, so no link can be built). That is deliberate: a reset that mints a token and silently
+fails to send looks like a feature that works.
+
+**The request call always answers the same thing**, whether or not the address exists, whether or not it
+belongs to a staff account. Do not build UI that distinguishes them — there is nothing to distinguish.
+Show "if that address has an account, check your email" and move on.
+
+The link you send points at `{storefront_url}/account/reset?key=…&login=…`. **That path is yours to
+build** — it should collect a new password and POST it, with `key` and `login`, to the confirm endpoint.
+The destination host comes from configuration and never from the request, because a `redirect_to`
+parameter here is how reset-link poisoning works.
+
+Tokens expire in 24 hours and are single-use. Passwords must be at least 12 characters.
+
+**A successful reset does not sign the shopper in** — it returns `{ reset: true, sessions_revoked: true }`
+and no token. Send them to your login page. Every existing session is invalidated, which is the property
+that makes a reset useful after an account is stolen.
+
+Both calls share the failed-login rate limiter: 10 attempts per 15 minutes per IP, then 429.
+
+Operators check the mail path with `wp algerian-commerce mail-check --to=you@example.com`.
 
 ## Cart and checkout (storefront)
 

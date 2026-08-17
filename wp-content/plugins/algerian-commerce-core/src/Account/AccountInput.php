@@ -132,6 +132,21 @@ final class AccountInput
         return ['current' => $current, 'new' => $new];
     }
 
+    /**
+     * The password rules, shared with the reset path.
+     *
+     * Public because `PasswordResetService` sets a password without a session
+     * and without a current password, so it reaches none of the entry points
+     * above — and a reset that accepted a four-character password would undo
+     * the rule every other door enforces.
+     *
+     * @param array<string, string> $errors
+     */
+    public static function checkNewPassword(string $password, string $field, array &$errors): void
+    {
+        self::checkPassword($password, $field, $errors);
+    }
+
     /** @param array<string, string> $errors */
     private static function checkPassword(string $password, string $field, array &$errors): void
     {

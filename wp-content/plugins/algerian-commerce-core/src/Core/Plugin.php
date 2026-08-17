@@ -30,6 +30,9 @@ use AlgerianCommerce\Seed\Seeder;
 use AlgerianCommerce\Settings\SettingsController;
 use AlgerianCommerce\Settings\SettingsRepository;
 use AlgerianCommerce\Settings\SettingsService;
+use AlgerianCommerce\Account\PasswordResetService;
+use AlgerianCommerce\Notifications\MailTransport;
+use AlgerianCommerce\CLI\MailCheckCommand;
 use AlgerianCommerce\CLI\SyncDestinationsCommand;
 use AlgerianCommerce\CLI\SendNotificationsCommand;
 use AlgerianCommerce\CLI\SyncPaymentsCommand;
@@ -221,6 +224,8 @@ final class Plugin
     private ?GeoImporter $geoImporter = null;
     private ?Seeder $seeder = null;
     private ?SettingsService $settingsService = null;
+    private ?PasswordResetService $passwordResetService = null;
+    private ?MailTransport $mailTransport = null;
     private ?ContentTypes $contentTypes = null;
     private ?CmsRepository $cmsRepository = null;
     private ?AccountService $accountService = null;
@@ -292,6 +297,13 @@ final class Plugin
         $this->registerMarketingDrain();
         $this->registerNotificationDrain();
         (new NotificationSubscriber($this->notificationService()))->register();
+        /*
+         * The SMTP transport, hooked here rather than lazily: it exists to
+         * answer `phpmailer_init`, and a hook nobody registered is a mail
+         * server nobody configured — indistinguishable, from the outside, from
+         * a wrong password.
+         */
+        $this->mailTransport()->register();
         $this->registerCliCommands();
 
         $this->logger()->debug('Plugin booted', ['version' => VERSION]);
@@ -427,6 +439,10 @@ final class Plugin
         WP_CLI::add_command('algerian-commerce import-algeria', new ImportAlgeriaCommand($this->geoImporter()));
         WP_CLI::add_command('algerian-commerce seed', new SeedCommand($this->seeder()));
         WP_CLI::add_command('algerian-commerce settings', new SettingsCommand($this->settingsService()));
+        WP_CLI::add_command(
+            'algerian-commerce mail-check',
+            new MailCheckCommand($this->mailTransport(), $this->passwordResetService())
+        );
         WP_CLI::add_command('algerian-commerce sync-destinations', new SyncDestinationsCommand($this->destinationSync()));
         WP_CLI::add_command('algerian-commerce sync-shipments', new SyncShipmentsCommand($this->shipmentPoller()));
         WP_CLI::add_command('algerian-commerce sync-payments', new SyncPaymentsCommand($this->paymentPoller()));
@@ -487,7 +503,7 @@ final class Plugin
                 $this->shippingProviders(),
                 $this->shippingService()
             ),
-            new AccountController($this->logger(), $this->accountService()),
+            new AccountController($this->logger(), $this->accountService(), $this->passwordResetService()),
             new CouponController($this->logger(), $this->couponService()),
             new CartController($this->logger(), $this->cartService()),
             new CheckoutController($this->logger(), $this->checkoutService()),
@@ -1225,6 +1241,35 @@ final class Plugin
      * on with no credentials produces a provider that never registers. Reading
      * the registries is the only way to tell those apart.
      */
+    /**
+     * The SMTP transport — docs/PLAN.md §29, §30.
+     *
+     * Registered from the bootstrap rather than constructed on demand, because
+     * its whole job is a `phpmailer_init` hook: a transport nobody instantiated
+     * configures nothing, and the failure looks exactly like a wrong password.
+     */
+    public function mailTransport(): MailTransport
+    {
+        return $this->mailTransport ??= new MailTransport($this->config(), $this->logger());
+    }
+
+    /**
+     * Password reset — deferred at §59c until a synchronous mail path existed,
+     * which `MailTransport` now provides. It takes the settings repository
+     * because the link must point at the storefront, and only §71 knows where
+     * that is.
+     */
+    public function passwordResetService(): PasswordResetService
+    {
+        return $this->passwordResetService ??= new PasswordResetService(
+            new SettingsRepository(),
+            $this->mailTransport(),
+            $this->auditLogger(),
+            $this->rateLimiter(),
+            $this->logger()
+        );
+    }
+
     public function settingsService(): SettingsService
     {
         return $this->settingsService ??= new SettingsService(

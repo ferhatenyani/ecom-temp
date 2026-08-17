@@ -61,9 +61,30 @@ final class Config
              * The key also picks the environment: `test_sk_…` is Test Mode.
              */
             'CHARGILY_SECRET_KEY',
+            /*
+             * The mail transport (roadmap §29, §30). WordPress sends through
+             * PHP's `mail()` unless something configures PHPMailer, and there
+             * is no MTA in these containers — so without SMTP_HOST every
+             * message fails with "sendmail: can't connect". `MailTransport`
+             * is what feeds these to WordPress; before it existed they were
+             * documented, read here, and wired to nothing.
+             *
+             * Port and encryption are separate because they genuinely vary:
+             * 587 with STARTTLS and 465 with implicit TLS are both common, and
+             * guessing one from the other is how mail silently stops sending.
+             */
             'SMTP_HOST',
+            'SMTP_PORT',
+            'SMTP_ENCRYPTION',
             'SMTP_USERNAME',
             'SMTP_PASSWORD',
+            /*
+             * The From: address on transactional mail, and where operational
+             * alerts go. Read here rather than through `getenv()` at the call
+             * site so both are testable without real environment variables.
+             */
+            'AC_MAIL_FROM',
+            'AC_ADMIN_EMAIL',
             'AC_LOG_LEVEL',
             'AC_CORS_ORIGINS',
             'AC_RATE_LIMIT_READS',

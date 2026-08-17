@@ -35,7 +35,8 @@ final class AccountController extends AbstractController
 {
     public function __construct(
         Logger $logger,
-        private readonly AccountService $service
+        private readonly AccountService $service,
+        private readonly PasswordResetService $reset
     ) {
         parent::__construct($logger);
     }
@@ -96,6 +97,51 @@ final class AccountController extends AbstractController
             'args' => $this->tokenArg(),
         ]);
 
+        /*
+         * Reset is two calls and both are public, because a shopper who cannot
+         * sign in is by definition holding no session. What protects them is
+         * the rate limiter and the fact that neither reveals whether an address
+         * has an account — see PasswordResetService.
+         */
+        register_rest_route($this->restNamespace(), '/account/password/reset', [
+            'methods' => 'POST',
+            'callback' => $this->handle([$this, 'requestReset']),
+            'permission_callback' => $guard,
+            'args' => [
+                'email' => [
+                    'type' => 'string',
+                    'required' => true,
+                    'format' => 'email',
+                    'validate_callback' => 'rest_validate_request_arg',
+                ],
+            ],
+        ]);
+
+        register_rest_route($this->restNamespace(), '/account/password/reset/confirm', [
+            'methods' => 'POST',
+            'callback' => $this->handle([$this, 'confirmReset']),
+            'permission_callback' => $guard,
+            'args' => [
+                'login' => [
+                    'type' => 'string',
+                    'required' => true,
+                    'validate_callback' => 'rest_validate_request_arg',
+                ],
+                'key' => [
+                    'type' => 'string',
+                    'required' => true,
+                    'validate_callback' => 'rest_validate_request_arg',
+                ],
+                'password' => [
+                    'type' => 'string',
+                    'required' => true,
+                    // No sanitize_callback: a password is bytes, and sanitizing
+                    // one silently changes what the shopper typed.
+                    'validate_callback' => 'rest_validate_request_arg',
+                ],
+            ],
+        ]);
+
         register_rest_route($this->restNamespace(), '/account/orders', [
             'methods' => 'GET',
             'callback' => $this->handle([$this, 'orders']),
@@ -144,6 +190,20 @@ final class AccountController extends AbstractController
     public function logout(WP_REST_Request $request): WP_REST_Response
     {
         return Response::success($this->service->logout($request));
+    }
+
+    public function requestReset(WP_REST_Request $request): WP_REST_Response
+    {
+        return Response::success($this->reset->request((string) $request->get_param('email')));
+    }
+
+    public function confirmReset(WP_REST_Request $request): WP_REST_Response
+    {
+        return Response::success($this->reset->confirm(
+            (string) $request->get_param('login'),
+            (string) $request->get_param('key'),
+            (string) $request->get_param('password')
+        ));
     }
 
     public function profile(WP_REST_Request $request): WP_REST_Response
