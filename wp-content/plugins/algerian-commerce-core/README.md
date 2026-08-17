@@ -3607,6 +3607,153 @@ Two suites are about the API as a whole rather than one module:
   prepared or free of variables, and every table name is `$wpdb->prefix` plus a literal. A static guard
   against the repository written *next*; it proves it can still fail, against a hostile fixture.
 
+## CMS writes (§89)
+
+`src/CMS/` grew seven classes — `ContentHtml`, `PageInput`, `BannerInput`, `FaqInput`,
+`FaqCategoryInput`, `MenuInput`, `HomepageInput` — and ten routes. No migration, no table and **no new
+capability**: `ac_manage_content` already governs the editor screens `ContentTypes` registers, so
+splitting read from write would put a Marketing Manager in a role that can see a page and not fix a typo
+in it. §61's media gap set the precedent for naming a gap rather than inventing a capability; this is the
+case where there is no gap. `docs/ADMIN_PANEL.md` §89 is the design; `docs/API.md` → "CMS" is the
+contract; `tests/Api/cms.php` is 155 assertions.
+
+§61 built the read half and said why the write half was missing: *"a write surface is PLAN §52's admin
+coverage, not this."* This is that.
+
+### The capture is `path`, and that was forced rather than chosen
+
+§88 predicted this section's first bug and it was right. `AbstractController::pinRouteParams()` makes the
+URL authoritative for every param a route captured — correct for an address, wrong for anything a body
+may legitimately rewrite. `/cms/pages/(?P<slug>…)` beside a `PATCH` body carrying `slug` would have
+answered **200 to a rename having renamed nothing**, and `tests/Api/security.php` fails the build on any
+write route addressed by a non-id name that is not listed there with its reason — so the decision had to
+be made at the moment the route was registered rather than discovered afterwards.
+
+The capture is `path`, which is what it always held: `legal/terms`, not `terms`. The body renames with
+`slug` (one segment, refused if it carries a slash — that would mean rename *and* move in one string) and
+moves with `parent_path`. Both halves are asserted, because one without the other proves nothing: a body
+`path` cannot move a page, **and** a body `slug` really does rename it.
+
+`parent_id` is emitted by the presenter, so it is dropped rather than refused — anything a presenter emits
+goes in READ_ONLY or `GET` → edit → `PATCH` breaks. `parent_path` is published beside it so the writable
+form is visible in the read body rather than only in the documentation.
+
+### `wp_kses` on save, and the clause that carried the weight
+
+§61 recorded that WordPress "already runs `wp_kses_post` over anything saved by a user without
+`unfiltered_html`". True, and the qualifier is the whole thing: **an administrator holds
+`unfiltered_html`**, so `kses_init()` removes every filter for exactly the caller most able to do damage.
+Measured 2026-08-17 in this stack — `wp_insert_post()` as an administrator stored
+`<script>alert(1)</script>` and an `onclick` attribute byte for byte, while the same call as a Marketing
+Manager did not. A property that depends on who saved the row is not a property; §61's `ImageSanitizer`
+pinned the image editor for the same reason.
+
+`ContentHtml` is `Campaigns\EmailHtml`'s shape with §89's boundary: wider than email-safe — a page carries
+a `<figure>`, a `<pre>`, a definition list, heading anchors — and narrower than `wp_kses_post`, which is
+aimed at a theme and allows things that load. The lists are pure data with pure predicates, so "no
+`<script>`, no `<iframe>`, no `on*`, no `javascript:`" is a unit test rather than a claim about what
+`wp_kses` happens to do. **The suite asserts the stored row, not the response**, and runs that assertion
+as an administrator — testing it as the Marketing Manager would pass on core's sanitiser and prove nothing
+about ours. It carries the control that makes it mean something: the same markup, the same user,
+`wp_insert_post()` and no `ContentHtml`, asserted to arrive intact.
+
+### The homepage refuses what the reader drops
+
+`GET /cms/homepage` drops a malformed section and reports it in `meta.problems`, because the option is
+edited by hand and a typo must degrade rather than break a storefront. `PUT` refuses with a **400 naming
+`sections[2].type`**, because at that end there is a person with a form who can fix it and losing their
+work quietly is the one failure a content manager cannot diagnose. `HomepageInput` and `HomepageSections`
+share `TYPES` and `MAX_SECTIONS` rather than restating them, and `HomepageInputTest` asserts the asymmetry
+directly by putting the same document through both.
+
+**The section data is sanitised by routing rather than by blanket application, and the measurement is the
+argument.** A section's `data` is free-form — that is what makes the homepage the one document with no
+field to point an allowlist at — but running `wp_kses` over every string leaf corrupts ordinary ones:
+measured the same day, it rewrites `Tapis & Kilims` to `Tapis &amp; Kilims` and `?a=1&b=2` to
+`?a=1&amp;b=2`. So `ContentHtml::looksLikeMarkup()` decides *which* sanitiser a leaf gets, and the
+sanitiser it routes to is still an allowlist. §89 did not ask for this; leaving the one schema-less
+document able to store a `<script>` was not a limitation worth naming when the fix is fifteen pure lines.
+The named cost is that `a <b` in prose is treated as markup.
+
+### Resolve every reference before the first write
+
+Three bugs of one shape, and the third is what turned it into a rule. Each was a **refusal that had
+already written something**:
+
+- `saveMenu()` deleted the existing items, then resolved each page path as it wrote — so a menu naming one
+  page that did not exist **emptied a shop's navigation** and answered 400. Caught by the control beside
+  the refusal, "and none of those refusals emptied the stored menu", which is exactly the assertion §65
+  asks for.
+- `createFaq()` inserted the post and *then* resolved its categories — so an FAQ naming a category that
+  did not exist was created, published, and refused. Nothing failed. It surfaced on the **second** run of
+  the suite, where the leftover row broke an ordering assertion in §61's half thirty checks earlier; the
+  suite now asserts the row rather than the status.
+- `applyPageSeo()` checked `seo.image_id` after the page existed, for the same reason
+  `ProductRepository::applySeo()` runs after a save — and inherited the same defect.
+
+All three now resolve before they write. It is worth stating because the ordering looks like a style
+choice right up until a typo costs somebody their menu.
+
+### Two guards, and a third the section did not name
+
+Deleting an FAQ category detaches every FAQ in it: **409** with the count, `?force=true` overrides, and
+the audit row records `faqs_detached`. That is §88's term guard one taxonomy over, and the argument does
+not get weaker.
+
+The one §89 does not mention is pages. `wp_delete_post()` **reparents** a deleted page's children to the
+root, which changes the address of every one of them and reports nothing — the same failure with no error
+and a long delay before the symptom. So it is a 409 naming the count and the first five ids, and a forced
+delete records `children_reparented`.
+
+A page cannot be moved under its own descendant either. WordPress does not stop it, and the result is a
+cycle: the branch disappears from every tree walk and `get_page_uri()` recurses.
+
+### Menus are the shop's shape and still accept WordPress's
+
+`PUT /cms/menus/{location}` takes `{label, type, object_id | path | url, children}` — exposing
+`_menu_item_object_id` would make the panel implement WordPress's data model instead of the shop's. But
+`CmsPresenter::menu()` has published WordPress's vocabulary since §61 (`type: post_type` with
+`object: page`, `title` rather than `label`), and "GET the menu, drag one item, PUT it back" is the only
+interaction a menu screen has — so `MenuInput` accepts that form too and normalises it. Changing the read
+shape instead would have broken every existing caller to make one writer tidier.
+
+Two levels and 50 nodes, both §89's. A missing menu is **created and assigned**, because a fresh install
+has none and a PUT that 404ed until somebody opened Appearance → Menus would be useless for the case it
+exists for.
+
+**One `menu_order` counter across the whole tree, not one per level.** `wp_get_nav_menu_items()` sorts the
+flat list by `menu_order` before `CmsPresenter` rebuilds the tree, so a per-level counter produces ties
+between a child and a top-level item and the order within a level becomes whatever MySQL returns first.
+Measured: core then renumbers `menu_order` 1..N over that sorted list, which is why the `position` a read
+publishes is a flat index rather than the number written.
+
+An unknown location is a **400 listing the registered ones** while `GET` on the same location stays a 404.
+The read merges "no menu here" with "no such location" because both mean the same thing to a storefront;
+the write must not, because one of them is `footre` and sending somebody to look for a missing menu is the
+wrong answer.
+
+### Drafts, and the read routes that had to move
+
+Writes take `status: draft|publish`. That forced a change to §61's reads, which asked for published rows
+only on the argument that "a draft banner is a banner somebody is not finished writing" — right while
+nothing here could create one, and wrong the moment `POST /cms/pages` can answer 201 for a resource whose
+`GET` is a 404. Every read now takes `?status=`, **defaulting to `publish`**, so §61's contract and every
+existing caller are untouched. `any` is publish plus draft and never the trash: `DELETE` is what puts
+something there.
+
+### Audit
+
+`cms.page_created`, `cms.page_updated`, `cms.page_deleted`, the same three for banners, FAQs and FAQ
+categories, plus `cms.homepage_updated` and `cms.menu_updated`.
+
+§71's rule holds — field names, not values — with the exceptions named. A **page path** is recorded by
+value, for §88's slug reason: it is a public identifier every storefront link is built on, and "a page was
+renamed" without saying from what to what is a row nobody can act on. A **status transition** is recorded
+by value, because publishing is what makes a page public. A **category slug** is, for the same reason as
+§88's term slugs. Everything else is a field list: a content edit records `fields: ["content"]` and not a
+word of the content, and the homepage records its section *types* and their count. The suite asserts both
+halves — that the types are there, and that a headline is not.
+
 ## Configuration
 
 Secrets come from environment variables only — never the options table, never code. Feature flags

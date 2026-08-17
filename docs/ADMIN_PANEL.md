@@ -336,9 +336,27 @@ and the term case is the likelier of the two to be hit.
 | PATCH, DELETE | `/cms/faq-categories/{id}` | `ac_manage_content` |
 | PUT | `/cms/menus/{location}` | `ac_manage_content` |
 
+> **Built.** `src/CMS/` — seven new classes, no migration, no table, no new capability.
+> `docs/API.md` → "CMS" is the contract; `tests/Api/cms.php` is 155 assertions.
+> What follows is the design; where it and the code disagree, the code is right and the note says so.
+
 `{slug}` keeps taking a **full path** — `legal/terms` — for the reason §61 gives, and `POST
 /cms/pages` therefore takes `parent_path` rather than `parent_id`, so a client that only ever saw
 paths never has to learn ids.
+
+> **Corrected in the build: the capture is `{path}`, and the routes are ten rather than nine.** The
+> table above still writes `{slug}`, which is the collision §88 predicted three paragraphs earlier:
+> `pinRouteParams()` would overwrite a body's `slug` with the path and answer 200 to a rename that
+> renamed nothing. So the capture took the name it always deserved — it has held a full path since
+> §61 — and the body renames with `slug` and moves with `parent_path`. `GET /cms/faq-categories` was
+> also missing from the table: `POST` is listed, so a panel could create a category it had no way to
+> list, and `FaqInput` refuses a category that does not exist.
+>
+> **`status` is accepted on write and every read takes `?status=`.** This section does not mention
+> drafts, and without them `POST /cms/pages` with no way to stage a page answers 201 for a resource
+> whose `GET` is a 404 — the silent-failure shape the rest of Part I is written against. The default
+> is `publish`, so §61's read contract and every existing caller are unchanged, and `any` means
+> publish plus draft and never the trash.
 
 ### `wp_kses` runs on save, not on read
 
@@ -351,6 +369,24 @@ does not run.
 The allowlist here is wider than §85's email-safe one — a page may carry a table and a figure — and
 narrower than `wp_kses_post`: no `<script>`, no `<iframe>`, no `on*`, no `javascript:` or `data:` in
 any href or src, and no `<style>`.
+
+> **Corrected in the build: this is not belt-and-braces, and the reason is a clause in §61.** That
+> section recorded that WordPress "already runs `wp_kses_post` over anything saved by a user without
+> `unfiltered_html`" — which is true, and an **administrator holds `unfiltered_html`**, so
+> `kses_init()` removes every filter for exactly the caller most able to do damage. Measured
+> 2026-08-17: `wp_insert_post()` as an administrator stored `<script>alert(1)</script>` and an
+> `onclick` byte for byte; the same call as a Marketing Manager did not. `tests/Api/cms.php` therefore
+> runs its XSS assertions **as an administrator**, against the stored row rather than the response,
+> with that measurement as the control beside them.
+>
+> **The homepage document is sanitised too, which this section does not ask for.** It names page
+> content, banner copy and FAQ answers — all fields. The homepage has none: a section's `data` is
+> free-form, so there is nothing to point an allowlist at, and a `<script>` in a `text` section would
+> be stored verbatim. Running `wp_kses` over every string leaf was the obvious fix and is wrong:
+> measured the same day, it rewrites `Tapis & Kilims` to `Tapis &amp; Kilims` and `?a=1&b=2` to
+> `?a=1&amp;b=2`. So `ContentHtml::looksLikeMarkup()` routes a leaf to the allowlist only when it
+> carries something that will parse as a tag. The named cost is that `a <b` in prose is treated as
+> markup.
 
 ### The homepage is edited whole, and the drop report becomes a refusal
 
@@ -379,6 +415,25 @@ Two levels deep, maximum 50 items. WordPress nav-menu items are posts with meta 
 field, and exposing that shape would make the panel implement WordPress's data model instead of the
 shop's. `type` is `page`, `category`, `product` or `url`; a `url` must be `http` or `https`, per
 §71's rule about `javascript:` being a valid URL.
+
+> **Corrected in the build: the writer also accepts what the reader returns, and a refused write
+> touches nothing.** `CmsPresenter::menu()` has published WordPress's vocabulary since §61 — `type` is
+> `post_type` with `object: page`, and the label is `title` — and "GET the menu, drag one item, PUT it
+> back" is the only interaction a menu screen has. Accepting only the shape above would have made
+> `docs/API.md`'s round-trip promise have an exception in it, and changing the read shape would have
+> broken every existing caller. So `MenuInput` normalises both. A root-relative `/soldes` is accepted
+> alongside `http`/`https`, because a storefront's own routes carry no scheme; `//host` is not.
+>
+> **A missing menu is created and assigned**, which this section leaves unsaid: `get_nav_menu_locations()`
+> on this install returned `primary` and no `footer`, and a PUT that 404ed until somebody opened
+> Appearance → Menus would be useless for the case it exists for.
+>
+> **The first version emptied the menu before it validated the tree** — it deleted the existing items,
+> then resolved each page path as it wrote, so a payload naming one page that did not exist destroyed
+> a shop's navigation and answered 400. Every reference is now resolved before anything is deleted.
+> Two more of the same shape were found with it (an FAQ created and *then* refused for an unknown
+> category; a page created and then refused for a bad `seo.image_id`), which is what made it a rule:
+> **resolve every reference before the first write.**
 
 ### SEO writes through the resource
 

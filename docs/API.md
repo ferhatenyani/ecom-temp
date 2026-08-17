@@ -728,16 +728,96 @@ names, daira and coordinates. Postal codes are deliberately empty — they are n
 
 | Method | Route | Guard |
 |---|---|---|
-| GET | `/cms/homepage` | `ac_manage_content` |
-| GET | `/cms/pages/{slug}` | `ac_manage_content` |
-| GET | `/cms/banners` | `ac_manage_content` |
-| GET | `/cms/faqs` | `ac_manage_content` |
-| GET | `/cms/menus/{location}` | `ac_manage_content` |
+| GET, PUT | `/cms/homepage` | `ac_manage_content` |
+| POST | `/cms/pages` | `ac_manage_content` |
+| GET, PATCH, DELETE | `/cms/pages/{path}` | `ac_manage_content` |
+| GET, POST | `/cms/banners` | `ac_manage_content` |
+| PATCH, DELETE | `/cms/banners/{id}` | `ac_manage_content` |
+| GET, POST | `/cms/faqs` | `ac_manage_content` |
+| PATCH, DELETE | `/cms/faqs/{id}` | `ac_manage_content` |
+| GET, POST | `/cms/faq-categories` | `ac_manage_content` |
+| PATCH, DELETE | `/cms/faq-categories/{id}` | `ac_manage_content` |
+| GET, PUT | `/cms/menus/{location}` | `ac_manage_content` |
 
-Read-only by design. The page parameter is named `slug` but takes a **full path** — `legal/terms`, not
-`terms` — because that is how WordPress addresses a hierarchical page, and a bare slug cannot choose
-between two children both called `terms`. Menu locations are `primary` and `footer`. A page's `seo` block
-comes back with it.
+One capability for reading and writing. `ac_manage_content` already governs the WordPress editor screens
+these post types register, so a person's access to a banner does not depend on which door they came
+through — and note the gap it implies, which is the same one media has: a **Product Manager cannot edit
+content**.
+
+`DELETE` trashes; `?force=true` removes permanently. Deleting a page with children is a **409** — WordPress
+promotes them to the root, which changes the path of every one of them and reports nothing.
+
+### Pages are addressed by path — §89
+
+`{path}` takes a **full path** — `legal/terms`, not `terms` — because that is how WordPress addresses a
+hierarchical page, and a bare slug cannot choose between two children both called `terms`.
+
+**The URL is the address and the body is the content**, and the two fields that move a page are separate
+from it: `slug` renames (one segment, never a path) and `parent_path` moves. `POST /cms/pages` takes
+`parent_path` too, so a client that has only ever seen paths never has to learn ids. `path` and `parent_id`
+are emitted on read and dropped on write — the URL wins for the first, and `parent_path` is the field for
+the second. A rename answers `meta.path_changed: true` with the new path; WordPress leaves no redirect
+behind, so every storefront link built on the old one is now a 404.
+
+A page's `seo` block is read and written here, and SEO errors land in the same `details.fields` list as the
+rest of the write. There is no SEO endpoint.
+
+### Drafts
+
+Writes accept `status`: `draft` or `publish`, defaulting to `publish`. The four read routes take
+`?status=` — `publish` (the default, so nothing that worked before changes), `draft`, or `any`. **`any` is
+publish plus draft and never the trash**: `DELETE` is what puts something there.
+
+### The homepage is replaced whole
+
+`PUT /cms/homepage` takes `{ "sections": [ {type, data}, … ] }` and replaces the document. There is no
+section-level route — sections are ordered, and two clients inserting at index 2 concurrently is a merge
+problem the shop does not have.
+
+**A malformed section is a 400 naming its index** — `details.fields["sections[2].type"]` — where the *read*
+drops it and reports it in `meta.problems`. The asymmetry is deliberate: an option edited by hand with
+`wp option update` must degrade rather than break a storefront, and a person with a form in front of them
+must not lose their work quietly. Fifty sections maximum, and the type vocabulary is PLAN §23's.
+
+### Menus
+
+`PUT /cms/menus/{location}` replaces `primary` or `footer` with an ordered tree, and **creates and assigns
+the menu when the location has none** — which is the state a fresh install is in.
+
+```json
+{ "items": [
+  { "label": "Tapis", "type": "category", "object_id": 21, "children": [] },
+  { "label": "Conditions", "type": "page", "path": "legal/terms", "children": [] },
+  { "label": "Instagram", "type": "url", "url": "https://…", "children": [] }
+] }
+```
+
+Two levels deep, **50 items across both**. `type` is `page`, `category`, `product` or `url`; a `page` takes
+a `path` or an `object_id`, the other two an `object_id`, and a `url` must be `http`, `https` or a path
+beginning with `/` — `javascript:` is a valid URL and this is where that matters. A reference that names
+nothing is a 400, and nothing is written: every reference is resolved before the old menu is touched.
+
+**A read body PUTs back.** The read publishes WordPress's own vocabulary (`type: post_type` with
+`object: page`, and `title` rather than `label`) because that was §61's contract, so the writer accepts
+that form as well as the one above. `target` and `classes` are read-only — a menu written through this API
+is described by label, destination and order, which is a named limitation rather than an oversight.
+
+An unknown location is a **400** listing the registered ones, while `GET` on the same location is a 404.
+The read merges "no menu here" with "no such location" because both mean the same thing to a storefront;
+the write must not, because one of them is a typo.
+
+### HTML is sanitised on the way in
+
+Page content, page excerpts, banner captions, FAQ answers and category descriptions go through an
+allowlist **on save**: no `<script>`, `<iframe>`, `<style>`, `<form>`, no `on*` handler, and no
+`javascript:` or `data:` in any `href` or `src`. Tables, figures, headings, lists and inline styles
+survive. A sanitiser on the way out is one that a second reader — the storefront, an export, a search
+indexer — does not run.
+
+This is not redundant with WordPress's own filtering. An administrator holds `unfiltered_html`, so core
+removes its filters for exactly the caller most able to do damage; measured on 2026-08-17,
+`wp_insert_post()` as an administrator stores `<script>alert(1)</script>` byte for byte. Content that
+predates §89, or that was written in wp-admin, carries no such guarantee.
 
 ## Media
 

@@ -806,6 +806,22 @@ $addressedByName = [
     'key' => 'cart line key — LineInput does not accept it',
     // DELETE, so there is no body at all.
     'code' => 'cart coupon code — the route takes no body',
+    /*
+     * §89, and the reason this check exists. `/cms/pages/(?P<path>…)` was
+     * `(?P<slug>…)` for the whole of §61, when every CMS route was read-only.
+     * Giving it a write surface made the collision real: a `PATCH` body
+     * carrying `slug` would have been overwritten by the path and the rename
+     * would have answered 200 having renamed nothing. The capture was renamed
+     * — it always held a full path, so `path` is the honest name — and
+     * `PageInput` drops `path` as read-only while `slug` and `parent_path` are
+     * the two fields that move a page. Both halves are asserted in
+     * tests/Api/cms.php: a body `path` cannot move a page, and a body `slug`
+     * really does rename it.
+     */
+    'path' => 'CMS page path — the address; PageInput drops `path` and renames through `slug`',
+    // PUT /cms/menus/{location}. MenuInput accepts `items` and nothing else,
+    // and refuses `location` by name as an unknown field.
+    'location' => 'CMS menu location — MenuInput accepts only `items`',
 ];
 
 $unjustified = array_diff(array_keys($mutableCaptures), array_keys($addressedByName));
@@ -819,9 +835,12 @@ ac_assert(
         )) . ' — confirm that route\'s Input refuses the field, then list it here with the reason'
 );
 
+// The floor, raised with §89's ten write routes. It is not a count of what
+// exists — that would fail on every new route — but a number a router that had
+// silently stopped registering a module could not still reach.
 ac_assert(
     'and the sweep actually saw the write routes',
-    $writeRoutes >= 30 ?: "only {$writeRoutes} write routes examined"
+    $writeRoutes >= 40 ?: "only {$writeRoutes} write routes examined"
 );
 
 // Tidy up, so a re-run starts where it started.
