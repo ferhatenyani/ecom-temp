@@ -3000,6 +3000,106 @@ a *present* one that fails to apply stops the setup, because a shop deployed wit
 details is worse than one with none. JSON has no comments, so keys beginning `_` are ignored rather than
 rejected: `client.json.example` is a file a human fills in, and it needs somewhere to explain itself.
 
+## Global attributes (§88)
+
+`src/Products/` — `AttributeController`, `AttributeService`, `AttributeRepository`,
+`AttributePresenter`, `GlobalAttributeInput`, `AttributeTermInput`. Five routes, no migration, no
+table and **no new capability**: an attribute is part of the catalogue, and `ac_manage_products`
+already writes products, variations and the attribute assignments on them. Inventing
+`ac_manage_attributes` would mean a Product Manager who can build a variable product and cannot
+create the attribute it varies on.
+
+§82 is what makes this necessary rather than convenient. **Only a global attribute can be filtered or
+counted** — a custom attribute is a string on one product, and two products both saying "Rouge" are
+two unrelated strings — so a shop with no global attributes has a faceted search that can never
+return a facet, and until now the only way to create one was wp-admin.
+
+`GlobalAttributeInput` is deliberately not `AttributeInput`. That class validates an attribute as it
+appears *on a product*; this one creates `pa_taille`. The names say which end of §82's distinction
+each is at.
+
+### The same-request trap, closed
+
+CLAUDE.md records it against §82's fixtures: `wc_create_attribute()` writes the row and registers no
+taxonomy. WooCommerce registers attribute taxonomies on `init`, which has already run, so for the
+rest of the request `taxonomy_exists()` is false, `wp_insert_term()` fails and
+`taxonomy_is_product_attribute()` is false — which makes §82's facet counter skip the attribute and
+answer 200 with an empty list, the shape of working code.
+
+**WooCommerce's own REST controller lives with this** — read at 11.0.1, `create_item()` creates and
+returns — so through `wc/v3` a new attribute takes no terms until the next request.
+
+`AttributeRepository::registerForRequest()` closes it, and the two halves are both load-bearing: the
+`$wc_product_attributes` global is what `taxonomy_is_product_attribute()` checks, and
+`register_taxonomy()` is what makes term storage exist. Re-running WooCommerce's own registration is
+not available — `WC_Post_Types::register_taxonomies()` returns early on
+`taxonomy_exists('product_type')`, so a second call is a no-op — so the taxonomy is registered with
+the **minimum that makes the write path work**, deliberately not a copy of WooCommerce's sixty lines
+of labels, rewrite rules and capabilities. That would be forking their data model to drift on the
+next upgrade. This registration lives one request; WooCommerce's supersedes it on the next.
+`update_count_callback` is the one argument included for function rather than form: it maintains
+`$term->count`, which the term delete guard reads.
+
+Verified in one process: create → `taxonomy_exists` true → `taxonomy_is_product_attribute` true →
+term created 201 → the attribute appears in `meta.facets.attributes.facetable`.
+
+### Everything goes through WooCommerce's own writers
+
+`wc_create_attribute()`, `wc_update_attribute()`, `wc_delete_attribute()` — never `$wpdb` against
+`woocommerce_attribute_taxonomies`, and not only for the layering rule. `wc_update_attribute()`
+delegates to `wc_create_attribute()` with an `old_slug`, and a rename then migrates the
+`term_taxonomy` rows, every product's `_product_attributes` meta, every variation's
+`attribute_pa_*` meta key, the term-order meta and the in-request globals. An `UPDATE` would rename
+the attribute and silently orphan every product on it. The suite asserts the migration by renaming an
+attribute a product uses and checking the product still carries the term.
+
+### Two delete guards, which are one guard at two grains
+
+Deleting an attribute removes every term and leaves each product referencing one that no longer
+exists. Deleting a term detaches its products and breaks any variation that resolved through it.
+WooCommerce reports neither. Both are a 409 naming the count — the attribute's also names the first
+five product ids — and `?force=true` does it anyway, with `products_detached` in the response and in
+the audit row so a shop can find out later why a product lost an attribute nobody remembers removing.
+
+§88 states the rule for the attribute only; it is applied at term grain too, because the argument
+does not get weaker one level down and the term case is the likelier of the two.
+
+The product count comes from `wc_get_products()` with a `tax_query`, which is §82's measured-good
+path — the same measurement found `meta_query` and `attribute` silently ignored. It is guarded on
+`taxonomy_exists()`, and that guard is load-bearing: a `tax_query` naming an unregistered taxonomy
+does not error, WP_Query drops the clause, and the query returns *every* product. A false positive
+there refuses a legitimate delete forever.
+
+`AttributeCatalogue::forget()` is new and is called after every write. That class is a singleton on
+`Plugin` and memoises the facetable map, so without it §82's filters would spend the rest of the
+request insisting the attribute just created does not exist — §83's `OptionSetRepository` bug in a
+new place.
+
+### What §88 found: the URL was decorative on every write route
+
+`WP_REST_Request::get_param()` consults the JSON body **before** the URL —
+`get_parameter_order()` returns `JSON, POST, URL, QUERY, defaults` — and every controller in this
+plugin reads `get_param('id')`. Measured 2026-08-17:
+
+- `PATCH /products/1801` with `{"id": 1802}` **edited product 1802**. Both callers need
+  `ac_manage_products`, so it was never privilege escalation; it is worse in a quieter way, because
+  the address of a write and the thing written could disagree and nothing recorded that they had.
+- `PATCH /products/{id}/variations/{variation_id}` with the variation's own read body answered
+  **409 "Only variable products have variations"**, because the body's `id` is the variation's and
+  the service loaded it as the parent — breaking the promise `docs/API.md` makes in "Things that will
+  bite you".
+
+Found because `/attributes/{id}/terms/{term_id}` has exactly that shape: a sub-resource that emits an
+`id` of its own. The fix is `AbstractController::pinRouteParams()`, which copies the route's captured
+params over the merged bag before the handler runs — one place rather than ten call sites, because a
+rule that has to be remembered in every new controller is one the eleventh forgets.
+`tests/Api/security.php` asserts it, with the control that matters: the *other* product must be
+untouched, since a fix that refused both writes would pass the first half.
+
+**One defect is named rather than fixed**: a variation echoes its parent's inherited SKU, so PATCHing
+its own read body is a 409 on the SKU. That is §47's SKU semantics — whether a presenter should emit
+an inherited value at all — and not something §88 gets to decide.
+
 ## Staff users and roles (§87)
 
 `src/Users/` — ten classes, five routes, no migration, no table and no new capability.

@@ -653,6 +653,73 @@ if ($xssProduct > 0) {
     wp_delete_post($xssProduct, true);
 }
 
+echo PHP_EOL, "=== the URL is the authority for a route id (§88) ===", PHP_EOL;
+
+/*
+ * A router-wide invariant, so it belongs in the file that reads the router
+ * rather than in any one feature's suite.
+ *
+ * `WP_REST_Request::get_param()` consults the JSON body **before** the URL —
+ * `get_parameter_order()` returns JSON, POST, URL, QUERY, defaults — and every
+ * controller here reads `get_param('id')`. Measured 2026-08-17, before
+ * `AbstractController::pinRouteParams()` existed: `PATCH /products/{a}` with a
+ * body naming `{b}` edited **b**, and a sub-resource's own read body could not
+ * be PATCHed back at all because its `id` outranked its parent's in the path.
+ *
+ * Both callers need the same capability, so this was never privilege
+ * escalation. It is worse in a quieter way: the address of a write and the
+ * thing written could disagree, and nothing anywhere recorded that they had.
+ */
+wp_set_current_user($admin);
+
+$makeProbe = static function (string $sku, string $name): int {
+    $existing = (int) wc_get_product_id_by_sku($sku);
+
+    if ($existing > 0) {
+        wc_get_product($existing)->delete(true);
+    }
+
+    $product = new WC_Product_Simple();
+    $product->set_name($name);
+    $product->set_sku($sku);
+    $product->set_regular_price('100');
+    $product->set_status('publish');
+    $product->save();
+
+    return $product->get_id();
+};
+
+$targetA = $makeProbe('AC-SEC-URLID-A', 'URL id probe A');
+$targetB = $makeProbe('AC-SEC-URLID-B', 'URL id probe B');
+
+[$status, $body] = ac_req('PATCH', "/products/{$targetA}", [
+    'id' => $targetB,
+    'name' => 'Written through the body',
+]);
+
+ac_assert(
+    'a body id cannot redirect a write away from its URL',
+    $status === 200 && (int) ($body['data']['id'] ?? 0) === $targetA
+        ?: "status {$status}, edited id " . ($body['data']['id'] ?? 'none') . ", URL said {$targetA}"
+);
+
+// The control, and it is the half that matters: the other product must be
+// untouched. A fix that refused both writes would pass the assertion above.
+ac_assert(
+    'and the product it named is untouched',
+    wc_get_product($targetB)->get_name() === 'URL id probe B'
+        ?: 'the body-named product was edited: ' . wc_get_product($targetB)->get_name()
+);
+
+ac_assert(
+    'while the addressed product really was written',
+    wc_get_product($targetA)->get_name() === 'Written through the body'
+        ?: 'the addressed product was not written: ' . wc_get_product($targetA)->get_name()
+);
+
+wp_delete_post($targetA, true);
+wp_delete_post($targetB, true);
+
 // Tidy up, so a re-run starts where it started.
 wp_delete_post($probeProduct, true);
 wp_delete_post($probeAttachment, true);

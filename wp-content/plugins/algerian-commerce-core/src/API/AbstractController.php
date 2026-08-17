@@ -98,6 +98,8 @@ abstract class AbstractController
     {
         return function (WP_REST_Request $request) use ($handler): WP_REST_Response {
             try {
+                $this->pinRouteParams($request);
+
                 return $handler($request);
             } catch (ApiException $exception) {
                 return Response::fromException($exception);
@@ -112,5 +114,45 @@ abstract class AbstractController
                 return Response::fromException(ApiException::internal());
             }
         };
+    }
+
+    /**
+     * Make the URL the authority for every id the route captured.
+     *
+     * **`WP_REST_Request::get_param()` reads the JSON body before the URL.**
+     * `get_parameter_order()` returns `JSON, POST, URL, QUERY, defaults` for a
+     * request with a JSON body, so a payload carrying `id` silently outranks
+     * the id in the path. Every controller in this plugin reads
+     * `get_param('id')`, and measured on 2026-08-17 that meant:
+     *
+     *  - `PATCH /products/1801` with `{"id": 1802}` edited **product 1802**.
+     *    The URL was decorative. Both callers need `ac_manage_products`, so it
+     *    is not privilege escalation — but a route whose address can be
+     *    overridden by its own body is not a route, and nothing in the audit
+     *    trail would show the two disagreed.
+     *  - `PATCH /products/{id}/variations/{variation_id}` with the variation's
+     *    own read body answered **409 "Only variable products have
+     *    variations"**, because the body's `id` is the variation's and the
+     *    service loaded it as the parent. That breaks the promise
+     *    `docs/API.md` makes in "Things that will bite you": *GET then PATCH
+     *    the whole object works*.
+     *
+     * Found while building §88, whose `/attributes/{id}/terms/{term_id}` has
+     * exactly that shape — a sub-resource that emits an `id` of its own.
+     *
+     * The fix is here rather than at ten call sites because a rule that has to
+     * be remembered in every new controller is one the eleventh forgets.
+     * `get_url_params()` returns only what the route regex captured, which is
+     * exactly the resource's address, and `set_param()` overwrites the key in
+     * every slot that already holds it — so after this, `get_param('id')`
+     * cannot disagree with the path. Bodies still round-trip: an `id` a
+     * presenter emitted is now equal to the URL's and every `*Input` class
+     * drops it as read-only, which is what it did before.
+     */
+    private function pinRouteParams(WP_REST_Request $request): void
+    {
+        foreach ($request->get_url_params() as $key => $value) {
+            $request->set_param($key, $value);
+        }
     }
 }

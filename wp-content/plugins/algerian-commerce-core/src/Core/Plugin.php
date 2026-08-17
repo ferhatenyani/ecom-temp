@@ -149,6 +149,9 @@ use AlgerianCommerce\Tracking\TrackingService;
 use AlgerianCommerce\Products\ProductCategoryController;
 use AlgerianCommerce\Cart\OptionPriceSubscriber;
 use AlgerianCommerce\Products\AttributeCatalogue;
+use AlgerianCommerce\Products\AttributeController;
+use AlgerianCommerce\Products\AttributeRepository;
+use AlgerianCommerce\Products\AttributeService;
 use AlgerianCommerce\Products\BundleStock;
 use AlgerianCommerce\Products\OptionSetRepository;
 use AlgerianCommerce\Products\FacetResolver;
@@ -216,6 +219,8 @@ final class Plugin
     private ?UserRepository $userRepository = null;
     private ?UserService $userService = null;
     private ?AttributeCatalogue $attributeCatalogue = null;
+    private ?AttributeRepository $attributeRepository = null;
+    private ?AttributeService $attributeService = null;
     private ?OptionSetRepository $optionSetRepository = null;
     private ?OptionPriceSubscriber $optionPriceSubscriber = null;
     private ?BundleStock $bundleStock = null;
@@ -550,6 +555,7 @@ final class Plugin
             new ProductController($this->logger(), $this->productService()),
             new VariationController($this->logger(), $this->variationService()),
             new ProductCategoryController($this->logger()),
+            new AttributeController($this->logger(), $this->attributeService()),
             new InventoryController($this->logger(), $this->inventoryService()),
             new OrderController($this->logger(), $this->orderService()),
             new CustomerController($this->logger(), $this->customerService()),
@@ -1623,6 +1629,25 @@ final class Plugin
     public function attributeCatalogue(): AttributeCatalogue
     {
         return $this->attributeCatalogue ??= new AttributeCatalogue();
+    }
+
+    public function attributeRepository(): AttributeRepository
+    {
+        return $this->attributeRepository ??= new AttributeRepository();
+    }
+
+    /**
+     * Shares the one catalogue for the reason above, and now for a second:
+     * §88 writes attributes, so the service is what has to invalidate the memo
+     * the facet resolver is reading.
+     */
+    public function attributeService(): AttributeService
+    {
+        return $this->attributeService ??= new AttributeService(
+            $this->attributeRepository(),
+            $this->attributeCatalogue(),
+            $this->auditLogger()
+        );
     }
 
     public function productService(): ProductService

@@ -232,9 +232,62 @@ Capability shown per route. `public` means no credential; the shopper-token rout
 | GET, POST | `/products/{id}/variations` | `ac_manage_products` |
 | GET, PATCH, DELETE | `/products/{id}/variations/{variation_id}` | `ac_manage_products` |
 | GET | `/product-categories` | `ac_manage_products` |
+| GET, POST | `/attributes` | `ac_manage_products` |
+| GET, PATCH, DELETE | `/attributes/{id}` | `ac_manage_products` |
+| GET, POST | `/attributes/{id}/terms` | `ac_manage_products` |
+| PATCH, DELETE | `/attributes/{id}/terms/{term_id}` | `ac_manage_products` |
 
 `DELETE` trashes; `?force=true` removes permanently.
 A product's `seo` block is read and written here — there is no separate SEO endpoint.
+
+### Global attributes — §88
+
+The attributes §82 filters and counts on. **Only a global attribute can be filtered or counted**, so
+a shop with none has a faceted search that can never return a facet — these routes are how you get
+one without opening wp-admin.
+
+An attribute has two identifiers and both are published, because confusing them is the mistake this
+endpoint exists to prevent: `slug` is what you send back here (`taille`), and `taxonomy` is what
+`GET /products?attributes[pa_taille]=m` matches and what keys a `meta.facets` group (`pa_taille`). A
+`pa_` prefix on a written slug is stripped rather than refused, since the API publishes that form
+itself.
+
+`name` is the label a shopper sees. `type` is validated against `wc_get_attribute_types()` and a bad
+one is a 400 listing `details.available_types`. `order_by` is `menu_order`, `name`, `name_num` or
+`id`. A slug over **29 bytes** is refused — WordPress caps a taxonomy name at 32 and `pa_` takes
+three.
+
+**Refused by name**: `terms` (managed one at a time at `/attributes/{id}/terms`, because deleting one
+detaches every product using it), `attribute_id`, `attribute_name`.
+
+`GET /attributes` is unpaginated — a shop has a handful — and omits usage. `GET /attributes/{id}`
+adds `term_count` and `product_count`.
+
+**A new attribute is usable immediately, in the same request.** WooCommerce's own API cannot do this:
+`wc_create_attribute()` registers no taxonomy, so through `wc/v3` a new attribute takes no terms and
+is invisible to the facet counter until the next request. Here `meta.filterable` reports it, terms
+can be added straight away, and `GET /products?facets=attributes` lists it. Counts still cover
+published products, so it counts zero until something is tagged and published.
+
+### Deleting an attribute or a term
+
+Both are refused while anything uses them, because WooCommerce reports nothing when they are not:
+deleting an attribute removes every term and leaves each product referencing one that no longer
+exists, and deleting a term detaches its products *and* breaks any variation that resolved through
+it — a failure with no error and a long delay before the symptom.
+
+```
+DELETE /attributes/{id}            → 409 { products, product_ids, taxonomy }
+DELETE /attributes/{id}/terms/{t}  → 409 { products, term_id }
+```
+
+`?force=true` does it anyway, and the response and the audit row both report `products_detached`.
+
+**A term slug is a public identifier.** It is what `attributes[pa_taille]=m` matches, so renaming one
+breaks every saved filter and every storefront link built on it. Not refused — sometimes a slug is
+genuinely wrong — but never incidental: the response carries `meta.slug_changed: true` and the audit
+row names both slugs. Renaming an *attribute's* slug is migrated by WooCommerce across products,
+variations and term meta, so the catalogue survives; bookmarked URLs do not.
 
 ### Listing, filtering and facets — §82
 
@@ -1055,7 +1108,8 @@ reuse.
   and nothing on this API will hand it out a second time to a caller who cannot already prove the order.
 - **Never expose the Application Password.** Browser → your server → this API. Always.
 - **You cannot set prices.** Anything resembling money in a cart payload is refused by name.
-- **`GET` then `PATCH` the whole object works** — read-only fields are dropped, not rejected.
+- **`GET` then `PATCH` the whole object works** — read-only fields are dropped, not rejected. The
+  **URL decides which resource is written**, always: an `id` in the body is ignored, never followed.
 - **A 400 lists every bad field**, so render `details.fields` rather than the top-level message.
 - **A 404 can mean "not configured"** on webhook routes, "not yours" on `/account/orders/{id}`, and
   "that is a customer, not staff" on `/users/{id}`.
