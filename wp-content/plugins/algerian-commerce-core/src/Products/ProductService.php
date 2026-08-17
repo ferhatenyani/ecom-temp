@@ -32,19 +32,43 @@ final class ProductService
          * not match the previous row's quantity_after and nobody can say why
          * (roadmap §49).
          */
-        private readonly StockLedger $ledger
+        private readonly StockLedger $ledger,
+        private readonly AttributeCatalogue $attributes,
+        private readonly FacetResolver $facets
     ) {
     }
 
     /**
+     * The catalogue, narrowed and optionally counted — roadmap §47, §82.
+     *
+     * Attribute keys are resolved **once**, here, and the resolved filter set
+     * is handed to both the listing query and the facet query. Two resolutions
+     * would be two chances to disagree, and a facet block that counted a
+     * different selection from the rows beside it is worse than none — §82's
+     * whole point is that a facet is only useful if its counts describe the
+     * result set the shopper is looking at.
+     *
+     * The refusal for an unknown attribute therefore happens before either
+     * query runs, which is also §82's security rule: a taxonomy name from a
+     * request is matched against the registered ones and never interpolated.
+     *
      * @param array<string, mixed> $criteria
-     * @return array{items: list<WC_Product>, total: int}
+     * @return array{items: list<WC_Product>, total: int, facets?: array<string, mixed>}
      */
-    public function list(array $criteria): array
+    public function list(array $criteria, ?ProductFilters $filters = null): array
     {
         Permissions::assert(Capabilities::MANAGE_PRODUCTS);
 
-        return $this->repository->paginate($criteria);
+        $filters ??= ProductFilters::none();
+        $filters = $filters->withAttributes($this->attributes->resolveFilterKeys($filters->attributes));
+
+        $result = $this->repository->paginate($criteria, $filters);
+
+        if ($filters->wantsFacets()) {
+            $result['facets'] = $this->facets->resolve($filters, (string) ($criteria['search'] ?? ''));
+        }
+
+        return $result;
     }
 
     public function get(int $id): WC_Product

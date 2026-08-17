@@ -228,6 +228,35 @@ check "pagination is honoured over the wire" "1" \
   "$(json "${API}/products?per_page=1" | grep -o '"per_page":[0-9]*' | head -1 | cut -d: -f2)"
 check "a bad argument is 400, not 500" 400 "$(status -u "$CRED" "${API}/products?per_page=9999")"
 
+# Filtering — roadmap §82. Only this stage can see these, and the reason is
+# narrow but real: every in-process assertion reaches the route through
+# `set_param('attributes', ['pa_x' => 'y'])`, an array handed straight to PHP.
+# Over the wire `attributes[pa_x]=y` is a *query string* that PHP has to parse
+# into that array first, and a route arg declared `type => object` has to accept
+# what comes out. Nothing before this line has ever exercised that.
+echo
+echo "filtering over the wire (§82)"
+check "a bracketed attribute filter parses" 400 \
+  "$(status -u "$CRED" "${API}/products?attributes%5Bpa_nonexistent%5D=m")"
+check "...and refuses the unknown attribute by name" "facetable_attributes" \
+  "$(curl -s -m 15 -u "$CRED" "${API}/products?attributes%5Bpa_nonexistent%5D=m" \
+     | grep -o 'facetable_attributes' | head -1)"
+check "a scalar where a map belongs is 400" 400 \
+  "$(status -u "$CRED" "${API}/products?attributes=pa_size")"
+check "a comma-separated category list parses" 200 \
+  "$(status -u "$CRED" "${API}/products?category=1,2&per_page=1")"
+check "a non-numeric category is refused by the arg pattern" 400 \
+  "$(status -u "$CRED" "${API}/products?category=tapis")"
+check "an inverted price band is 400" 400 \
+  "$(status -u "$CRED" "${API}/products?min_price=500&max_price=100")"
+check "an unknown facet group is 400" 400 \
+  "$(status -u "$CRED" "${API}/products?facets=everything")"
+check "facets arrive under meta, not data" "\"scope\":\"publish\"" \
+  "$(curl -s -m 15 -u "$CRED" "${API}/products?per_page=1&facets=price,stock_status" \
+     | grep -o '"scope":"publish"' | head -1)"
+check "a listing that asks for none carries no facet block" "" \
+  "$(curl -s -m 15 -u "$CRED" "${API}/products?per_page=1" | grep -o '"facets"' | head -1)"
+
 # Permissions, with a second credential that holds none of the capabilities
 # above. This is the §69 line that the in-process suites *can* cover but that
 # nothing has yet checked travels correctly with a real Authorization header.

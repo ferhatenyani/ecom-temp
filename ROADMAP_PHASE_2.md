@@ -158,6 +158,94 @@ current selection excludes (the "except its own" rule, which is the one assertio
 catches the wrong implementation); an unknown attribute is a 400 and not a 500; and the
 sweep in `tests/Api/security.php` still passes with the new args.
 
+## What was built
+
+**§82 is `src/Products/ProductFilters.php`, `AttributeCatalogue.php` and `FacetResolver.php`
+— nine new filters on `GET /products` and an opt-in `meta.facets` block. No migration, no
+table, and `ProductRepository` gained no second `$wpdb` call site**, so §65's
+`SqlSafetyTest` has nothing new to walk. `Schema::VERSION` is unchanged.
+
+**Step 1 was done first and it decided the section.** Measured on this install
+2026-08-17, `is_admin()` false, through `rest_do_request()`, against a throwaway fixture of
+six products carrying one global attribute with three terms:
+`wc/store/v1/products/collection-data` answers 200, accepts every filter this section
+names, and **already obeys the "except its own" rule.** Filtered to one attribute term with
+`query_type => 'or'`, counts came back 2 / 2 / 2 — that group's own filter lifted, its
+siblings still real — while `'and'` reported only the selected term. `price_range` lifts its
+own `min_price`/`max_price`; `stock_status_counts` lifts its own `stock_status`;
+`calculate_taxonomy_counts` lifts its own `category`. Cost: five queries and ~15 ms for four
+groups. **So the facet SQL was never written**, and `or` is not a preference but the rule.
+This is §64's measurement of `WC_Product_CSV_Exporter` a second time, and §59b's warning
+honoured — the Store API's *collection-data* half is reusable here exactly as its cart half
+was, and only measuring said so.
+
+**The filters could not be an adapter, and that is where the section's real finding is.**
+Facets come from WooCommerce's published-only collection; the listing must still show an
+admin their drafts, so `ProductRepository::paginate()` applies the filters itself — and
+**`wc_get_products()` silently ignores three of the args it needs.** Measured the same day:
+a `meta_query` for a 150–450 price band returned all six fixture products, priced 100 to
+590, both alone and beside a `tax_query` that *did* apply; `attribute` + `attribute_term`
+returned all six for a single term; there is no `on_sale` query var at all. None of the
+three errors. A filter that does not filter is the §82 failure mode in its purest form —
+a price band matching everything looks exactly like a shop whose prices are all in range.
+What *does* work, and is therefore what the code uses: `tax_query` (attributes, categories
+and tags, one AND-ed clause list), `stock_status`, `featured`, and `include`. Price and
+rating go through `woocommerce_product_data_store_cpt_get_products_query`, WooCommerce's own
+documented seam, attached for one call and removed in a `finally` — a band left hooked would
+quietly narrow every later product query in the request. On-sale goes through
+`wc_get_product_ids_on_sale()` into `include`, **with `[0]` as the sentinel for an empty
+list**, because WP_Query reads `post__in => []` as no restriction and a shop with nothing on
+sale would otherwise answer `on_sale=true` with its whole catalogue.
+
+Four smaller things the measurement settled. **Store API prices are minor units** — 59000
+for 590.00 DZD — converted at the boundary, since this API publishes decimal strings.
+**An unknown taxonomy is a 200 with an empty list, not an error**, so `AttributeCatalogue`
+refuses one before the call: a 400 naming the attribute, saying only a global attribute has
+a term to count, and listing the ones this shop offers in
+`details.facetable_attributes`. That is §82's custom-attribute rule and §61's
+malformed-section rule in one response. **Counts cover published products only**, and the
+block says so in `scope` and `scope_note` rather than leaving an admin to find seven rows
+beside a count of six. **Every group is capped at 50** with `truncated` and `total_values`
+beside it, per §66.
+
+**`category` widened from a single id to `12,15`** — §82's "category (repeatable)" — and
+`tag` arrived in the same form. `category=12` is unchanged for every existing caller. This
+is the one contract change in the section; `docs/API.md` carries the whole parameter table.
+
+**The suite builds its own catalogue, and had to.** §82 says to test against §67's seed, but
+the seeded shop has nothing to facet: its two attribute-bearing products carry *custom*
+attributes and this install registers no global attribute taxonomies at all, so every count
+would have been zero and the suite would have passed against anything.
+`tests/Api/products.php` → "§82 filtering and faceted search" therefore creates two global
+attributes, five terms and six products with known prices, and deletes them again. **It
+carries two attributes rather than one on purpose**: an implementation that lifts *every*
+attribute filter instead of only the group's own passes "the selected facet lifts its OWN
+filter" and fails "every OTHER facet still narrows by it". `tests/Unit/ProductFiltersTest`
+holds the shapes and the truncation cap, which cannot be reached through the API without
+inventing fifty-one terms that each have a product.
+
+**One trap worth the next implementer's time: an attribute created in the same process
+cannot be counted.** `ProductCollectionData` skips any taxonomy failing
+`taxonomy_is_product_attribute()`, which tests `taxonomy_exists()` **and** membership of the
+`$wc_product_attributes` global that `WC_Post_Types::register_taxonomies()` fills on `init`.
+So `wc_create_attribute()` plus `register_taxonomy()` yields an attribute that is registered,
+queryable and invisible to the facet counter, which answers 200 with an empty list. A live
+shop never meets it — the attribute is created by one request and counted by a later one —
+but the first fixture did, and the suite now fills the global itself.
+
+**Refused, as §82 asks.** No search engine and no change to search: WordPress's `s` is still
+a substring `LIKE`, with the trigger named — roughly ten thousand products, or a measurable
+rate of searches returning nothing. No stored search history or "popular searches". No facet
+on a custom attribute, refused by name with the reason rather than omitted. No unbounded
+facet list.
+
+**Nothing here is an assumption**: every claim above was measured against this stack on
+2026-08-17, and `grep -rn ASSUMPTION src/Products` is empty. What is *not* proven is
+behaviour at catalogue scale — the fixture is six products and the shop is forty. The
+trigger for revisiting is `FacetResolver`'s five queries per faceted request: if a facet call
+becomes slow on a real catalogue, the answer is a response cache in the manner of
+`AnalyticsCache`, not hand-written SQL.
+
 ------------------------------------------------------------------------
 
 # 83. Product Configurators

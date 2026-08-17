@@ -36,7 +36,7 @@ real upload can only happen in `http`.
 
 ## §65's five categories
 
-### Unit — 1,331 tests, 2,962 assertions, 77 files
+### Unit — 1,370 tests, 3,030 assertions, 81 files
 
 | §65 asks for | Covered by |
 |---|---|
@@ -44,7 +44,7 @@ real upload can only happen in `http`.
 | shipping calculations | `RateResolverTest`, `ShippingRuleInputTest`, `DestinationMatcherTest` |
 | COD risk | `CodStateTest`, `CodStatusTest`, `CodStatisticsTest`, `CodAttemptInputTest` |
 | provider mapping | `YalidineStatusMapTest`, `YalidineParcelTest`, `ZRExpressProviderTest`, `ChargilyProviderTest`, `MetaProviderTest`, `CourierWebhookTest` |
-| validation | every `*InputTest` — 14 of them |
+| validation | every `*InputTest` — 14 of them — plus `ProductFiltersTest` for the read side |
 | permissions | `CapabilitiesTest`, `IdentityTest` |
 
 Everything here is pure: no WordPress, no database, no clock. That is a deliberate constraint rather than
@@ -74,6 +74,33 @@ before `tests/Api/` was a convention — and every module from §49 onward got a
 only the incidental coverage it picked up from `inventory.php` (four calls) and `seo.php` (three).
 Nothing drove product CRUD hard, and the first walkthrough that did found a 500 (see "What the audit
 found" below).
+
+**§82 extended it rather than adding a suite**, because filtering is `GET /products` and a second file
+asserting things about the same route is a second place to forget. The section is `tests/Api/products.php`
+→ "§82 filtering and faceted search", and it builds its **own** catalogue: two global attributes, five
+terms, six products with known prices, deleted again at the end. That is not the usual preference for
+§67's seed — the seeded shop has nothing to facet. Its two attribute-bearing products carry *custom*
+attributes ("Taille", "Finition" as plain strings on one product each) and this install registers no
+global attribute taxonomies at all, so a suite written against the seed would assert counts of zero and
+pass whatever the code did. Fixture counts are exact and every filter assertion is a *narrowing* of one
+positive control: "the unfiltered fixture is six products".
+
+Two assertions in it are the ones that catch a wrong implementation rather than a broken one.
+**"the selected facet lifts its OWN filter (2/2/2)"** is §82's rule — with `matière = laine` selected the
+matière facet must still report cuivre and argent, or every sibling reads zero and the shopper's only way
+out is the back button. **"every OTHER facet still narrows by it"** is the half a single-attribute fixture
+cannot see, and it is why the fixture carries two attributes rather than one; a naive implementation that
+lifts *all* attribute filters passes the first assertion and fails this one. The same pair is asserted for
+price, which lifts its own band and narrows by everything else.
+
+Writing it found a real trap, recorded here because the next fixture will hit it too: **an attribute
+created in the same process cannot be counted.** `ProductCollectionData` skips any taxonomy failing
+`taxonomy_is_product_attribute()`, which tests `taxonomy_exists()` *and* membership of the
+`$wc_product_attributes` global that `WC_Post_Types::register_taxonomies()` fills on `init`. So
+`wc_create_attribute()` plus `register_taxonomy()` gives an attribute that is registered, queryable and
+invisible to the facet counter — which answers 200 with an empty list. A live shop never sees it, because
+the attribute is created by one request and counted by a later one; only a fixture inside one process can.
+The suite fills the global itself, which is what the next request would do.
 
 `tests/Api/cart.php` (§59b) is the other suite written to this shape, and it carries the module's
 central security property: **a forged cart token opens an empty cart rather than somebody else's.**

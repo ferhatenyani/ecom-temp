@@ -129,6 +129,8 @@ use AlgerianCommerce\Shipping\ShippingRuleRepository;
 use AlgerianCommerce\Shipping\ShippingService;
 use AlgerianCommerce\Shipping\ShippingWebhookController;
 use AlgerianCommerce\Products\ProductCategoryController;
+use AlgerianCommerce\Products\AttributeCatalogue;
+use AlgerianCommerce\Products\FacetResolver;
 use AlgerianCommerce\Products\ProductController;
 use AlgerianCommerce\Products\ProductRepository;
 use AlgerianCommerce\Products\ProductService;
@@ -189,6 +191,7 @@ final class Plugin
     private ?RateLimitStore $rateLimitStore = null;
     private ?RateLimiter $rateLimiter = null;
     private ?RateLimitGuard $rateLimitGuard = null;
+    private ?AttributeCatalogue $attributeCatalogue = null;
     private ?ProductRepository $productRepository = null;
     private ?ProductService $productService = null;
     private ?VariationService $variationService = null;
@@ -1365,12 +1368,27 @@ final class Plugin
         return $this->productRepository ??= new ProductRepository();
     }
 
+    /**
+     * One catalogue per request, shared — roadmap §82.
+     *
+     * `AttributeCatalogue` memoises the registered attribute taxonomies, and
+     * the service and the facet resolver both read them on the same request.
+     * Two instances would be two identical reads and, worse, two answers to
+     * "is this attribute facetable" that could drift apart mid-request.
+     */
+    public function attributeCatalogue(): AttributeCatalogue
+    {
+        return $this->attributeCatalogue ??= new AttributeCatalogue();
+    }
+
     public function productService(): ProductService
     {
         return $this->productService ??= new ProductService(
             $this->productRepository(),
             $this->auditLogger(),
-            $this->stockLedger()
+            $this->stockLedger(),
+            $this->attributeCatalogue(),
+            new FacetResolver($this->attributeCatalogue())
         );
     }
 

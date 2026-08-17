@@ -53,6 +53,27 @@ Use WordPress's own security APIs (nonces, capabilities, `sanitize_*`, `esc_*`, 
 - Outbound HTTP uses `wp_safe_remote_*` with an explicit timeout — SSRF protection matters for any
   URL that came from user input.
 
+### A read filter is attacker-controlled input — §82
+
+Write payloads have had the `CustomerInput` device since §50. Filters arrived with §82's catalogue
+search, and they are the same problem wearing a query string:
+
+- **A taxonomy name from a request is resolved against the registered taxonomies before it reaches a
+  query, and never interpolated into one.** `AttributeCatalogue::resolveFilterKeys()` is the only place
+  that mapping happens, and an unresolved name is a **400** — never a dropped clause. A dropped clause is
+  how a filter widens a result set, and a widened result set is what a working injection looks like.
+- **Every filter is an enum, a number, or a list of term ids**, validated before it reaches the query
+  layer. A term list is refused rather than coerced: `(int) "1 OR 1=1"` is `1`, so coercion would filter
+  on the wrong category and report success.
+- **The assertion is a count, not a status.** `tests/Api/products.php` → "§65: a filter payload must not
+  widen a result set" checks that a hostile payload returns *at most* what its honest form would, against
+  a fixture whose unfiltered size is known. "200, no crash" is what a working injection returns, so a
+  status assertion here proves nothing.
+- **A facet block is a read of the whole catalogue**, so it inherits the route's capability and adds
+  nothing: `GET /products` is `ac_manage_products`, and there is no facet route of its own to guard
+  separately. §63's rule still holds — reporting may not disclose in aggregate what the caller cannot
+  already read in detail — and here the caller can already read every product.
+
 ## Authorization
 
 - Every route has a real `permission_callback`. `__return_true` is only acceptable on genuinely public

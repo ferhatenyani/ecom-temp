@@ -391,6 +391,518 @@ ac_check(
     201
 );
 
+/*
+ * ── ROADMAP §82: FILTERING AND FACETED SEARCH ─────────────────────────────
+ *
+ * The suite builds its own catalogue rather than leaning on §67's seed, for a
+ * reason worth writing down: **the seeded shop has nothing to facet.** Its two
+ * attribute-bearing products carry *custom* attributes — "Taille" and
+ * "Finition" as plain strings on one product each — and this install registers
+ * no global attribute taxonomies at all (measured 2026-08-17). A suite written
+ * against it would assert counts of zero and pass whatever the code did.
+ *
+ * So: two global attributes, five terms, six products with known prices, and
+ * every count below is exact. It is deleted again at the end, as the SKU
+ * fixtures above are.
+ *
+ *   n  price  sale  matière  couleur  stock  featured  cat  tag
+ *   1   100    —    laine    rouge    in       no       C    —
+ *   2   200   190   laine    bleu     in      yes       C    T
+ *   3   300    —    cuivre   rouge    in       no       —    T
+ *   4   400    —    cuivre   bleu     out      no       —    —
+ *   5   500    —    argent   rouge    in       no       C    —
+ *   6   600   590   argent   bleu     in       no       —    —
+ *
+ * Effective prices are therefore 100, 190, 300, 400, 500, 590 — the sale price
+ * is what a shopper filters on, and two of the six are on sale to prove it.
+ */
+
+echo PHP_EOL, "── §82 filtering and faceted search: fixture ──", PHP_EOL;
+
+const AC82 = 'F82Fixture';
+
+function ac82_attribute(string $slug, string $label): int
+{
+    $id = (int) wc_attribute_taxonomy_id_by_name($slug);
+
+    if ($id === 0) {
+        $created = wc_create_attribute([
+            'name' => $label,
+            'slug' => $slug,
+            'type' => 'select',
+            'order_by' => 'menu_order',
+            'has_archives' => false,
+        ]);
+
+        $id = is_wp_error($created) ? 0 : (int) $created;
+    }
+
+    /*
+     * WooCommerce registers attribute taxonomies on `init`, which ran long
+     * before this line. Without registering it here the terms below cannot be
+     * inserted and every query against it matches nothing — silently.
+     */
+    $taxonomy = wc_attribute_taxonomy_name($slug);
+
+    if (!taxonomy_exists($taxonomy)) {
+        register_taxonomy($taxonomy, ['product'], [
+            'hierarchical' => false,
+            'show_ui' => false,
+            'query_var' => true,
+            'rewrite' => false,
+        ]);
+    }
+
+    /*
+     * AND the `$wc_product_attributes` global, which is the half that is easy
+     * to miss and cost an hour here.
+     *
+     * `ProductCollectionData` skips any taxonomy that fails
+     * `taxonomy_is_product_attribute()`, and that function tests
+     * `taxonomy_exists()` **and** membership of this global — which
+     * `WC_Post_Types::register_taxonomies()` fills on `init`, from the same
+     * table `wc_get_attribute_taxonomies()` reads. So an attribute created
+     * *after* `init` is registered, queryable, and invisible to the facet
+     * counter, which returns an empty list rather than an error.
+     *
+     * On a live shop the two never disagree: the attribute is created by one
+     * request and counted by a later one, and every request runs `init` first.
+     * It is only a fixture built inside a single process that can see the gap,
+     * so this line is the test harness doing what the next request would.
+     */
+    $GLOBALS['wc_product_attributes'][$taxonomy] = (object) [
+        'attribute_id' => $id,
+        'attribute_name' => $slug,
+        'attribute_label' => $label,
+        'attribute_type' => 'select',
+        'attribute_orderby' => 'menu_order',
+        'attribute_public' => 0,
+    ];
+
+    return $id;
+}
+
+function ac82_term(string $taxonomy, string $slug, string $name): int
+{
+    $term = get_term_by('slug', $slug, $taxonomy);
+
+    if (is_object($term)) {
+        return (int) $term->term_id;
+    }
+
+    $created = wp_insert_term($name, $taxonomy, ['slug' => $slug]);
+
+    return is_wp_error($created) ? 0 : (int) $created['term_id'];
+}
+
+/**
+ * @param array<string, array{int, int}> $attributes taxonomy => [attribute id, term id]
+ * @param list<int>                      $categories
+ * @param list<int>                      $tags
+ */
+function ac82_product(
+    string $sku,
+    string $price,
+    ?string $sale,
+    array $attributes,
+    bool $inStock,
+    bool $featured,
+    array $categories,
+    array $tags
+): int {
+    ac_purge_sku($sku);
+
+    $product = new WC_Product_Simple();
+    $product->set_name(AC82 . ' ' . $sku);
+    $product->set_sku($sku);
+    $product->set_regular_price($price);
+
+    if ($sale !== null) {
+        $product->set_sale_price($sale);
+    }
+
+    $product->set_status('publish');
+    $product->set_catalog_visibility('visible');
+    $product->set_stock_status($inStock ? 'instock' : 'outofstock');
+    $product->set_featured($featured);
+    $product->set_category_ids($categories);
+    $product->set_tag_ids($tags);
+
+    $built = [];
+
+    foreach ($attributes as $taxonomy => [$attributeId, $termId]) {
+        $attribute = new WC_Product_Attribute();
+        $attribute->set_id($attributeId);
+        $attribute->set_name($taxonomy);
+        $attribute->set_options([$termId]);
+        $attribute->set_visible(true);
+        $attribute->set_variation(false);
+        $built[] = $attribute;
+    }
+
+    $product->set_attributes($built);
+
+    return (int) $product->save();
+}
+
+/** The `total` of a filtered listing — the number every assertion below is about. */
+function ac82_total(array $query): int
+{
+    [$status, $data] = ac_req('GET', '/products', null, ['search' => AC82, 'per_page' => 50] + $query);
+
+    return $status === 200 ? (int) ($data['meta']['total'] ?? -1) : -$status;
+}
+
+/** One attribute facet group as `slug => count`. */
+function ac82_attribute_counts(array $data, string $taxonomy): array
+{
+    $counts = [];
+
+    foreach ($data['meta']['facets']['attributes']['groups'] ?? [] as $group) {
+        if (($group['taxonomy'] ?? '') !== $taxonomy) {
+            continue;
+        }
+
+        foreach ($group['values'] ?? [] as $value) {
+            $counts[$value['slug']] = (int) $value['count'];
+        }
+    }
+
+    return $counts;
+}
+
+$matiereId = ac82_attribute('f82matiere', 'F82 Matière');
+$couleurId = ac82_attribute('f82couleur', 'F82 Couleur');
+$MATIERE = wc_attribute_taxonomy_name('f82matiere');
+$COULEUR = wc_attribute_taxonomy_name('f82couleur');
+
+ac_assert(
+    'two global attributes exist for the fixture',
+    ($matiereId > 0 && $couleurId > 0 && taxonomy_exists($MATIERE) && taxonomy_exists($COULEUR))
+        ?: "attributes came back as {$matiereId}/{$couleurId}"
+);
+
+$laine = ac82_term($MATIERE, 'f82-laine', 'Laine');
+$cuivre = ac82_term($MATIERE, 'f82-cuivre', 'Cuivre');
+$argent = ac82_term($MATIERE, 'f82-argent', 'Argent');
+$rouge = ac82_term($COULEUR, 'f82-rouge', 'Rouge');
+$bleu = ac82_term($COULEUR, 'f82-bleu', 'Bleu');
+
+$catTerm = wp_insert_term('F82 Categorie', 'product_cat', ['slug' => 'f82-cat']);
+$CAT = is_wp_error($catTerm) ? (int) get_term_by('slug', 'f82-cat', 'product_cat')->term_id : (int) $catTerm['term_id'];
+$tagTerm = wp_insert_term('F82 Etiquette', 'product_tag', ['slug' => 'f82-tag']);
+$TAG = is_wp_error($tagTerm) ? (int) get_term_by('slug', 'f82-tag', 'product_tag')->term_id : (int) $tagTerm['term_id'];
+
+$fixture = [
+    ac82_product('AC-F82-1', '100', null, [$MATIERE => [$matiereId, $laine], $COULEUR => [$couleurId, $rouge]], true, false, [$CAT], []),
+    ac82_product('AC-F82-2', '200', '190', [$MATIERE => [$matiereId, $laine], $COULEUR => [$couleurId, $bleu]], true, true, [$CAT], [$TAG]),
+    ac82_product('AC-F82-3', '300', null, [$MATIERE => [$matiereId, $cuivre], $COULEUR => [$couleurId, $rouge]], true, false, [], [$TAG]),
+    ac82_product('AC-F82-4', '400', null, [$MATIERE => [$matiereId, $cuivre], $COULEUR => [$couleurId, $bleu]], false, false, [], []),
+    ac82_product('AC-F82-5', '500', null, [$MATIERE => [$matiereId, $argent], $COULEUR => [$couleurId, $rouge]], true, false, [$CAT], []),
+    ac82_product('AC-F82-6', '600', '590', [$MATIERE => [$matiereId, $argent], $COULEUR => [$couleurId, $bleu]], true, false, [], []),
+];
+
+ac_assert('six fixture products were created', count(array_filter($fixture)) === 6 ?: 'ids: ' . wp_json_encode($fixture));
+
+/*
+ * THE POSITIVE CONTROL, and §65's rule about why it is here: a filter that
+ * matches nothing and a fixture that was never built look identical from
+ * outside. Everything below is a *narrowing* of this number.
+ */
+ac_assert('the unfiltered fixture is six products', ac82_total([]) === 6 ?: 'total was ' . ac82_total([]));
+
+echo PHP_EOL, "── each filter narrows to a known count ──", PHP_EOL;
+
+ac_assert('min_price and max_price: 150–450 is three', ac82_total(['min_price' => 150, 'max_price' => 450]) === 3
+    ?: 'got ' . ac82_total(['min_price' => 150, 'max_price' => 450]));
+
+/*
+ * `max_price=200` returning two rather than three is the assertion that proves
+ * the band reads the **effective** price: product 2 is priced 200 and on sale
+ * at 190, so it is in; product 3 at 300 is out. A band reading the regular
+ * price would answer three.
+ */
+ac_assert('the band reads the sale price, not the regular one', ac82_total(['max_price' => 200]) === 2
+    ?: 'got ' . ac82_total(['max_price' => 200]));
+
+ac_assert('min_price alone: 450 and above is two', ac82_total(['min_price' => 450]) === 2
+    ?: 'got ' . ac82_total(['min_price' => 450]));
+
+ac_assert('a band matching nothing is empty, not everything', ac82_total(['min_price' => 900, 'max_price' => 1000]) === 0
+    ?: 'got ' . ac82_total(['min_price' => 900, 'max_price' => 1000]));
+
+ac_assert('attributes: laine is two', ac82_total(['attributes' => [$MATIERE => 'f82-laine']]) === 2
+    ?: 'got ' . ac82_total(['attributes' => [$MATIERE => 'f82-laine']]));
+
+ac_assert('an attribute key without the pa_ prefix resolves too',
+    ac82_total(['attributes' => ['f82matiere' => 'f82-laine']]) === 2
+    ?: 'got ' . ac82_total(['attributes' => ['f82matiere' => 'f82-laine']]));
+
+ac_assert('two values of one attribute are alternatives',
+    ac82_total(['attributes' => [$MATIERE => 'f82-laine,f82-cuivre']]) === 4
+    ?: 'got ' . ac82_total(['attributes' => [$MATIERE => 'f82-laine,f82-cuivre']]));
+
+ac_assert('stock_status: one is out of stock', ac82_total(['stock_status' => 'outofstock']) === 1
+    ?: 'got ' . ac82_total(['stock_status' => 'outofstock']));
+
+ac_assert('on_sale=true is two', ac82_total(['on_sale' => 'true']) === 2
+    ?: 'got ' . ac82_total(['on_sale' => 'true']));
+
+ac_assert('on_sale=false is the other four', ac82_total(['on_sale' => 'false']) === 4
+    ?: 'got ' . ac82_total(['on_sale' => 'false']));
+
+ac_assert('featured=true is one', ac82_total(['featured' => 'true']) === 1
+    ?: 'got ' . ac82_total(['featured' => 'true']));
+
+ac_assert('category is three', ac82_total(['category' => (string) $CAT]) === 3
+    ?: 'got ' . ac82_total(['category' => (string) $CAT]));
+
+ac_assert('category stays repeatable', ac82_total(['category' => $CAT . ',' . $CAT]) === 3
+    ?: 'got ' . ac82_total(['category' => $CAT . ',' . $CAT]));
+
+ac_assert('tag is two', ac82_total(['tag' => (string) $TAG]) === 2
+    ?: 'got ' . ac82_total(['tag' => (string) $TAG]));
+
+echo PHP_EOL, "── two filters compose ──", PHP_EOL;
+
+ac_assert('cuivre AND in stock is one',
+    ac82_total(['attributes' => [$MATIERE => 'f82-cuivre'], 'stock_status' => 'instock']) === 1
+    ?: 'got ' . ac82_total(['attributes' => [$MATIERE => 'f82-cuivre'], 'stock_status' => 'instock']));
+
+// Different attributes narrow together; values inside one are alternatives.
+ac_assert('laine AND bleu is one',
+    ac82_total(['attributes' => [$MATIERE => 'f82-laine', $COULEUR => 'f82-bleu']]) === 1
+    ?: 'got ' . ac82_total(['attributes' => [$MATIERE => 'f82-laine', $COULEUR => 'f82-bleu']]));
+
+ac_assert('a price band AND a category is two',
+    ac82_total(['category' => (string) $CAT, 'max_price' => 300]) === 2
+    ?: 'got ' . ac82_total(['category' => (string) $CAT, 'max_price' => 300]));
+
+ac_assert('a combination matching nothing is empty',
+    ac82_total(['attributes' => [$MATIERE => 'f82-laine'], 'stock_status' => 'outofstock']) === 0
+    ?: 'got ' . ac82_total(['attributes' => [$MATIERE => 'f82-laine'], 'stock_status' => 'outofstock']));
+
+echo PHP_EOL, "── the rule that makes a facet correct ──", PHP_EOL;
+
+/*
+ * §82's central assertion, and the one that catches the wrong implementation.
+ *
+ * With `matière = laine` selected, the **matière** facet must still report how
+ * many products exist in cuivre and argent — its own filter lifted — or
+ * selecting one option makes every sibling read zero and the shopper's only way
+ * out of the dead end is the back button. Every *other* facet does narrow by
+ * laine, which is the second half of the same rule and the half a single-filter
+ * test cannot see. That is why the fixture carries two attributes.
+ */
+$faceted = ac_check(
+    'a faceted listing answers 200',
+    ac_req('GET', '/products', null, [
+        'search' => AC82,
+        'per_page' => 50,
+        'attributes' => [$MATIERE => 'f82-laine'],
+        'facets' => 'attributes,price,category,stock_status',
+    ]),
+    200
+);
+
+$matiereCounts = ac82_attribute_counts($faceted, $MATIERE);
+$couleurCounts = ac82_attribute_counts($faceted, $COULEUR);
+
+ac_assert(
+    'the selected facet lifts its OWN filter (2/2/2)',
+    ($matiereCounts['f82-laine'] ?? 0) === 2
+        && ($matiereCounts['f82-cuivre'] ?? 0) === 2
+        && ($matiereCounts['f82-argent'] ?? 0) === 2
+        ?: 'matière counts were ' . wp_json_encode($matiereCounts)
+);
+
+ac_assert(
+    'every OTHER facet still narrows by it (rouge 1, bleu 1)',
+    ($couleurCounts['f82-rouge'] ?? 0) === 1 && ($couleurCounts['f82-bleu'] ?? 0) === 1
+        ?: 'couleur counts were ' . wp_json_encode($couleurCounts)
+);
+
+/*
+ * The price facet, both halves of the same rule.
+ *
+ * Under `matière = laine` it reports 100–190, the laine products' own range:
+ * a facet narrows by every filter **except its own**, and an attribute filter
+ * is somebody else's. Its own filter is the price band, and lifting that is
+ * the assertion below.
+ */
+ac_assert(
+    'the price facet narrows by the other filters',
+    ($faceted['meta']['facets']['price']['min'] ?? null) === '100.00'
+        && ($faceted['meta']['facets']['price']['max'] ?? null) === '190.00'
+        ?: 'price facet was ' . wp_json_encode($faceted['meta']['facets']['price'] ?? null)
+);
+
+$bandFaceted = ac_req('GET', '/products', null, [
+    'search' => AC82,
+    'per_page' => 50,
+    'min_price' => 150,
+    'max_price' => 450,
+    'facets' => 'price',
+])[1];
+
+ac_assert(
+    'the price facet lifts its OWN band (100–590, not 150–450)',
+    ($bandFaceted['meta']['facets']['price']['min'] ?? null) === '100.00'
+        && ($bandFaceted['meta']['facets']['price']['max'] ?? null) === '590.00'
+        ?: 'price facet was ' . wp_json_encode($bandFaceted['meta']['facets']['price'] ?? null)
+);
+
+$stockFaceted = ac_req('GET', '/products', null, [
+    'search' => AC82,
+    'per_page' => 50,
+    'stock_status' => 'instock',
+    'facets' => 'stock_status',
+])[1];
+
+$stockCounts = [];
+foreach ($stockFaceted['meta']['facets']['stock_status'] ?? [] as $row) {
+    $stockCounts[$row['value']] = (int) $row['count'];
+}
+
+ac_assert(
+    'the stock facet lifts its own filter (5 in, 1 out)',
+    ($stockCounts['instock'] ?? 0) === 5 && ($stockCounts['outofstock'] ?? 0) === 1
+        ?: 'stock counts were ' . wp_json_encode($stockCounts)
+);
+
+$categoryValues = $faceted['meta']['facets']['category']['values'] ?? [];
+$categoryCount = 0;
+foreach ($categoryValues as $value) {
+    if ((int) $value['term_id'] === $CAT) {
+        $categoryCount = (int) $value['count'];
+    }
+}
+
+// Narrowed to laine, the category holds two of its three products.
+ac_assert('the category facet narrows by the attribute filter', $categoryCount === 2
+    ?: 'category count was ' . $categoryCount . ' in ' . wp_json_encode($categoryValues));
+
+echo PHP_EOL, "── what a facet block says about itself ──", PHP_EOL;
+
+ac_assert(
+    'facets are absent unless asked for',
+    !isset(ac_req('GET', '/products', null, ['search' => AC82])[1]['meta']['facets'])
+        ?: 'a listing that asked for no facets carried a facet block'
+);
+
+ac_assert(
+    'the block names its scope rather than leaving it to be discovered',
+    ($faceted['meta']['facets']['scope'] ?? null) === 'publish'
+        && is_string($faceted['meta']['facets']['scope_note'] ?? null)
+        ?: 'scope was ' . wp_json_encode($faceted['meta']['facets']['scope'] ?? null)
+);
+
+$matiereGroup = null;
+foreach ($faceted['meta']['facets']['attributes']['groups'] ?? [] as $group) {
+    if (($group['taxonomy'] ?? '') === $MATIERE) {
+        $matiereGroup = $group;
+    }
+}
+
+ac_assert(
+    'a bounded list says whether it was bounded',
+    is_array($matiereGroup)
+        && ($matiereGroup['total_values'] ?? null) === 3
+        && ($matiereGroup['truncated'] ?? null) === false
+        ?: 'group was ' . wp_json_encode($matiereGroup)
+);
+
+ac_assert(
+    'the API reports which attributes are facetable',
+    in_array($MATIERE, $faceted['meta']['facets']['attributes']['facetable'] ?? [], true)
+        && is_string($faceted['meta']['facets']['attributes']['note'] ?? null)
+        ?: 'facetable list was ' . wp_json_encode($faceted['meta']['facets']['attributes']['facetable'] ?? null)
+);
+
+echo PHP_EOL, "── bad filter input is a 400, never a 500 ──", PHP_EOL;
+
+/*
+ * §82: a shop that discovers its filters do not work, with no error anywhere,
+ * concludes the feature is broken. A custom attribute has no term to count, so
+ * naming one is refused *with the reason and the alternatives* — §61's
+ * malformed-section rule applied to a filter.
+ */
+$unknown = ac_check(
+    'an unknown attribute is a 400',
+    ac_req('GET', '/products', null, ['attributes' => ['pa_nonexistent' => 'x']]),
+    400
+);
+
+ac_assert(
+    'and it names the facetable attributes instead of just refusing',
+    in_array($MATIERE, $unknown['error']['details']['facetable_attributes'] ?? [], true)
+        && str_contains((string) ($unknown['error']['details']['fields']['attributes'] ?? ''), 'global attribute')
+        ?: 'details were ' . substr((string) wp_json_encode($unknown['error']['details'] ?? null), 0, 300)
+);
+
+ac_check('an unknown facet group is a 400', ac_req('GET', '/products', null, ['facets' => 'everything']), 400);
+ac_check('an inverted price band is a 400', ac_req('GET', '/products', null, ['min_price' => 500, 'max_price' => 100]), 400);
+ac_check('a negative price is a 400', ac_req('GET', '/products', null, ['min_price' => -1]), 400);
+ac_check('a non-numeric price is a 400', ac_req('GET', '/products', null, ['max_price' => 'cheap']), 400);
+ac_check('an unknown stock status is a 400', ac_req('GET', '/products', null, ['stock_status' => 'maybe']), 400);
+ac_check('a rating above five is a 400', ac_req('GET', '/products', null, ['rating_min' => 6]), 400);
+ac_check('a non-numeric category is a 400', ac_req('GET', '/products', null, ['category' => 'tapis']), 400);
+ac_check('a scalar attributes value is a 400', ac_req('GET', '/products', null, ['attributes' => 'pa_size']), 400);
+
+echo PHP_EOL, "── §65: a filter payload must not widen a result set ──", PHP_EOL;
+
+/*
+ * The assertion that matters, and the reason it is written as a *count* rather
+ * than as a status: "200, no crash" is what a working injection returns. Six is
+ * the whole fixture, so any payload below that answers six has widened the
+ * result set past the filter it was given.
+ */
+$widening = [
+    'a quoted attribute value' => ['attributes' => [$MATIERE => "f82-laine' OR '1'='1"]],
+    'a UNION in an attribute value' => ['attributes' => [$MATIERE => "f82-laine' UNION SELECT 1 -- "]],
+    'a comment in an attribute value' => ['attributes' => [$MATIERE => 'f82-laine%']],
+    'a wildcard as an attribute value' => ['attributes' => [$MATIERE => '%']],
+];
+
+foreach ($widening as $label => $query) {
+    $total = ac82_total($query);
+    ac_assert("{$label} does not widen", ($total >= 0 && $total <= 2) ?: "returned {$total} of 6");
+}
+
+$refused = [
+    'an OR clause in a category' => ['category' => '1 OR 1=1'],
+    'a UNION in a category' => ['category' => '1 UNION SELECT 1'],
+    'an injected attribute NAME' => ['attributes' => ["pa_size' OR '1'='1" => 'm']],
+    'an injected stock status' => ['stock_status' => "instock' OR '1'='1"],
+    'an injected price' => ['min_price' => '0 OR 1=1'],
+    'an injected orderby' => ['orderby' => 'price) UNION SELECT'],
+];
+
+foreach ($refused as $label => $query) {
+    ac_check("{$label} is refused outright", ac_req('GET', '/products', null, ['search' => AC82] + $query), 400);
+}
+
+echo PHP_EOL, "── §82 fixture teardown ──", PHP_EOL;
+
+foreach (['AC-F82-1', 'AC-F82-2', 'AC-F82-3', 'AC-F82-4', 'AC-F82-5', 'AC-F82-6'] as $sku) {
+    ac_purge_sku($sku);
+}
+
+foreach ([$matiereId, $couleurId] as $attributeId) {
+    if ($attributeId > 0) {
+        wc_delete_attribute($attributeId);
+    }
+}
+
+wp_delete_term($CAT, 'product_cat');
+wp_delete_term($TAG, 'product_tag');
+
+ac_assert(
+    'the fixture left nothing behind',
+    wc_get_products(['limit' => 5, 'return' => 'ids', 'status' => ['publish', 'draft', 'trash'], 's' => AC82]) === []
+        ?: 'fixture products survived teardown'
+);
+
 // Tidy up, so a re-run starts where it started.
 foreach ([$SKU, $SKU_OTHER] as $sku) {
     ac_purge_sku($sku);

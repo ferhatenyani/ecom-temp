@@ -221,9 +221,64 @@ Capability shown per route. `public` means no credential; the shopper-token rout
 | GET, PATCH, DELETE | `/products/{id}/variations/{variation_id}` | `ac_manage_products` |
 | GET | `/product-categories` | `ac_manage_products` |
 
-List filters: `page per_page category search sku status orderby order`.
 `DELETE` trashes; `?force=true` removes permanently.
 A product's `seo` block is read and written here — there is no separate SEO endpoint.
+
+### Listing, filtering and facets — §82
+
+| Parameter | Form | Notes |
+|---|---|---|
+| `page` `per_page` | integer | `per_page` is capped at 100 |
+| `search` `sku` | string | `search` is a substring match, not relevance ranking |
+| `status` | enum | `draft` `pending` `private` `publish` |
+| `orderby` `order` | enum | `date id title price sku menu_order popularity rating` |
+| `category` `tag` | `12` or `12,15` | **term ids**, repeatable as a comma list |
+| `min_price` `max_price` | number | the **effective** price — a discounted product filters at its sale price |
+| `attributes[pa_size]` | `m,l` | term **slugs**; values within one attribute are alternatives, different attributes narrow together |
+| `stock_status` | enum | `instock` `outofstock` `onbackorder` |
+| `on_sale` `featured` | boolean | absent is not `false` |
+| `rating_min` | 0–5 | |
+| `facets` | `attributes,price,category,tag,stock_status,rating` | opt-in |
+
+`attributes[size]=m` resolves too — the `pa_` prefix is optional. **Only a global
+attribute can be filtered or counted**: an attribute typed directly onto one
+product has no shared vocabulary and no term to count. Naming one is a `400`
+whose `details.facetable_attributes` lists what this shop does offer.
+
+Facets are **opt-in** and arrive under `meta.facets`, never in `data`:
+
+```json
+"meta": {
+  "total": 2, "page": 1, "per_page": 20, "total_pages": 1,
+  "facets": {
+    "scope": "publish",
+    "scope_note": "Counts cover published products; drafts and pending products are not counted.",
+    "price": { "min": "100.00", "max": "590.00", "currency": "DZD" },
+    "stock_status": [ { "value": "instock", "count": 5 } ],
+    "category": { "values": [ { "term_id": 21, "slug": "tapis", "name": "Tapis", "count": 3 } ],
+                  "total_values": 1, "truncated": false },
+    "attributes": {
+      "facetable": ["pa_size"],
+      "note": "Only global attributes can be filtered or counted. …",
+      "groups": [ { "taxonomy": "pa_size", "label": "Size", "total_values": 3, "truncated": false,
+                    "values": [ { "term_id": 33, "slug": "m", "name": "M", "count": 2 } ] } ]
+    }
+  }
+}
+```
+
+Three things to know before building against it:
+
+- **A facet's counts are computed against every filter except its own.** With
+  `attributes[pa_size]=m` selected, the size facet still reports how many
+  products exist in `l` and `xl`; every other facet narrows by `size=m`. That is
+  what stops a selection turning every sibling into a dead end.
+- **Counts cover published products only**, which is what `scope` says. `GET
+  /products` lists drafts as well, so an admin listing can legitimately show
+  more rows than the counts beside it.
+- **Every group is capped** at 50 values, ordered by count. `truncated` and
+  `total_values` say when the list was cut — a bounded list that does not say so
+  reads as a complete one.
 
 ## Inventory
 
