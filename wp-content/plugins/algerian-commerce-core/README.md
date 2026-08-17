@@ -53,6 +53,10 @@ src/Shipping/                ShippingProviderInterface, ShippingController, Ship
                              DestinationMatcher, DestinationSyncPlan,
                              DestinationSyncService, ProviderDestination,
                              DestinationDirectoryInterface, GeoDestinationDirectory
+src/Tracking/                TrackingToken (the MAC, pure), TrackingLink (the nonce
+                             and the storefront URL), TrackingPresenter (§84's
+                             disclosure list, pure), TrackingService,
+                             TrackingController — GET /orders/track
 src/Http/                    HttpClientInterface, HttpResponse, WpHttpClient,
                              HttpTransportException — the seam that makes an
                              adapter testable without a network
@@ -126,6 +130,7 @@ tests/Unit/                  unit tests — no WordPress required
 | GET | `/orders/{id}/notes` | `ac_manage_orders` | notes, newest first (`limit`) |
 | POST | `/orders/{id}/notes` | `ac_manage_orders` | add a note → 201 |
 | GET | `/orders/{id}/timeline` | `ac_manage_orders` | notes, audit events and stock movements, merged (`limit`) |
+| GET | `/orders/track` | public — tracking token | §84: one order's delivery status, history and destination wilaya. `token` query parameter or the `X-Tracking-Token` header |
 | GET | `/orders/{id}/cod` | `ac_manage_orders` | the order's COD state |
 | PATCH | `/orders/{id}/cod` | `ac_manage_orders` | turn COD on or off for that order (`enabled`) |
 | POST | `/orders/{id}/cod/attempts` | `ac_manage_orders` | record a confirmation call → 201 (`outcome`, `reason`) |
@@ -295,6 +300,8 @@ docs/SECURITY.md, docs/PLAN.md §35. Scoped to `algerian-commerce/v1` only — t
 | --- | --- | --- | --- |
 | reads | 600 | 1 min | identity **and** IP |
 | writes | 120 | 1 min | identity **and** IP |
+| uploads | 30 | 1 min | identity **and** IP |
+| order tracking | 20 | 1 min | IP |
 | failed authentications | 10 | 15 min | IP |
 
 Both counters run on every guarded request and the stricter wins: the identity counter bounds one
@@ -310,6 +317,19 @@ Two hooks close it, and the second is not optional:
 - `wp_is_application_passwords_available` returns false for a blocked address, so core never
   attempts the password comparison. Skipping that hash is what stops the endpoint being a CPU oracle.
 - `rest_authentication_errors` turns the resulting 401 into a 429.
+
+**Two routes carry a counter of their own on top of the namespace-wide one, and both are there because
+`RateLimitGuard` cannot see them.** `POST /media` (§61) costs megabytes and a CPU-bound decode rather than
+a database row. `GET /orders/track` (§84) is unauthenticated and its only key is a MAC, so it does not
+belong on an allowance sized for an admin dashboard holding a credential — and the guard hooks
+`application_password_failed_authentication`, which a token this project defined never touches, so
+`TrackingService` counts for itself. §59c found the identical gap for customer logins.
+
+**A public read must not share the failed-login counter**, which password reset deliberately does. That
+counter locks an IP out of signing in for fifteen minutes; a customer clicking a stale tracking link has
+done nothing that should stop them logging in, and coupling them would make any forwarded email a denial of
+service. `scripts/test-api.sh` asserts the separation: while tracking is throttled, a wrong login must
+answer 401 rather than 429.
 
 `rest_pre_dispatch` alone is **not** enough, and it is worth knowing why: when Basic auth
 credentials are present and wrong, core fails the request during authentication and serves 401
@@ -1177,6 +1197,119 @@ The destination is stored on the order as `_ac_wilaya_id` / `_ac_commune_id` / `
 later shipment does not have to recover it from a free-text address — the guess `Shipping\ShipmentInput`
 refuses to make. A shipping address is optional and its absence means "same as billing"; `null` is a
 choice, a malformed object is still an error.
+
+## Order tracking (§84)
+
+```bash
+GET /orders/track?token=4211.9f3c1a4e07b52d6890fa1c3b4d5e6f70     # public
+GET /orders/track                 X-Tracking-Token: 4211.9f3c…    # same token, no query string
+GET /account/orders/4211          X-Customer-Token: …             # gains a `shipment` block
+```
+
+**The data has existed since §55; the gap was exposure, and the whole risk is authorization.**
+`ac_shipments` has held the tracking number, the status and the timestamps all along, `ShipmentPoller` has
+kept them current and both courier webhooks re-fetch into the same path — but the only route that read any
+of it was `GET /orders/{id}/shipments` behind `ac_manage_shipping`. A customer could not see where their
+parcel was, and neither could a storefront on their behalf without the admin credential §44 forbids.
+
+No migration, no table, no new capability. `Schema::VERSION` is unchanged.
+
+### Two doors, and they are not the same door
+
+`GET /account/orders/{id}` is three lines because §59c did the work: the session resolves the customer,
+`Permissions::assertOwnsOr()` already runs, and the parcel is a keyed repository read. The block is added
+**after** the ownership check — `tests/Api/tracking.php` asserts "B is refused A's order **and** learns no
+tracking number from the 403" beside A being served their own.
+
+`GET /orders/track` is the section. `AccountService::order()` refuses `customer_id = 0` outright and §59c's
+reasoning was right — the only evidence linking a shopper to a guest order is an email address, which
+would make it readable by anyone who could name it. But a COD shop in Algeria takes a large share of its
+orders as guests, so tracking that excludes them is not tracking.
+
+### The token, and the alternative that is enumerable
+
+`TrackingToken` is `{order id}.{128 bits of HMAC-SHA256}` over the order id and a per-order nonce, keyed on
+`wp_salt('auth')`, compared with `hash_equals()`.
+
+**The alternative §84 rejects is order number plus phone number, and the arithmetic is why.** Order numbers
+are sequential and an Algerian mobile is ten digits behind a known operator prefix, so one order is about
+ten million guesses and the shop's whole order book — every customer's name, address and phone — is a few
+million requests behind a form. Order number plus email is worse: anyone who knows one customer's address
+walks the order numbers.
+
+**The order id travels in the clear, and that is the same construction `CartSession` already relies on.**
+Verifying a MAC needs the message, so the route has to know which order is being claimed before it can
+check anything — either the id is in the token, or the token has to be *searched for*, which means a
+`meta_query` on every public request. WooCommerce's own cart token carries the customer id in readable
+base64 with a signature over it. Nothing is disclosed either way: the response publishes the order number.
+
+**The nonce is order meta, and it buys two things.** Rotating it revokes every outstanding link to that
+order with one write — no revocation list, no expiry to wait out, no effect on any other order. And an
+order that was never *issued* a link has no valid token at all: without it, every order in the shop would
+be trackable from the salt alone, so a database dump would expose tracking for the entire order book
+forever.
+
+**Expiry is 90 days after the parcel reaches a terminal status**, because a link in an email lives forever
+otherwise. A verified-but-expired token answers **410 `tracking_link_expired`**; anything that does not
+verify answers **404**. The asymmetry is deliberate: reaching the 410 requires a valid MAC, so its holder
+learns nothing they did not have, while one answer for every unverifiable case is what stops the route
+telling somebody guessing which half of the guess was right. An order with **no** parcel never expires —
+named rather than hidden, since nothing has happened to it yet and revocation covers a link that must die
+today.
+
+### What it may say, and the three rules that make the list hold
+
+```
+allowed:  order number, order status, shipment status, status history with
+          timestamps, courier name, tracking number, destination WILAYA only,
+          estimated delivery if the courier gives one
+refused:  full address, commune, phone, email, customer name, line items,
+          quantities, totals, payment method, order notes
+```
+
+**A tracking page that echoes the delivery address turns a leaked link into a doxxing tool**, and tracking
+links leak — they are forwarded, pasted into chats and screenshotted. A wilaya is enough for a customer to
+recognise their own parcel and nowhere near enough to find anybody.
+
+**The courier's label URL must never appear, under any circumstance — including to the customer whose
+address is on it.** A Yalidine `label` is a URL carrying an access token that resolves to one customer's
+name, phone and full address; §55 put it in `Logger::SENSITIVE_EXACT` for that reason, and a storefront
+rendering it would put it in browser history and in `Referer`. So the owner view excludes provider metadata
+too.
+
+- **The presenter filters what it is handed, not what it is promised.** `TrackingPresenter::publicView()`
+  takes a whole shipment row — metadata included — and reads an allowlist of keys out of it, so a future
+  caller passing `Shipment::toArray()` whole still cannot publish a label URL. Filtering the input
+  *contract* instead would depend on every future caller reading a docblock.
+- **The destination is a canonical id resolved against the §51 dataset, never the address.**
+  `_ac_wilaya_id` from §59b's checkout first, then a parcel's own recorded `wilaya_id` (`ManualProvider`
+  writes one); an id that is not a wilaya becomes `null`. This is the guess `ShipmentInput` refuses to make
+  and §63 refused again for reporting.
+- **A provider-supplied string reaches a public page only through a key allowlist *and* a value-shape
+  check.** `estimated_delivery` is the only such field and must match a date. **No adapter supplies one
+  today** — neither `StatusReport` nor `ShipmentResult` has the field and neither courier publishes one in
+  the responses §56 and §57 measured — so this is §84's hook rather than a feature, and it is null.
+
+**A parcel's status never moves the order**, true since §55, and a tracking view is not the exception: the
+two statuses are presented side by side and nothing merges them.
+
+### The link in a notification, and its one precondition
+
+`ac_shipment_saved` already fires from `ShipmentRepository::update()` and `NotificationSubscriber` already
+claims on it, so the tracking link is a template variable and a queue row rather than a mechanism. The
+precondition is `PasswordResetService`'s: **the link needs the storefront URL, which this backend cannot
+derive.** §71 stores it and §62 refused to guess the same value for canonical URLs, so `urlFor()` answers
+`''` when it is unset and the message is queued **without a link** — never one on the admin domain, which
+sends a customer to a login screen they have no account for.
+
+A reset refuses outright in the same situation and this does not, because the two messages differ: a reset
+with no link is useless, while "your parcel is on its way, tracking number X" is worth sending on its own.
+
+### The rate limit is its own group
+
+`AC_RATE_LIMIT_TRACKING`, 20 a minute per IP. Not the read limit, which is 600 and was sized for an admin
+dashboard holding a credential. And **not** the failed-login counter, which password reset does share — see
+"Rate limiting" above for why coupling them would make a forwarded email a denial of service.
 
 ## Cash on delivery
 

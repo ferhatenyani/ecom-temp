@@ -566,6 +566,108 @@ field later and nobody notices.
 
 `scripts/test-api.sh` — the rate limit, since only the HTTP stage sees a client IP.
 
+## What was built
+
+**§84 is `src/Tracking/` — `TrackingToken`, `TrackingLink`, `TrackingPresenter`, `TrackingService`,
+`TrackingController` — one public route, no migration, no table and no new capability**;
+`Schema::VERSION` is still 10. §84 predicted correctly that this would be a small section whose
+entire risk is authorization, and the code is shaped that way: two of the five classes are pure and
+exist so that the token's properties and the disclosure list are arithmetic rather than review.
+
+**The first door is three lines and the prediction held.** `AccountService::order()` gained
+`$payload['shipment'] = $this->tracking?->forOwner($orderId)` — placed *after*
+`Permissions::assertOwnsOr()`, which is the whole point of where it sits. `null` while an order has
+no parcel, which is the ordinary state of a `pending` order rather than an error.
+
+**The second door is the section, and the token is `{order id}.{128 bits of HMAC-SHA256}`** over the
+order id and a per-order nonce, keyed on `wp_salt('auth')`, compared with `hash_equals()`. §84
+offered "random, or an HMAC over the order id with the site salt" and the HMAC won for a reason §84
+does not state: **verifying a MAC needs the message**, so either the order id is in the token or the
+token has to be *searched for* — and searching means a `meta_query` on an unauthenticated route,
+which is where §82's measurement bites (`wc_get_products()` ignores three of the args it was given
+and returns everything). The id in the clear is exactly what WooCommerce's own cart token does,
+carrying the customer id in readable base64 with a signature over it, and it discloses nothing
+because the response publishes the order number anyway.
+
+**The nonce was not in §84's list and it earns its place twice.** It makes the link **revocable** —
+§84's first option, which an HMAC over the order id alone cannot be — with one write, no revocation
+list and no effect on any other order. And it means **an order that was never issued a link has no
+valid token at all**: without it every order in the shop would be trackable from the salt alone, so
+one database dump would expose tracking for the whole order book forever.
+
+**Expiry is 90 days after the parcel reaches a terminal status, and it answers 410 while everything
+else answers 404.** The asymmetry is deliberate rather than sloppy: reaching the 410 requires a valid
+MAC, so its holder learns nothing they did not already have, while one answer for malformed,
+wrong-MAC, unknown-order and revoked is what stops the route telling somebody guessing which half of
+the guess was right. **An order with no parcel never expires**, named rather than hidden — nothing has
+happened to it yet, and a link that must die today is what revocation is for.
+
+**`TrackingPresenter` filters what it is handed rather than what it is promised, and that is the
+design decision in the disclosure list.** It takes a whole shipment row — `metadata` included — and
+reads an allowlist of keys out of it, so a future caller passing `Shipment::toArray()` whole still
+cannot publish a Yalidine `label`. Filtering the input *contract* instead would have made §84's "the
+courier's label URL must never appear, under any circumstance" depend on every future caller reading
+a docblock. **The owner view excludes metadata too**: the field is a bearer credential to one
+customer's own name, phone and address, and a storefront rendering it would put it in browser history
+and in `Referer`.
+
+**The disclosure list is asserted twice — by key and by value — because the key half cannot catch a
+rename.** `tests/Unit/TrackingPresenterTest` hands the presenter a hostile row (a label URL, a phone,
+a street address, a commune name) and asserts the output's keys are exactly `PUBLIC_FIELDS`;
+`tests/Api/tracking.php` does the same over a real order with a real address and then greps the
+encoded response for each forbidden value. A presenter emitting `courier_label` passes the first and
+fails the second. That is §65's "assert the discrimination, not the outcome" applied to a payload
+rather than to a query.
+
+**The destination is a canonical id, and never the address.** `_ac_wilaya_id` — which §59b's checkout
+writes, the id the shopper picked from `GET /locations/*` — then a parcel's own recorded `wilaya_id`
+(`ManualProvider` writes one, Yalidine writes a *name*), then `null`. Every candidate is resolved
+against the §51 dataset, so an id that is not a wilaya becomes `null` rather than reaching the
+response. §63's rule reads "a wilaya comes off the shipment, never the address" and this narrows it:
+the order now carries one too, and it is the better source because it is what the tariff was quoted
+against.
+
+**`estimated_delivery` is in the contract and is null on every install today.** Measured 2026-08-17:
+neither `StatusReport` nor `ShipmentResult` has such a field, and neither Yalidine nor ZR Express
+publishes one in the responses §56 and §57 recorded. So it is §84's hook rather than a feature, and it
+reads through **a two-key allowlist and a date-shape check on the value** — either gate alone would
+let a provider publish a label URL on a public page under a plausible name. Named in `docs/API.md` so
+nobody builds UI that requires it.
+
+**The rate limit is its own group and deliberately not the failed-login counter.**
+`AC_RATE_LIMIT_TRACKING`, 20 a minute per IP, enforced in `TrackingService` on every call before
+anything is looked up — because `RateLimitGuard` hooks
+`application_password_failed_authentication`, which a token this project defined never touches. That
+is §59c's finding for customer logins, arriving again. Sharing the login counter, which
+`PasswordResetService` does, would have made **any forwarded tracking link a denial of service
+against the shop's own customers signing in**, so `scripts/test-api.sh` asserts the separation: while
+tracking is throttled a wrong login must answer 401 rather than 429, and an authenticated read must
+still answer 200. The variable is in `.env.example` **and** in both `compose.yaml` services, because
+§61 found the whole `AC_RATE_LIMIT_*` group documented, read, and passed through by nothing.
+
+**Notifications came nearly free, as §84 said, and the precondition is `PasswordResetService`'s.**
+`NotificationSubscriber` gained a `TrackingLink` and puts `tracking_url` in the shipment context;
+`NotificationMessages::shipmentBody()` appends it when it is non-empty. `urlFor()` answers `''` when
+§71 has no `store.storefront_url`, so the message is queued **without a link** rather than with one on
+the admin domain. §84 asked for "queue without a link or do not queue it" and the first is right here:
+a reset with no link is useless, while "your parcel is on its way, tracking number X" is worth sending
+on its own — which is why this does not copy the reset's 503.
+
+**Verified 2026-08-17 against this stack.** 87 assertions in `tests/Api/tracking.php`, 77 unit tests
+across the two pure classes, and 13 checks in `scripts/test-api.sh` — including the two things only
+that stage can see: the 429, and the `X-Tracking-Token` header path that `rest_do_request()` cannot
+carry. The header exists because a query string is written to access logs and to `Referer` on every
+outbound link from a tracking page; the query parameter stays because an email client's link cannot
+set a header, which is where these tokens actually come from.
+
+**One test artefact worth knowing about, because it will bite the next suite.**
+`AccountSession::require()` calls `wp_set_current_user()`, and a `tests/Api` file is one PHP process —
+so after any `/account/*` call the shopper is still the current user, and a later assertion that a
+staff route answers **401** gets **403** instead, for a reason that has nothing to do with the route
+under test. `tests/Api/tracking.php` clears it with `wp_set_current_user(0)` and says why.
+
+**Nothing here is an assumption** — `grep -rn ASSUMPTION src/Tracking` is empty.
+
 ------------------------------------------------------------------------
 
 # 85. Email Marketing Campaigns

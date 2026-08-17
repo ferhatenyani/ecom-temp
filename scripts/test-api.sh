@@ -479,6 +479,103 @@ foreach (["publish", "draft", "trash"] as $status) {
 echo "cleaned";' >/dev/null
 echo
 
+# -------------------------------------------------------------- tracking --
+#
+# §84's public route, and the two things only this stage can observe.
+#
+# **The rate limit**, which is why §84 names this stage specifically: the
+# counters key on a client IP and rest_do_request() has none, so
+# tests/Api/tracking.php is structurally unable to see them — and it runs with
+# AC_RATE_LIMIT_DISABLED=1 besides. This route is the one unauthenticated read in
+# the API whose key is a MAC somebody could try to guess, and `RateLimitGuard`
+# does not watch it: that guard hooks `application_password_failed_authentication`,
+# which a tracking token never touches. §59c found the identical gap for customer
+# logins. If the loop below reports 200 twenty-five times, the group is gone and
+# the route is bounded only by the 600-a-minute read limit.
+#
+# **The header path.** A token may arrive as `X-Tracking-Token` instead of a query
+# parameter, because a query string is written to access logs and to `Referer` on
+# every outbound link from a tracking page. rest_do_request() parses no headers,
+# so nothing before this line has ever executed it.
+echo "order tracking (roadmap §84)"
+
+TRACK=$(wpcli wpcli wp eval '
+$order = wc_create_order(["status" => "processing"]);
+$order->set_address(["first_name" => "Http", "last_name" => "Probe",
+                     "address_1" => "1 rue probe", "city" => "Alger",
+                     "phone" => "0551020304", "country" => "DZ"], "billing");
+$order->set_total("1000");
+$order->update_meta_data("_ac_wilaya_id", 16);
+$order->save();
+echo $order->get_id(), ":",
+     AlgerianCommerce\Core\Plugin::instance()->trackingLink()->tokenFor($order);
+')
+
+TRACK_ID="${TRACK%%:*}"
+TRACK_TOKEN="${TRACK#*:}"
+
+check "a tracking token was minted" "true" \
+  "$([[ ${#TRACK_TOKEN} -gt 30 ]] && echo true || echo false)"
+check "GET /orders/track needs no credential" 200 \
+  "$(status "${API}/orders/track?token=${TRACK_TOKEN}")"
+
+# THE PROPERTY THIS BLOCK EXISTS FOR, part one: the header carries the token.
+check "the X-Tracking-Token header carries the token" 200 \
+  "$(status -H "X-Tracking-Token: ${TRACK_TOKEN}" "${API}/orders/track")"
+check "no token at all is 404" 404 "$(status "${API}/orders/track")"
+check "a forged MAC is 404" 404 \
+  "$(status "${API}/orders/track?token=${TRACK_ID}.00000000000000000000000000000000")"
+
+# ...and the disclosure list over the wire. The in-process suite asserts this in
+# depth; one value is checked here because the presenter is the same object and a
+# response served through `rest_pre_serve_request` is not.
+check "the address does not travel over the wire" "" \
+  "$(curl -s -m 15 "${API}/orders/track?token=${TRACK_TOKEN}" | grep -o '1 rue probe' | head -1)"
+check "...nor the phone number" "" \
+  "$(curl -s -m 15 "${API}/orders/track?token=${TRACK_TOKEN}" | grep -o '0551020304' | head -1)"
+check "...while the wilaya does" "Algiers" \
+  "$(curl -s -m 15 "${API}/orders/track?token=${TRACK_TOKEN}" | grep -o '"wilaya":"[^"]*"' | head -1 | cut -d'"' -f4)"
+
+# THE PROPERTY THIS BLOCK EXISTS FOR, part two: the limit. Loop until the
+# behaviour appears rather than asserting an exact attempt number — the window is
+# fixed rather than sliding, so a run straddling a boundary splits its attempts
+# across two counter keys, which is a documented property of the limiter and not
+# a bug in it (see the brute-force block below for the same reasoning).
+locked=""
+for _ in $(seq 1 40); do
+  if [[ "$(status "${API}/orders/track?token=${TRACK_TOKEN}")" == "429" ]]; then
+    locked=429
+    break
+  fi
+done
+check "repeated tracking reads are rate limited" 429 "${locked:-200}"
+check "a throttled tracking read gets Retry-After" "true" \
+  "$(curl -s -D - -o /dev/null -m 15 "${API}/orders/track?token=${TRACK_TOKEN}" \
+     | grep -qi '^retry-after:' && echo true || echo false)"
+
+# Its own group, not the read limit and not the login lockout. Both halves
+# matter: an authenticated read must still work while tracking is throttled, or
+# the group is shared and one customer refreshing a link would throttle the
+# admin.
+check "an authenticated read is unaffected" 200 "$(status -u "$CRED" "${API}/products?per_page=1")"
+# Deliberately not the failed-authentication counter, which PasswordResetService
+# *does* share. That one locks an IP out of signing in for fifteen minutes, and a
+# customer clicking a stale tracking link has done nothing that should stop them
+# logging in. 401 here rather than 429 is what says the two counters are separate.
+check "...and the login lockout was not spent by tracking" 401 \
+  "$(status -X POST -H 'Content-Type: application/json' \
+     -d '{"email":"ac-track-nobody@example.test","password":"wrong wrong wrong"}' "${API}/account/login")"
+
+"${COMPOSE[@]}" run --rm -T wpcli wp eval 'global $wpdb; $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE \"%ac_rl_tracking%\"");' >/dev/null 2>&1
+check "and tracking works again once the window is cleared" 200 \
+  "$(status "${API}/orders/track?token=${TRACK_TOKEN}")"
+
+wpcli -e AC_ORDER_ID="${TRACK_ID:-0}" wpcli wp eval '
+$order = wc_get_order((int) getenv("AC_ORDER_ID"));
+if ($order) { $order->delete(true); }
+echo "cleaned";' >/dev/null
+echo
+
 # ---------------------------------------------------------------- exports --
 # THE THIRD REGRESSION TEST.
 #

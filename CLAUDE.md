@@ -33,8 +33,8 @@ implemented** — no messaging, notifications or automations — beyond the flag
 
 [ROADMAP_PHASE_2.md](ROADMAP_PHASE_2.md) is the companion document and adds **§82–§85 / steps 45–48**:
 advanced filtering and faceted search, product configurators, order tracking and email marketing
-campaigns. It supersedes nothing — where the two disagree about a rule, the first one wins. **§82 and
-§83 are built; §84 and §85 are not.** Each of the four is done only when its "What was built" subsection
+campaigns. It supersedes nothing — where the two disagree about a rule, the first one wins. **§82, §83
+and §84 are built; §85 is not.** Each of the four is done only when its "What was built" subsection
 is written into that document, so read the section *and* its outcome before extending one.
 
 **§82 is `src/Products/ProductFilters.php`, `AttributeCatalogue.php` and `FacetResolver.php` — nine new
@@ -109,6 +109,32 @@ not recurse** and a **variation inherits its parent's set**; both are named limi
 **partially-refundable bundle**, which is out of scope. Free text is capped and stripped of markup and
 control characters, but **a leading `=` is deliberately left alone** — §64's escape belongs at the CSV
 boundary where `CsvWriter` already does it, and stripping it here would mangle "A=B" on a keepsake.
+
+**§84 is `src/Tracking/` — `TrackingToken`, `TrackingLink`, `TrackingPresenter`, `TrackingService`,
+`TrackingController` — one public route, no migration, no table and no new capability.** Two doors:
+`GET /account/orders/{id}` gains a `shipment` block, added **after** `Permissions::assertOwnsOr()`, and
+`GET /orders/track` is public and token-owned because guest checkout is supported and
+`AccountService::order()` refuses `customer_id = 0` outright. **The token is
+`{order id}.{128 bits of HMAC-SHA256}`** over the order id and a per-order nonce, keyed on
+`wp_salt('auth')`; the id travels in the clear because verifying a MAC needs the message, and searching
+for a token instead would put a `meta_query` on an unauthenticated route — §82's measurement. That is
+WooCommerce's own cart-token construction. **The nonce is order meta and earns its place twice**: it makes
+the link revocable with one write, and it means an order never *issued* a link has no valid token at all
+(without it, one database dump exposes tracking for the whole order book). **Expiry is 90 days after the
+parcel goes terminal and answers 410 while everything else answers 404** — reaching the 410 needs a valid
+MAC, so its holder learns nothing, while one answer for malformed/wrong-MAC/unknown/revoked stops the
+route saying which half of a guess was right. **`TrackingPresenter` filters what it is handed rather than
+what it is promised** — it takes a whole shipment row, `metadata` included, and reads an allowlist out of
+it, so a caller passing `Shipment::toArray()` still cannot publish a Yalidine `label`; the **owner view
+excludes metadata too**, because that URL is a bearer credential even to the customer it is about. **The
+disclosure list is asserted twice, by key and by value**, because the key half cannot catch a rename.
+The destination is `_ac_wilaya_id` then the parcel's own `wilaya_id`, each resolved against §51, never the
+address. `estimated_delivery` is a hook, **null on every install today** — no adapter supplies one — read
+through a key allowlist *and* a date-shape check. `AC_RATE_LIMIT_TRACKING` (20/min/IP) is its own group,
+enforced in the service because `RateLimitGuard` watches Application Password failures; deliberately
+**not** the failed-login counter, or any forwarded link is a denial of service against customers signing
+in. The shipment notification carries the link when §71 knows the storefront URL and **no link at all**
+when it does not.
 
 **Password reset exists, and the SMTP settings finally reach WordPress** — PLAN §29/§30, the one thing
 §59c deferred. Two gaps were closed together because neither was useful alone. **`SMTP_HOST`,

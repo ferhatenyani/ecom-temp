@@ -324,8 +324,97 @@ the real credential is not a browser at all.
 
 ## Rate limiting
 
-Apply to authentication, password reset, checkout, order creation, COD confirmation, search, and
-import endpoints. Limit per identity and per IP, and log rejections.
+Apply to authentication, password reset, checkout, order creation, COD confirmation, search, order
+tracking, and import endpoints. Limit per identity and per IP, and log rejections.
+
+**An unauthenticated route needs its own group, and the guard does not cover it.** `RateLimitGuard` hooks
+`application_password_failed_authentication`, which is WordPress's admin path — a route whose credential is
+a token this project defined goes nowhere near it, so the *service* must count for itself. §59c found this
+for customer logins and §84 for order tracking. Two rules follow from that pair:
+
+- **Sizing is per route, not per verb.** The read limit is 600 a minute because it was sized for an admin
+  dashboard holding a credential. An unauthenticated read whose only key is a MAC does not belong on it;
+  `AC_RATE_LIMIT_TRACKING` is 20 a minute for the same reason `AC_RATE_LIMIT_UPLOADS` is 30.
+- **Do not put an unauthenticated read on the failed-login counter.** That counter locks an IP out of
+  signing in for fifteen minutes. Password reset shares it because a reset request *is* a credential
+  operation; a customer clicking a stale tracking link is not, and locking them out of their account for
+  it would be a denial of service reachable from any forwarded email.
+
+## Order tracking
+
+**§84's whole risk is authorization**, because the data — a tracking number, a parcel status, a
+destination — has existed in `ac_shipments` since §55 and was only ever readable behind
+`ac_manage_shipping`. Two doors expose it and they are not the same door: `GET /account/orders/{id}` is
+session-owned and runs `Permissions::assertOwnsOr()`; `GET /orders/track` is **public and token-owned**,
+because guest checkout is supported and `AccountService::order()` refuses `customer_id = 0` outright.
+
+### The token, and why not the obvious key
+
+The obvious key for a guest order is order number plus phone number, and it is enumerable. Order numbers
+are sequential and an Algerian mobile is ten digits behind a known operator prefix, so one order is about
+ten million guesses and the shop's whole order book — every customer's name, address and phone — is a few
+million requests behind a form. Order number plus email is worse: anyone who knows one customer's address
+walks the order numbers.
+
+So the key is a token, and it must satisfy four things:
+
+- **Unguessable and not derived from the order id.** `TrackingToken` is `{order id}.{128-bit HMAC}` over
+  the order id and a per-order nonce, keyed on `wp_salt('auth')`. The order id travels in the clear
+  because verifying a MAC needs the message — the same construction WooCommerce's own cart token uses,
+  which carries the customer id in readable base64 — and it discloses nothing, since the route publishes
+  the order number anyway. `hash_equals()` throughout: an unauthenticated route must not leak a MAC prefix
+  through timing.
+- **Bound to one order.** A MAC minted for order 4211 must not verify against 4212. Tested by walking the
+  ids either side of a real order with a real MAC.
+- **Revocable.** The nonce is order meta, so rotating it kills every outstanding link to that order with
+  one write, needs no revocation list, and touches no other order. It also means an order that was never
+  *issued* a link has no valid token at all — without the nonce, every order in the shop would be
+  trackable from the salt alone.
+- **Expiring.** Ninety days after the parcel reaches a terminal status, because a link in an email lives
+  forever otherwise. A verified-but-expired token answers **410 `tracking_link_expired`** while anything
+  that does not verify answers **404** — reaching the 410 requires a valid MAC, so its holder learns
+  nothing they did not have, and one answer for every unverifiable case is what stops the route telling
+  somebody guessing which half of the guess was right.
+
+### What a tracking page may disclose
+
+```
+allowed:  order number, order status, shipment status, status history with
+          timestamps, courier name, tracking number, destination WILAYA only,
+          estimated delivery if the courier gives one
+refused:  full address, commune, phone, email, customer name, line items,
+          quantities, totals, payment method, order notes
+```
+
+**A tracking page that echoes the delivery address turns a leaked link into a doxxing tool**, and tracking
+links leak — they are forwarded, pasted into chats and screenshotted. A wilaya is enough for a customer to
+recognise their own parcel and nowhere near enough to find anybody.
+
+**The courier's label URL must never appear, under any circumstance, including to the customer whose
+address is on it.** A Yalidine `label` is a URL carrying an access token that resolves to one customer's
+name, phone and full address — it is a bearer credential, which is why it is in `Logger::SENSITIVE_EXACT`,
+and a storefront that rendered it would put it in browser history and in `Referer`.
+
+Three implementation rules make that list hold rather than merely state it:
+
+- **The presenter filters what it is handed, not what it is promised.** `TrackingPresenter::publicView()`
+  takes a whole shipment row — metadata included — and reads an allowlist of keys out of it, so a future
+  caller that passes `Shipment::toArray()` still cannot publish a label URL. Filtering the input *contract*
+  instead would depend on every future caller reading a docblock.
+- **The destination is a canonical id resolved against the §51 dataset, never the address.** `_ac_wilaya_id`
+  from checkout first, then a parcel's own recorded `wilaya_id`; an id that is not a wilaya becomes `null`.
+  This is the guess `ShipmentInput` refuses to make and §63 refused again for reporting.
+- **A provider-supplied string reaches a public page only through a key allowlist *and* a value-shape
+  check.** `estimated_delivery` is the only such field, it must match a date, and no adapter supplies one
+  today. Either gate alone would let a provider publish something else under a plausible name.
+
+**A parcel's status never moves the order** — true since §55, and a tracking view is not the exception. The
+order's status and the parcel's are presented side by side and nothing merges them.
+
+Tests: `tests/Unit/TrackingTokenTest`, `tests/Unit/TrackingPresenterTest`, `tests/Api/tracking.php` and
+the tracking block in `scripts/test-api.sh` (the rate limit and the header path, which only that stage can
+see). The disclosure list is asserted twice — **by key and by value** — because a presenter that renamed a
+field would pass the first and fail the second.
 
 ## File permissions
 
@@ -570,9 +659,14 @@ crypto of its own.
 authentication must answer before input validation — `POST /account/password` validated its payload
 first, so an anonymous caller got a 400 listing the endpoint's fields instead of a 401.
 
-The same ownership question applies to every shopper-reachable resource taking an id. Today only orders
-are shopper-reachable; when notes, timelines, shipments or saved addresses become so, each needs the same
-pair of tests.
+**§84 added the second shopper-reachable resource and the same pair of tests came with it.** A parcel is
+now reachable two ways — as a `shipment` block on `GET /account/orders/{id}`, added *after*
+`assertOwnsOr()` and asserted as "B is refused A's order and learns no tracking number", and as
+`GET /orders/track`, which has no owner to compare against at all and is keyed on a token instead. See
+"Order tracking" above for the token's four required properties and the disclosure list.
+
+The same ownership question applies to every shopper-reachable resource taking an id. Today that is orders
+and their parcels; when notes, timelines or saved addresses become so, each needs the same pair of tests.
 
 Two properties of this list are worth keeping when adding to it. A refusal and an unreachable route look
 identical from outside, so **every negative test needs a positive control**. And an injection test that
