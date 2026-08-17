@@ -3096,9 +3096,14 @@ rule that has to be remembered in every new controller is one the eleventh forge
 `tests/Api/security.php` asserts it, with the control that matters: the *other* product must be
 untouched, since a fix that refused both writes would pass the first half.
 
-**One defect is named rather than fixed**: a variation echoes its parent's inherited SKU, so PATCHing
-its own read body is a 409 on the SKU. That is §47's SKU semantics — whether a presenter should emit
-an inherited value at all — and not something §88 gets to decide.
+**A second defect surfaced with it and is now fixed**: `WC_Product_Variation::get_sku()` falls back to
+`parent_data['sku']` in the default `view` context, so `ProductPresenter::variation()` published the
+parent's SKU as the variation's — a value this API then refused on the way back in, because the
+parent already owns it. `sku` on a variation is now the variation's **own**, read with `edit`
+context, and `""` means it inherits. The invariant is the same one `pinRouteParams()` restores: the
+API emits what it accepts. Nothing depended on the old shape — no test asserted it and `docs/API.md`
+did not describe it — and the guard that refuses a SKU another product owns is asserted unchanged
+beside it.
 
 ## Staff users and roles (§87)
 

@@ -292,6 +292,74 @@ ac_check('delete a missing product', ac_req('DELETE', '/products/99999999'), 404
 ac_check('duplicate a missing product', ac_req('POST', '/products/99999999/duplicate'), 404);
 ac_check('variations of a missing product', ac_req('GET', '/products/99999999/variations'), 404);
 
+echo PHP_EOL, "── a variation's SKU is its own ──", PHP_EOL;
+
+/*
+ * `WC_Product_Variation::get_sku()` falls back to the parent's SKU in `view`
+ * context, so a variation with none of its own used to read back as carrying
+ * the parent's — a value this API then refused to accept, because the parent
+ * already owns it. `GET` then `PATCH` the whole object, which docs/API.md
+ * promises works, was a 409 on `sku`.
+ *
+ * `sku` on a variation now means the variation's own, and empty means it
+ * inherits. That is the invariant: the API emits what it accepts.
+ */
+$varParent = ac_check('a variable product for the SKU check', ac_req('POST', '/products', [
+    'name' => 'Variation SKU probe',
+    'sku' => 'AC-PROD-VARSKU',
+    'type' => 'variable',
+    'status' => 'publish',
+    'attributes' => [['name' => 'Size', 'options' => ['S', 'M'], 'variation' => true]],
+]), 201);
+
+$varParentId = (int) ($varParent['data']['id'] ?? 0);
+
+$inherited = ac_check('a variation created with no SKU of its own', ac_req('POST',
+    "/products/{$varParentId}/variations", ['attributes' => ['size' => 'S'], 'regular_price' => '100']),
+    201, function ($d) {
+        return ($d['data']['sku'] ?? null) === ''
+            ?: 'the variation reported sku ' . var_export($d['data']['sku'] ?? null, true)
+                . ' — the parent\'s, which this API will not accept back';
+    });
+
+$inheritedId = (int) ($inherited['data']['id'] ?? 0);
+
+ac_check('its read body PATCHes back unchanged', ac_req('GET',
+    "/products/{$varParentId}/variations/{$inheritedId}"), 200,
+    function ($d) use ($varParentId, $inheritedId) {
+        [$status, $body] = ac_req('PATCH', "/products/{$varParentId}/variations/{$inheritedId}", $d['data']);
+
+        if ($status !== 200) {
+            return "round-tripping the variation returned {$status}: "
+                . substr((string) wp_json_encode($body), 0, 160);
+        }
+
+        return ($body['data']['sku'] ?? null) === '' ?: 'the round trip gave the variation a SKU';
+    });
+
+// The control: a variation that owns a SKU still reports and round-trips it.
+$owned = ac_check('a variation with its own SKU keeps it', ac_req('POST',
+    "/products/{$varParentId}/variations",
+    ['attributes' => ['size' => 'M'], 'regular_price' => '120', 'sku' => 'AC-PROD-VARSKU-M']),
+    201, function ($d) {
+        return ($d['data']['sku'] ?? '') === 'AC-PROD-VARSKU-M' ?: 'its own SKU was not stored';
+    });
+
+$ownedId = (int) ($owned['data']['id'] ?? 0);
+
+ac_check('and that one round-trips too', ac_req('GET',
+    "/products/{$varParentId}/variations/{$ownedId}"), 200, function ($d) use ($varParentId, $ownedId) {
+        [$status] = ac_req('PATCH', "/products/{$varParentId}/variations/{$ownedId}", $d['data']);
+
+        return $status === 200 ?: "round-tripping returned {$status}";
+    });
+
+// The other control: the duplicate-SKU guard must still refuse a real clash.
+ac_check('a SKU another product owns is still refused', ac_req('PATCH',
+    "/products/{$varParentId}/variations/{$ownedId}", ['sku' => $SKU]), 409);
+
+wp_delete_post($varParentId, true);
+
 echo PHP_EOL, "── duplicate ──", PHP_EOL;
 
 ac_check(

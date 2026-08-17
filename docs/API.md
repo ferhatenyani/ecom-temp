@@ -240,6 +240,10 @@ Capability shown per route. `public` means no credential; the shopper-token rout
 `DELETE` trashes; `?force=true` removes permanently.
 A product's `seo` block is read and written here — there is no separate SEO endpoint.
 
+**A variation's `sku` is its own, and `""` means it inherits the parent's.** WooCommerce resolves the
+inherited value when it renders one; this API reports what is stored, so that a read body can be
+written back. Send `""` to keep inheriting.
+
 ### Global attributes — §88
 
 The attributes §82 filters and counts on. **Only a global attribute can be filtered or counted**, so
