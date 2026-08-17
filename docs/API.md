@@ -193,6 +193,7 @@ decide what to render.
 | `ac_manage_content` | CMS reads, media |
 | `ac_manage_marketing` | pixel config, conversion events |
 | `ac_view_analytics` | all analytics; **money additionally needs `ac_manage_orders`** |
+| `ac_manage_settings` | the client configuration — **Super Admin only** |
 | `ac_view_audit_logs` | the audit trail |
 
 ---
@@ -498,6 +499,41 @@ An unverified request is 401 `webhook_unverified` and is told nothing about whic
 an event never applies it twice.
 
 Not for your frontend to call.
+
+## Settings
+
+| Method | Route | Guard |
+|---|---|---|
+| GET, PATCH | `/settings` | `ac_manage_settings` — **Super Admin only** |
+
+The client configuration in one document: store identity, contact details, the
+Algerian trade-register block (`rc`, `nif`, `nis`, `ai`), social links, the feature flags, and which
+providers actually registered. This is what an admin panel's settings screen reads, and what a storefront
+footer gets its contact and legal details from.
+
+**It is assembled from whoever owns each value, not copied from them.** The store name is WordPress's,
+the currency WooCommerce's, the flags the environment's, the provider lists the live registries'. Change
+one at its source and this document follows on the next request.
+
+`PATCH` writes four blocks — `store`, `contact`, `legal`, `social` — and refuses everything else **by
+name, with the reason**:
+
+| Refused | Why |
+|---|---|
+| `currency` | WooCommerce records it *per order*, so changing it splits the order book instead of converting it. Set once at provisioning. |
+| `features` | `ENABLE_*` are environment variables read once at bootstrap to decide which providers register. Set them in `.env` and restart. |
+| `providers` | Read-only. It reports what registered, which follows from flags *and* credentials. |
+| `api_key`, `webhook_secret`, … | Secrets are environment variables and never the options table. |
+
+`features` reports all nine declared flags. Four of them — `blog`, `reviews`, `sms`, `whatsapp` — gate
+nothing yet and are reported as declared so nobody has to grep `.env.example` to learn a flag exists.
+
+A partial write updates only what it names. `null` or `""` clears a field. URLs must be `http` or
+`https` — `javascript:` is a valid URL and is cross-site scripting the moment a storefront renders it as
+a link.
+
+Writes are audited **by field name, never by value**: the shop's trade-register numbers do not belong in
+a table nobody cleans.
 
 ## Audit
 

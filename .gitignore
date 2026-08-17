@@ -17,3 +17,7 @@ node_modules/
 
 docker-data/
 .claude/settings.local.json
+
+# Per-client configuration (roadmap §71, §73). Holds no secrets — secrets are
+# .env only — but it is one client's details, and this is the template.
+client.json

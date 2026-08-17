@@ -5517,6 +5517,60 @@ Example:
 
 Secrets remain environment variables.
 
+## Done — `src/Settings/`, one document assembled rather than one table copied
+
+`GET` and `PATCH /settings`, no migration, one option. This section and PLAN §48
+both describe an outcome — "configuration rather than forks" — and the mechanism
+that fell out of it is **one document assembled from the systems that already
+own each value**, not one table that copies them.
+
+That distinction is the design. Before this, configuring a client meant knowing
+that the store name is a WordPress option, the currency a WooCommerce one, the
+courier settings four separate `ac_*_settings` rows and the feature flags
+environment variables: four systems, no list, and nothing that would tell a new
+operator they had missed one. `GET /settings` is that list, built live on every
+request so it cannot drift from what it describes.
+
+`ac_client_settings` therefore holds only the fields with no owner — contact
+details, the Algerian trade-register block (`rc`, `nif`, `nis`, `ai`), social
+links, the logo, and the storefront's address, which this backend cannot derive
+because WordPress's permalink points at the admin domain (§62 refused to guess a
+canonical URL for the same reason). `store.name` and `store.description` are
+written *through* to WordPress rather than kept here. `tests/Api/settings.php`
+asserts the difference the only way it can be: it renames `blogname` behind the
+API's back, checks the document followed, and checks the option holds no name of
+its own. **This is §63's argument against an analytics rollup and §68's against
+a version table, a third time.**
+
+**The refusals are the rest of the design**, each by name with its reason
+attached rather than ignored:
+
+  - **`currency`** — WooCommerce records it **per order**, so changing it does
+    not convert the order book, it splits it. `setup.sh` sets it once.
+  - **`features`** — `ENABLE_*` decides which providers *register*, once, at
+    bootstrap; a flag flipped in the database mid-request would disagree with
+    the registry already built.
+  - **secrets** — environment variables and nothing else. An options row is
+    readable by any plugin and survives in every database dump, which is what
+    this section's own "secrets remain environment variables" exists to prevent.
+
+`providers` is read-only for a subtler reason worth keeping: it reports what
+actually *registered*, which follows from the flags **and** the credentials. A
+flag that is on with no key produces a provider that never loads, and this
+document is the only place that gap is visible.
+
+**`ac_manage_settings` gets its first call site.** It has existed since §45's
+matrix, held by Super Admin alone and checked by nothing — the state
+`Permissions::assertOwnsOr()` was in before §59c. No new capability was
+invented, and it stays Super Admin's: an Admin holding the other ten management
+capabilities is refused, which the suite asserts beside a positive control.
+
+§72's flags needed no work: `Config::FLAGS` already declares all nine, and the
+document reports them. Four gate nothing yet (blog, reviews, SMS, WhatsApp) and
+are reported as declared, so nobody has to grep `.env.example` to learn a flag
+exists. **SMS and WhatsApp are explicitly not implemented** — no messaging, no
+notifications, no automations — beyond the flag that would gate them.
+
 ------------------------------------------------------------------------
 
 # 72. Feature Flags
@@ -5564,6 +5618,41 @@ deploy
 ```
 
 Then build the client's custom Next.js frontend.
+
+## Done — the flow is a script, except the last step
+
+Every step in that diagram is now a command, and the one that was not is the
+reason §71 came first:
+
+``` text
+clone backend template          git clone
+copy .env.example → .env        scripts/setup.sh does it, and generates the
+                                database passwords — compose.yaml interpolates
+                                them, so a blank value would create a MySQL
+                                install with no password rather than fail
+set client configuration        cp client.json.example client.json, fill it in;
+                                setup.sh applies it — this was the missing step
+docker compose up               scripts/setup.sh
+./scripts/setup.sh              idempotent; re-runnable after a `down`
+configure integrations          .env credentials; GET /settings reports which
+                                providers actually registered, which is how you
+                                tell a flag that is on from a provider that
+                                loaded
+deploy                          §74–§76, deliberately still open
+```
+
+**`client.json` is optional and its failure is not.** A development machine has
+no client, so a missing file is fine; a *present* file that fails to apply stops
+the setup, because a shop deployed with somebody else's contact details and
+trade register is worse than one with none. It is fed over STDIN rather than by
+path, because it sits at the repository root and only the plugin directory is
+mounted into the containers.
+
+It holds **no secrets** and is gitignored anyway: it is one client's details in
+what is meant to be the template. `.env` remains the only home for credentials.
+
+Verified end to end on 2026-08-17: `setup.sh` with a valid `client.json` applies
+it and continues; with an invalid one it prints the per-field reason and stops.
 
 ------------------------------------------------------------------------
 

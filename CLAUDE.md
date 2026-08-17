@@ -25,8 +25,44 @@ Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS a
 §68's version pinning, §69's API walkthrough, §59b's cart and checkout, §59c's shopper
 accounts, §59d's coupons and notifications, §66's automation scripts and §67's seed data.
 **§4's build order is now complete through step 42 (backup/recovery); steps 43 and 44 are the Next.js
-admin and storefront, which are separate repositories.** §70's contract is written and checked. What is
-left in *this* repository is §71's client configuration, §72's feature flags, and `docs/DEPLOYMENT.md`.
+admin and storefront, which are separate repositories.** §70's contract is written and checked, §71's
+client configuration and §73's provisioning flow are built, and §72 needed no work — `Config::FLAGS`
+already declares all nine and `GET /settings` reports them. What is left in *this* repository is
+`docs/DEPLOYMENT.md` and §74–§76's production separation. **SMS and WhatsApp are deliberately not
+implemented** — no messaging, notifications or automations — beyond the flags that would gate them.
+
+**§71 is `src/Settings/` — `GET`/`PATCH /settings`, no migration, one option — and the design is that
+almost nothing is stored.** §71 and PLAN §48 both describe an outcome ("configuration rather than
+forks"); the mechanism is **one document assembled from the systems that already own each value**, not
+one table copying them. Before it, configuring a client meant knowing the store name is a WordPress
+option, the currency a WooCommerce one, the courier settings four `ac_*_settings` rows and the flags
+environment variables — four systems, no list, nothing to say you had missed one. `ac_client_settings`
+holds only what has no owner: contact details, the trade-register block (`rc`, `nif`, `nis`, `ai`),
+social links, the logo, and the storefront URL this backend cannot derive (§62's canonical argument).
+`store.name` is written *through* to WordPress. **`tests/Api/settings.php` renames `blogname` behind the
+API's back, asserts the document followed, and asserts the option holds no name of its own** — a copy
+passes the first and fails the second. §63's argument against a rollup and §68's against a version table,
+a third time.
+
+**The refusals are the rest of it**, each by name with its reason — the `CustomerInput` device.
+`currency`, because WooCommerce records it *per order* so a change splits the order book rather than
+converting it. `features`, because `ENABLE_*` decides which providers register, once, at bootstrap.
+Secrets, because an options row is readable by any plugin and survives every database dump. `providers`
+is read-only and reports what actually **registered**, which follows from flags *and* credentials — a
+flag that is on with no key produces a provider that never loads, and this is the only place that gap
+shows. **`ac_manage_settings` gets its first call site**, unused since §45's matrix, the state
+`assertOwnsOr()` was in before §59c; it stays Super Admin's, and an Admin holding the other ten
+management capabilities is refused, asserted beside a positive control.
+
+**§73 is now a script except its last step, and `client.json` was the missing one.** Clone, `.env`,
+**set client configuration**, `up`, `setup.sh`, configure integrations, deploy — everything but the third
+was already a command. `setup.sh` applies `client.json` when present, over **STDIN** because the file
+sits at the repository root and only the plugin directory is mounted. A missing file is fine; a present
+one that fails to apply **stops the setup**, because a shop deployed with somebody else's trade register
+is worse than one with none. It carries no secrets and is gitignored anyway — it is one client's details
+in what is meant to be the template. JSON has no comments, so keys beginning `_` are ignored rather than
+rejected. Verified 2026-08-17 both ways: a valid file applies and continues, an invalid one prints the
+per-field reason and stops.
 
 **§70 is [docs/API.md](docs/API.md), and it is a check rather than a document.** The rule §70 states was
 already obeyed — the API is `/algerian-commerce/v1`, nothing depends on `/wp/v2` or `/wc/v3`, `Cors`
@@ -599,11 +635,10 @@ events, shipment records, payment transactions, notification events, analytics a
 Plugin layout (roadmap §37): `src/` grouped by domain, PSR-4 root namespace `AlgerianCommerce\` → `src/`. Built so far:
 `Core/`, `API/`, `Auth/`, `Security/`, `Permissions/`, `Audit/`, `Commerce/`, `Products/`, `Inventory/`, `Orders/`,
 `Customers/`, `Account/`, `Cart/`, `Coupons/`, `Notifications/`, `COD/`, `Payments/`, `Shipping/`, `Geography/`, `CMS/`, `Media/`, `SEO/`, `Marketing/`,
-`Analytics/`, `ImportExport/`, `Seed/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
+`Analytics/`, `ImportExport/`, `Seed/`, `Settings/`, `Http/`, `CLI/`, plus `integrations/Yalidine/` (namespace
 `AlgerianCommerce\Integrations\` → `integrations/`, registered by the plugin bootstrap even when Composer's
 autoloader is present, because a dumped autoloader is a snapshot), alongside `data/`, `migrations/` and
-`tests/`, plus `integrations/ZRExpress/`, `integrations/Chargily/` and `integrations/Meta/`. Still to come:
-`Settings/`, …
+`tests/`, plus `integrations/ZRExpress/`, `integrations/Chargily/` and `integrations/Meta/`.
 
 **The bundled PSR-4 autoloader is registered for `src/` behind Composer, not instead of it.** Composer runs
 with `optimize-autoloader`, so it dumps a *classmap* — a snapshot of the files present when somebody last ran

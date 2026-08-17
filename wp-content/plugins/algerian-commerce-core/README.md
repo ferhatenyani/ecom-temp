@@ -2592,6 +2592,73 @@ than taken from input. Errors always come back in the envelope, so a client neve
 checked in `scripts/test-api.sh` — the in-process suite is structurally blind to them, exactly as it is to
 a real media upload.
 
+## Client configuration (§71)
+
+`src/Settings/` — `GET` and `PATCH /settings`, no migration and no table beyond one option.
+
+§71's instruction is "use configuration and feature flags rather than forks"; PLAN §48's is "separate
+reusable code from client configuration". Both describe an outcome. The mechanism that fell out of it is
+**one document assembled from the systems that already own each value** — not one table that copies them.
+
+Before this, configuring a client meant knowing that the store name is a WordPress option, the currency a
+WooCommerce one, the courier settings four separate `ac_*_settings` rows and the feature flags
+environment variables: four systems, no list, and nothing to tell a new operator they had missed one.
+`GET /settings` is that list, built live on every request so it cannot drift from what it describes.
+
+### Almost nothing is stored
+
+`ac_client_settings` holds only the fields with no owner: contact details, the Algerian trade-register
+block (`rc`, `nif`, `nis`, `ai`), social links, the logo and the storefront's address. Everything else is
+read from whoever owns it. `store.name` and `store.description` are written *through* to WordPress rather
+than kept, because WordPress's copy is the one WP-CLI, the admin screens and every email template read.
+
+`tests/Api/settings.php` asserts the difference the only way it can be asserted: it renames `blogname`
+behind the API's back and checks the document followed, then checks `ac_client_settings` does not hold a
+name of its own. A copy would pass the first and fail the second.
+
+This is §63's argument against an analytics rollup and §68's against a version table, a third time: the
+copy is what goes stale, so there is no copy.
+
+### The refusals are the design
+
+Three things are refused **by name, with the reason returned**, rather than ignored — the `CustomerInput`
+device, because a caller who sets `currency` and gets a 200 will believe the currency changed.
+
+- **`currency`** — WooCommerce owns it and records it **per order**, so changing it later does not
+  convert the order book, it splits it. `scripts/setup.sh` sets it once, at provisioning.
+- **`features`** — `ENABLE_*` decides which providers *register*, and registration happens once at
+  bootstrap. A flag flipped in the database mid-request would disagree with the registry already built.
+- **secrets** — API keys, tokens and webhook secrets are environment variables and nothing else
+  (docs/SECURITY.md). An options row is readable by any plugin and survives in every database dump.
+
+`providers` is read-only for a subtler reason: it reports what actually registered, which follows from
+the flags **and** the credentials. A flag that is on with no key produces a provider that never loads,
+and this document is the only place that gap is visible.
+
+### `ac_manage_settings` gets its first call site
+
+The capability has existed since §45's matrix, held by Super Admin alone and checked by nothing — the
+state `Permissions::assertOwnsOr()` was in before §59c. No new capability was invented. It stays Super
+Admin's: this document names the shop's legal identity and the address of its storefront, and an Admin
+holding the other ten management capabilities is still refused here. The suite asserts that pair, because
+a refusal with no positive control proves nothing.
+
+Writes are audited **by field name, never by value**. A change to a trade-register number is exactly what
+an audit trail is for; the number itself does not belong in a table nobody ever cleans.
+
+### `client.json` — §73's missing step
+
+Roadmap §73's provisioning flow reads: clone the template, copy `.env`, **set client configuration**,
+`docker compose up`, `setup.sh`, configure integrations, deploy. Every step but the third was already a
+command. `wp algerian-commerce settings --from=client.json` is the third, and `scripts/setup.sh` applies
+`client.json` automatically when one is present.
+
+It is fed over STDIN, because `client.json` sits at the repository root and only the plugin directory is
+mounted into the containers. A missing `client.json` is fine — a development machine has no client — but
+a *present* one that fails to apply stops the setup, because a shop deployed with somebody else's contact
+details is worse than one with none. JSON has no comments, so keys beginning `_` are ignored rather than
+rejected: `client.json.example` is a file a human fills in, and it needs somewhere to explain itself.
+
 ## Development seed (§67)
 
 `src/Seed/` and `data/seed/` — 5 categories, 12 products, 5 variations, 6 customers, 4 coupons and 11
@@ -2897,6 +2964,7 @@ wp algerian-commerce roles [--list]             # install / re-sync capabilities
 wp algerian-commerce unlock <ip|login>          # lift a brute-force lockout
 wp algerian-commerce import-algeria [--dry-run] # §51 geography
 wp algerian-commerce seed [--dry-run] [--as=<login>] [--keep-notifications]
+wp algerian-commerce settings [--from=<file>] [--format=table]  # §71 client config
 wp algerian-commerce shipping-check             # can this store ship anything?
 wp algerian-commerce sync-destinations --provider=<name> [--dry-run] [--gaps=<n>]
 wp algerian-commerce sync-shipments [--provider=] [--limit=] [--min-age=]

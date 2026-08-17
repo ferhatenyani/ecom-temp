@@ -36,7 +36,7 @@ real upload can only happen in `http`.
 
 ## §65's five categories
 
-### Unit — 1,275 tests, 2,886 assertions, 75 files
+### Unit — 1,313 tests, 2,942 assertions, 76 files
 
 | §65 asks for | Covered by |
 |---|---|
@@ -52,7 +52,7 @@ an accident — `AnalyticsRange` takes the current instant as an argument so tha
 timezone boundary" is decidable in a test, and `AnalyticsCache::key()` is pure so that "a payload with
 money in it never shares a key with one without" is a unit test rather than an argument.
 
-### Integration — 23 suites in `tests/Api/`
+### Integration — 24 suites in `tests/Api/`
 
 §65's four words (WordPress, WooCommerce, custom plugin, database) are not four separate suites here.
 Every `tests/Api/` suite is an integration test by that definition: it runs inside a booted WordPress,

@@ -1,0 +1,61 @@
+{
+  "_comment": [
+    "Roadmap §71 (client configuration) and §73 (new client provisioning).",
+    "",
+    "Copy this to client.json, fill it in, and scripts/setup.sh applies it —",
+    "that is the 'set client configuration' step in §73's flow, which until now",
+    "was a checklist rather than a command. You can also apply it any time with:",
+    "",
+    "    docker compose run --rm wpcli wp algerian-commerce settings --from=client.json",
+    "",
+    "This file holds NO SECRETS. API keys, tokens and webhook secrets live in",
+    ".env and nowhere else (docs/SECURITY.md) — an options row is readable by any",
+    "plugin and survives in every database dump. client.json is safe to commit",
+    "for a real client; .env never is.",
+    "",
+    "Three things are deliberately NOT here, and the API refuses them by name",
+    "with the reason attached:",
+    "",
+    "  currency   WooCommerce owns it and records it per order, so changing it",
+    "             later splits the order book instead of converting it.",
+    "             setup.sh sets it once, at provisioning.",
+    "  features   ENABLE_COD, ENABLE_CHARGILY, ... are environment variables read",
+    "             once at bootstrap to decide which providers register. Set them",
+    "             in .env and restart. GET /settings reports them.",
+    "  providers  Read-only. It reports which providers actually registered,",
+    "             which follows from their flags AND their credentials — a flag",
+    "             that is on with no key produces a provider that never loads.",
+    "",
+    "Every field below is optional. Delete what does not apply."
+  ],
+
+  "store": {
+    "name": "Boutique Example",
+    "description": "Artisanat et produits du terroir algérien",
+    "storefront_url": "https://boutique-example.dz",
+    "logo_id": null
+  },
+
+  "contact": {
+    "email": "contact@boutique-example.dz",
+    "phone": "0551020304",
+    "address": "12 rue Larbi Ben M'hidi, Bab El Oued",
+    "wilaya": "Alger",
+    "hours": "Dimanche – Jeudi, 9h – 17h"
+  },
+
+  "legal": {
+    "registered_name": "SARL Example Commerce",
+    "rc": "16/00-1234567B25",
+    "nif": "000116001234567",
+    "nis": "000116001234568",
+    "ai": "16123456789"
+  },
+
+  "social": {
+    "facebook": "https://facebook.com/boutique.example",
+    "instagram": "https://instagram.com/boutique.example",
+    "tiktok": "",
+    "youtube": ""
+  }
+}

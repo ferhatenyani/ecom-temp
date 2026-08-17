@@ -24,8 +24,12 @@ use AlgerianCommerce\CLI\ImportAlgeriaCommand;
 use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
 use AlgerianCommerce\CLI\SeedCommand;
+use AlgerianCommerce\CLI\SettingsCommand;
 use AlgerianCommerce\CLI\ShippingCheckCommand;
 use AlgerianCommerce\Seed\Seeder;
+use AlgerianCommerce\Settings\SettingsController;
+use AlgerianCommerce\Settings\SettingsRepository;
+use AlgerianCommerce\Settings\SettingsService;
 use AlgerianCommerce\CLI\SyncDestinationsCommand;
 use AlgerianCommerce\CLI\SendNotificationsCommand;
 use AlgerianCommerce\CLI\SyncPaymentsCommand;
@@ -216,6 +220,7 @@ final class Plugin
     private ?GeoService $geoService = null;
     private ?GeoImporter $geoImporter = null;
     private ?Seeder $seeder = null;
+    private ?SettingsService $settingsService = null;
     private ?ContentTypes $contentTypes = null;
     private ?CmsRepository $cmsRepository = null;
     private ?AccountService $accountService = null;
@@ -421,6 +426,7 @@ final class Plugin
         WP_CLI::add_command('algerian-commerce unlock', new UnlockCommand($this->rateLimiter(), $this->rateLimitStore()));
         WP_CLI::add_command('algerian-commerce import-algeria', new ImportAlgeriaCommand($this->geoImporter()));
         WP_CLI::add_command('algerian-commerce seed', new SeedCommand($this->seeder()));
+        WP_CLI::add_command('algerian-commerce settings', new SettingsCommand($this->settingsService()));
         WP_CLI::add_command('algerian-commerce sync-destinations', new SyncDestinationsCommand($this->destinationSync()));
         WP_CLI::add_command('algerian-commerce sync-shipments', new SyncShipmentsCommand($this->shipmentPoller()));
         WP_CLI::add_command('algerian-commerce sync-payments', new SyncPaymentsCommand($this->paymentPoller()));
@@ -490,6 +496,7 @@ final class Plugin
             new MarketingController($this->logger(), $this->marketingService()),
             new AnalyticsController($this->logger(), $this->analyticsService()),
             new ImportExportController($this->logger(), $this->importService(), $this->exportService()),
+            new SettingsController($this->logger(), $this->settingsService()),
         ]);
     }
 
@@ -1207,6 +1214,26 @@ final class Plugin
             $this->notificationRepository(),
             $this->logger(),
             AC_CORE_PATH . 'data/seed'
+        );
+    }
+
+    /**
+     * The client configuration document — roadmap §71.
+     *
+     * It takes the three provider registries because the question an operator is
+     * really asking is "what is actually switched on here", and a flag that is
+     * on with no credentials produces a provider that never registers. Reading
+     * the registries is the only way to tell those apart.
+     */
+    public function settingsService(): SettingsService
+    {
+        return $this->settingsService ??= new SettingsService(
+            new SettingsRepository(),
+            $this->config(),
+            $this->paymentProviders(),
+            $this->shippingProviders(),
+            $this->marketingProviders(),
+            $this->auditLogger()
         );
     }
 
