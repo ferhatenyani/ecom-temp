@@ -63,6 +63,25 @@ final class AttributeCatalogue
         return $this->facetable = $facetable;
     }
 
+    /**
+     * Drop the memoised map — roadmap §88.
+     *
+     * This class is a singleton on `Plugin`, so the memo outlives any write in
+     * the same request. Before §88 nothing in this API could create an
+     * attribute and the memo could not go stale; now `AttributeService` calls
+     * this after every write, or §82's filters spend the rest of the request
+     * insisting the attribute that was just created does not exist.
+     *
+     * §83 hit the same shape from the other side: `ProductRepository` built its
+     * own `OptionSetRepository`, so clearing a product's options left the cart
+     * holding the memoised old document. A memo that outlives the write that
+     * invalidated it is the bug; the fix is a way to say so.
+     */
+    public function forget(): void
+    {
+        $this->facetable = null;
+    }
+
     /** @return list<string> */
     public function taxonomies(): array
     {

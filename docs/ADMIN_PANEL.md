@@ -236,6 +236,9 @@ it outside wp-admin.
 | GET, POST | `/attributes/{id}/terms` | `ac_manage_products` |
 | PATCH, DELETE | `/attributes/{id}/terms/{term_id}` | `ac_manage_products` |
 
+> **Built.** `src/Products/` — six classes, no migration, no table, no new capability.
+> `docs/API.md` → "Global attributes" is the contract; `tests/Api/attributes.php` is 59 assertions.
+
 No new capability. An attribute is part of the catalogue and `ac_manage_products` already writes
 products, variations and the attribute *assignments* on them.
 
@@ -254,11 +257,24 @@ So `POST /attributes` must:
    terms can be added immediately;
 2. bust `AttributeCatalogue`'s memoised `facetable()` map, or the next call in the same request
    reports the attribute as unfacetable;
-3. return `meta.facets_available: false` with a note, because facet **counts** for a
-   just-created attribute are genuinely zero until the next request. A response that omitted this is
-   one where the panel shows an empty facet and the developer blames the facet code.
+3. report what is actually true about facets, so the panel never shows an empty facet the developer
+   blames the facet code for.
 
 A live shop meets this once, at setup. A test fixture meets it every run.
+
+> **Corrected in the build: the trap closes completely, and step 3 was pessimistic.** This section
+> expected `meta.facets_available: false`, assuming a fresh attribute could not be counted.
+> Registering the taxonomy *and* setting the `$wc_product_attributes` global —
+> `taxonomy_is_product_attribute()` checks both — makes it filterable and countable in the same
+> request. Verified in one process: create → term created 201 → the attribute appears in
+> `meta.facets.attributes.facetable`. The response carries `meta.filterable: true` and a note that
+> counts cover published products, which is the honest remaining caveat.
+>
+> **WooCommerce's own REST controller does not do this** (read at 11.0.1), so `wc/v3` still cannot
+> take a term on a just-created attribute. Its registration could not be reused either —
+> `WC_Post_Types::register_taxonomies()` returns early on `taxonomy_exists('product_type')` — so the
+> taxonomy is registered with the minimum the write path needs, for one request, rather than by
+> copying sixty lines of labels and rewrite rules that would drift on the next upgrade.
 
 ### Deleting
 
@@ -276,6 +292,18 @@ Term slugs are what `GET /products?attributes[pa_size]=m` matches, so renaming a
 saved filter and every storefront link. `PATCH` on a term accepts `name` and `description` freely and
 treats `slug` as a **separate, explicit** field whose change is audited and whose response carries
 `meta.slug_changed: true`. Not refused — sometimes a slug is genuinely wrong — but never incidental.
+
+**Deleting a term is guarded the same way as deleting the attribute**, which this section did not
+say: it detaches every product on that term and breaks any variation that resolved through it, so it
+is a 409 with the count and `?force=true` overrides. The argument does not get weaker one level down,
+and the term case is the likelier of the two to be hit.
+
+> **What §88 found, and it was not in this section: the URL was decorative on every write route.**
+> `WP_REST_Request::get_param()` reads the JSON body before the URL, so `PATCH /products/1801` with
+> `{"id": 1802}` edited product 1802, and no sub-resource's read body could be PATCHed back. Fixed
+> centrally in `AbstractController::pinRouteParams()`; asserted in `tests/Api/security.php`. The
+> panel is unaffected in behaviour — it never sends a conflicting id — but Part V's "GET then PATCH
+> the whole object" advice depended on it.
 
 ---
 
@@ -1463,7 +1491,7 @@ mirroring §47's slicing.
 
 ```
  1. feat/admin-users          §87   DONE
- 2. feat/attributes           §88
+ 2. feat/attributes           §88   DONE
  3. feat/cms-writes           §89
  4. feat/notification-queue   §90
 ```
