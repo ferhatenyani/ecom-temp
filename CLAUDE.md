@@ -31,6 +31,49 @@ already declares all nine and `GET /settings` reports them. What is left in *thi
 `docs/DEPLOYMENT.md` and §74–§76's production separation. **SMS and WhatsApp are deliberately not
 implemented** — no messaging, notifications or automations — beyond the flags that would gate them.
 
+[ROADMAP_PHASE_2.md](ROADMAP_PHASE_2.md) is the companion document and adds **§82–§85 / steps 45–48**:
+advanced filtering and faceted search, product configurators, order tracking and email marketing
+campaigns. It supersedes nothing — where the two disagree about a rule, the first one wins. **§82 is
+built; §83–§85 are not.** Each of the four is done only when its "What was built" subsection is written
+into that document, so read the section *and* its outcome before extending one.
+
+**§82 is `src/Products/ProductFilters.php`, `AttributeCatalogue.php` and `FacetResolver.php` — nine new
+filters on `GET /products` plus an opt-in `meta.facets` block, no migration and no new `$wpdb` call
+site.** §82 orders a measurement before a design, and the measurement decided it: verified 2026-08-17,
+`wc/store/v1/products/collection-data` answers 200 headless, accepts every filter the section names, and
+**already obeys the rule that makes a facet correct** — with `query_type => 'or'` a group's own filter is
+lifted while every other facet narrows, which is the one property the naive implementation gets wrong.
+**So no facet SQL was written**, and `or` is the rule rather than a preference. That is §64's
+`WC_Product_CSV_Exporter` measurement again and §59b's warning honoured.
+
+**The filters could not be an adapter, and `wc_get_products()` silently ignores three of the args they
+need.** Measured the same day: a `meta_query` price band returned the whole fixture, `attribute` +
+`attribute_term` returned the whole fixture, and there is no `on_sale` query var — none of the three
+errors, so a filter that does not filter looks exactly like a catalogue that all matches. What works is
+`tax_query`, `stock_status`, `featured` and `include`, so attributes, categories and tags go through one
+AND-ed `tax_query`; price and rating go through
+`woocommerce_product_data_store_cpt_get_products_query`, attached for one call and removed in a `finally`;
+on-sale goes through `wc_get_product_ids_on_sale()` into `include`, **with `[0]` as the empty-list
+sentinel**, because WP_Query reads `post__in => []` as no restriction at all. **Only a global attribute
+can be faceted** — a custom one has no term to count — and naming one is a 400 listing
+`facetable_attributes`, never a silent empty result. **Counts cover published products only** and the
+block says so in `scope`, because `GET /products` lists drafts and an admin can otherwise see seven rows
+beside a count of six. Store API prices are **minor units**; groups are capped at 50 with `truncated`
+beside them; `category` and `tag` are now comma-separated id lists, and `category=12` is unchanged.
+**Search is deliberately untouched** — still WordPress's substring `LIKE`, with the trigger for a real
+index named — and there is no stored search history.
+
+**One trap the next fixture will hit: an attribute created in the same process cannot be counted.**
+`ProductCollectionData` skips any taxonomy failing `taxonomy_is_product_attribute()`, which needs the
+`$wc_product_attributes` global that WooCommerce fills on `init` — so `wc_create_attribute()` plus
+`register_taxonomy()` gives an attribute that is registered, queryable and invisible to the facet
+counter, answering 200 with an empty list. A live shop never meets it; a single-process fixture does.
+`tests/Api/products.php` builds **its own** catalogue rather than §67's, because the seeded shop's only
+attribute-bearing products carry *custom* attributes and this install registers no global ones — a suite
+written against the seed would assert zeroes and pass against anything. It carries **two** attributes on
+purpose: lifting every attribute filter instead of only the group's own passes one assertion and fails
+the other.
+
 **Password reset exists, and the SMTP settings finally reach WordPress** — PLAN §29/§30, the one thing
 §59c deferred. Two gaps were closed together because neither was useful alone. **`SMTP_HOST`,
 `SMTP_USERNAME` and `SMTP_PASSWORD` were documented in `.env.example`, read by `Config`, and passed to

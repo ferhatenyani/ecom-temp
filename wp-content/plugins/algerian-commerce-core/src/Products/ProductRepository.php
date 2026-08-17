@@ -33,11 +33,13 @@ final class ProductRepository
     }
 
     /**
-     * @param array{search?: string, status?: string, category?: int, sku?: string, page: int, per_page: int} $criteria
+     * @param array{search?: string, status?: string, sku?: string, page: int, per_page: int} $criteria
      * @return array{items: list<WC_Product>, total: int}
      */
-    public function paginate(array $criteria): array
+    public function paginate(array $criteria, ?ProductFilters $filters = null): array
     {
+        $filters ??= ProductFilters::none();
+
         $args = [
             'limit' => $criteria['per_page'],
             'page' => $criteria['page'],
@@ -65,16 +67,212 @@ final class ProductRepository
             $args['sku'] = $criteria['sku'];
         }
 
-        if (!empty($criteria['category'])) {
-            $args['category'] = [$this->categorySlug((int) $criteria['category'])];
-        }
+        $args += $this->filterArgs($filters);
 
-        $results = wc_get_products($args);
+        $results = $this->query($args, $filters);
 
         return [
             'items' => is_object($results) ? $results->products : [],
             'total' => is_object($results) ? (int) $results->total : 0,
         ];
+    }
+
+    /**
+     * `wc_get_products()` with the price and rating bands attached — roadmap §82.
+     *
+     * **`wc_get_products()` silently ignores a `meta_query` passed to it.**
+     * Measured on this install 2026-08-17: a `_price BETWEEN 150 AND 450`
+     * clause handed to `wc_get_products()` returned all six fixture products,
+     * priced 100 to 590, both on its own and beside a `tax_query` that *did*
+     * apply. `WC_Product_Data_Store_CPT` builds its own WP_Query args from the
+     * vocabulary it recognises and drops the rest — so the filter does not
+     * fail, it simply does not filter, and a price band that matches everything
+     * looks exactly like a shop whose prices are all in range.
+     *
+     * `woocommerce_product_data_store_cpt_get_products_query` is WooCommerce's
+     * own documented seam for precisely this, and it is where the clause is
+     * added. The filter is attached for the length of one call and removed in a
+     * `finally`, because a price band left hooked would quietly narrow every
+     * later product query in the same request.
+     *
+     * The same measurement found `attribute` + `attribute_term` ignored in the
+     * same way, which is why attributes go through `tax_query` — that one works.
+     *
+     * @param array<string, mixed> $args
+     */
+    private function query(array $args, ProductFilters $filters): mixed
+    {
+        $metaQuery = $this->metaQuery($filters);
+
+        if ($metaQuery === []) {
+            return wc_get_products($args);
+        }
+
+        $attach = static function (array $wpQueryArgs) use ($metaQuery): array {
+            $existing = isset($wpQueryArgs['meta_query']) && is_array($wpQueryArgs['meta_query'])
+                ? $wpQueryArgs['meta_query']
+                : [];
+
+            /*
+             * Nested and AND-ed, rather than appended.
+             *
+             * WooCommerce builds this list with `relation` absent today, which
+             * WP_Meta_Query reads as AND — so appending would be correct. It
+             * would also be correct only for as long as that stays true: a
+             * future `relation => 'OR'` on WooCommerce's own clauses would make
+             * a price band **widen** the result set instead of narrowing it,
+             * which is this section's whole failure mode and the one thing a
+             * green test suite would not notice. Keeping their group intact
+             * inside an explicit AND costs one array and cannot go that way.
+             */
+            $wpQueryArgs['meta_query'] = $existing === []
+                ? array_merge(['relation' => 'AND'], $metaQuery)
+                : array_merge(['relation' => 'AND', $existing], $metaQuery);
+
+            return $wpQueryArgs;
+        };
+
+        add_filter('woocommerce_product_data_store_cpt_get_products_query', $attach);
+
+        try {
+            return wc_get_products($args);
+        } finally {
+            remove_filter('woocommerce_product_data_store_cpt_get_products_query', $attach);
+        }
+    }
+
+    /**
+     * The price and rating bands, as WP_Query meta clauses.
+     *
+     * `_price` is multi-valued on a variable product — one row per variation —
+     * so a band matches a product when *any* of its prices falls inside it,
+     * which is what a shopper filtering a catalogue means. It is also the
+     * effective price: WooCommerce writes the sale price into `_price` while a
+     * sale is running.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function metaQuery(ProductFilters $filters): array
+    {
+        $clauses = [];
+        $min = $filters->minPrice;
+        $max = $filters->maxPrice;
+
+        if ($min !== null && $max !== null) {
+            $clauses[] = [
+                'key' => '_price',
+                'value' => [$min, $max],
+                'compare' => 'BETWEEN',
+                'type' => 'DECIMAL(20,6)',
+            ];
+        } elseif ($min !== null) {
+            $clauses[] = ['key' => '_price', 'value' => $min, 'compare' => '>=', 'type' => 'DECIMAL(20,6)'];
+        } elseif ($max !== null) {
+            $clauses[] = ['key' => '_price', 'value' => $max, 'compare' => '<=', 'type' => 'DECIMAL(20,6)'];
+        }
+
+        if ($filters->ratingMin !== null) {
+            $clauses[] = [
+                'key' => '_wc_average_rating',
+                'value' => $filters->ratingMin,
+                'compare' => '>=',
+                'type' => 'DECIMAL(10,2)',
+            ];
+        }
+
+        return $clauses;
+    }
+
+    /**
+     * Everything `wc_get_products()` does honour — roadmap §82.
+     *
+     * Measured 2026-08-17: `tax_query` (including an AND relation across
+     * several taxonomies), `stock_status`, `featured`, `tag` and `include` all
+     * apply correctly. Attributes, categories and tags therefore go through one
+     * `tax_query` rather than through WooCommerce's per-kind shorthands, so
+     * that one code path builds every taxonomy clause and there is one place
+     * for a taxonomy name to be checked before it gets there.
+     *
+     * @return array<string, mixed>
+     */
+    private function filterArgs(ProductFilters $filters): array
+    {
+        $args = [];
+        $taxQuery = [];
+
+        foreach ($filters->attributes as $taxonomy => $slugs) {
+            $taxQuery[] = [
+                'taxonomy' => $taxonomy,
+                'field' => 'slug',
+                'terms' => $slugs,
+                'operator' => 'IN',
+            ];
+        }
+
+        if ($filters->categories !== []) {
+            $taxQuery[] = [
+                'taxonomy' => 'product_cat',
+                'field' => 'term_id',
+                'terms' => $filters->categories,
+                'operator' => 'IN',
+            ];
+        }
+
+        if ($filters->tags !== []) {
+            $taxQuery[] = [
+                'taxonomy' => 'product_tag',
+                'field' => 'term_id',
+                'terms' => $filters->tags,
+                'operator' => 'IN',
+            ];
+        }
+
+        if ($taxQuery !== []) {
+            // Different axes narrow together; values inside one axis are
+            // alternatives, which is the IN operator above.
+            $taxQuery['relation'] = 'AND';
+            $args['tax_query'] = $taxQuery;
+        }
+
+        if ($filters->stockStatus !== null) {
+            $args['stock_status'] = $filters->stockStatus;
+        }
+
+        if ($filters->featured !== null) {
+            $args['featured'] = $filters->featured;
+        }
+
+        if ($filters->onSale !== null) {
+            $args += $this->onSaleArgs($filters->onSale);
+        }
+
+        return $args;
+    }
+
+    /**
+     * On sale, expressed the only way WooCommerce supports.
+     *
+     * There is no `on_sale` query var — measured 2026-08-17, passing one
+     * returned the whole catalogue. `wc_get_product_ids_on_sale()` is
+     * WooCommerce's own answer to the question (it is what the storefront's own
+     * shortcodes use) and it returns an id list an `include` honours.
+     *
+     * **An empty `include` is not an empty result.** WP_Query treats
+     * `post__in => []` as no restriction at all, so a shop with nothing on sale
+     * would answer `on_sale=true` with its entire catalogue. The impossible id
+     * `0` is the sentinel that makes "no products are on sale" mean it.
+     *
+     * @return array<string, mixed>
+     */
+    private function onSaleArgs(bool $onSale): array
+    {
+        $ids = array_map('intval', wc_get_product_ids_on_sale());
+
+        if ($onSale) {
+            return ['include' => $ids === [] ? [0] : $ids];
+        }
+
+        return $ids === [] ? [] : ['exclude' => $ids];
     }
 
     /**
@@ -427,12 +625,5 @@ final class ProductRepository
         }
 
         return $ids;
-    }
-
-    private function categorySlug(int $termId): string
-    {
-        $term = get_term($termId, 'product_cat');
-
-        return is_object($term) && isset($term->slug) ? (string) $term->slug : '';
     }
 }

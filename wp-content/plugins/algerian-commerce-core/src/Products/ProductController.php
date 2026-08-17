@@ -92,16 +92,46 @@ final class ProductController extends AbstractController
         ]);
     }
 
-    /** @return array<string, array<string, mixed>> */
+    /**
+     * List, narrow and count — roadmap §47, §82.
+     *
+     * **Every arg that declares a `sanitize_callback` declares
+     * `'validate_callback' => 'rest_validate_request_arg'` beside it.** That is
+     * CLAUDE.md's standing rule and §82 restates it, because a custom sanitize
+     * callback displaces the default that would otherwise enforce `minimum`,
+     * `maximum`, `enum` and `pattern` — leaving them advisory on exactly the
+     * args a filter payload arrives in.
+     *
+     * `category` widened from a single id to a comma-separated list, per §82's
+     * "category (repeatable)". `category=12` is unchanged for every existing
+     * caller; `category=12,15` is the new form.
+     *
+     * The shapes WordPress cannot express — the `attributes` map, the ordering
+     * of a price band — are `ProductFilters`' job, so this method never
+     * inspects a value it has not declared.
+     *
+     * @return array<string, array<string, mixed>>
+     */
     private function indexArgs(): array
     {
-        return $this->paginationArgs() + $this->idArg('category', false) + [
+        $termList = [
+            'type' => 'string',
+            'description' => 'A term id, or a comma-separated list of them.',
+            // Empty is allowed: a storefront clearing a filter sends `category=`.
+            'pattern' => '^$|^[0-9]+(,[0-9]+)*$',
+            'validate_callback' => 'rest_validate_request_arg',
+            'sanitize_callback' => 'sanitize_text_field',
+        ];
+
+        return $this->paginationArgs() + [
             'search' => [
                 'type' => 'string',
+                'validate_callback' => 'rest_validate_request_arg',
                 'sanitize_callback' => 'sanitize_text_field',
             ],
             'sku' => [
                 'type' => 'string',
+                'validate_callback' => 'rest_validate_request_arg',
                 'sanitize_callback' => 'sanitize_text_field',
             ],
             'status' => [
@@ -118,6 +148,47 @@ final class ProductController extends AbstractController
                 'default' => 'desc',
                 'enum' => ['asc', 'desc'],
             ],
+            'category' => $termList,
+            'tag' => $termList,
+            'min_price' => [
+                'type' => 'number',
+                'minimum' => 0,
+                'validate_callback' => 'rest_validate_request_arg',
+            ],
+            'max_price' => [
+                'type' => 'number',
+                'minimum' => 0,
+                'validate_callback' => 'rest_validate_request_arg',
+            ],
+            /*
+             * `attributes[pa_size]=m,l`. Declared as an object so WordPress
+             * refuses a scalar before ProductFilters sees it; the taxonomy name
+             * itself is matched against the registered attributes in
+             * AttributeCatalogue and never reaches a query as free text.
+             */
+            'attributes' => [
+                'type' => 'object',
+                'description' => 'Global attribute filters, e.g. attributes[pa_size]=m,l.',
+                'validate_callback' => 'rest_validate_request_arg',
+            ],
+            'stock_status' => [
+                'type' => 'string',
+                'enum' => ProductInput::STOCK_STATUSES,
+            ],
+            'on_sale' => ['type' => 'boolean'],
+            'featured' => ['type' => 'boolean'],
+            'rating_min' => [
+                'type' => 'number',
+                'minimum' => 0,
+                'maximum' => 5,
+                'validate_callback' => 'rest_validate_request_arg',
+            ],
+            'facets' => [
+                'type' => 'string',
+                'description' => 'Opt-in facet groups: ' . implode(', ', ProductFilters::FACET_GROUPS) . '.',
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'sanitize_text_field',
+            ],
         ];
     }
 
@@ -126,22 +197,26 @@ final class ProductController extends AbstractController
         $page = (int) $request->get_param('page');
         $perPage = (int) $request->get_param('per_page');
 
-        $result = $this->service->list([
-            'page' => $page,
-            'per_page' => $perPage,
-            'search' => (string) $request->get_param('search'),
-            'sku' => (string) $request->get_param('sku'),
-            'status' => (string) $request->get_param('status'),
-            'category' => (int) $request->get_param('category'),
-            'orderby' => (string) $request->get_param('orderby'),
-            'order' => (string) $request->get_param('order'),
-        ]);
-
-        return Response::success(
-            ProductPresenter::toArrayList($result['items']),
-            200,
-            Response::paginationMeta($result['total'], $page, $perPage)
+        $result = $this->service->list(
+            [
+                'page' => $page,
+                'per_page' => $perPage,
+                'search' => (string) $request->get_param('search'),
+                'sku' => (string) $request->get_param('sku'),
+                'status' => (string) $request->get_param('status'),
+                'orderby' => (string) $request->get_param('orderby'),
+                'order' => (string) $request->get_param('order'),
+            ],
+            ProductFilters::fromParams($request->get_params())
         );
+
+        $meta = Response::paginationMeta($result['total'], $page, $perPage);
+
+        if (isset($result['facets'])) {
+            $meta['facets'] = $result['facets'];
+        }
+
+        return Response::success(ProductPresenter::toArrayList($result['items']), 200, $meta);
     }
 
     public function show(WP_REST_Request $request): WP_REST_Response
