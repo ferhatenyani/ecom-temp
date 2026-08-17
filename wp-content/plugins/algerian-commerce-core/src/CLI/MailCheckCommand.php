@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\CLI;
 
 use AlgerianCommerce\Account\PasswordResetService;
+use AlgerianCommerce\Notifications\MailDns;
 use AlgerianCommerce\Notifications\MailTransport;
 use WP_CLI;
 
@@ -31,7 +32,8 @@ final class MailCheckCommand
 {
     public function __construct(
         private readonly MailTransport $transport,
-        private readonly PasswordResetService $reset
+        private readonly PasswordResetService $reset,
+        private readonly MailDns $dns
     ) {
     }
 
@@ -43,10 +45,17 @@ final class MailCheckCommand
      * [--to=<address>]
      * : Send a test message here. Without it, nothing is sent.
      *
+     * [--dkim-selector=<name>]
+     * : The DKIM selector to look up. Defaults to Brevo's, which is `brevo`.
+     *
+     * [--skip-dns]
+     * : Do not query SPF, DKIM and DMARC.
+     *
      * ## EXAMPLES
      *
      *     wp algerian-commerce mail-check
      *     wp algerian-commerce mail-check --to=you@example.com
+     *     wp algerian-commerce mail-check --dkim-selector=s1
      *
      * @param list<string>          $args
      * @param array<string, string> $assoc
@@ -97,6 +106,13 @@ final class MailCheckCommand
             WP_CLI::log('Password reset: unavailable until both of the above are set.');
         }
 
+        if (!isset($assoc['skip-dns'])) {
+            $this->reportDns(
+                (string) $mail['from'],
+                (string) ($assoc['dkim-selector'] ?? MailDns::DEFAULT_SELECTOR)
+            );
+        }
+
         $to = trim((string) ($assoc['to'] ?? ''));
 
         if ($to === '') {
@@ -131,5 +147,85 @@ final class MailCheckCommand
         WP_CLI::success(
             "Handed to the transport for {$to}. That is not proof it arrived — check the inbox."
         );
+    }
+
+    /**
+     * Is the sending domain's DNS published?
+     *
+     * Reported rather than enforced: a shop mid-setup, or one whose DNS has not
+     * propagated, is a normal state and this command is a diagnostic. It warns
+     * and never exits non-zero, because `--to` above is the check that answers
+     * the question somebody actually asked.
+     */
+    private function reportDns(string $from, string $selector): void
+    {
+        $domain = MailDns::domainOf($from);
+
+        if ($domain === '') {
+            WP_CLI::warning(
+                'No From address, so SPF, DKIM and DMARC cannot be checked. Set AC_MAIL_FROM in .env.'
+            );
+
+            return;
+        }
+
+        WP_CLI::log('');
+        WP_CLI::log("Sending domain: {$domain}");
+
+        $rows = $this->dns->check($domain, $selector);
+
+        WP_CLI\Utils\format_items('table', $rows, ['record', 'host', 'status', 'detail']);
+
+        foreach ($rows as $row) {
+            if ($row['status'] === MailDns::MISSING || $row['status'] === MailDns::PROBLEM) {
+                WP_CLI::warning("{$row['record']}: {$row['detail']}");
+            }
+        }
+
+        if ($this->allUnknown($rows)) {
+            WP_CLI::warning(
+                'No DNS answers at all — this container probably cannot resolve names. '
+                . 'That is not evidence the records are missing; re-run where DNS works.'
+            );
+
+            return;
+        }
+
+        /*
+         * The one combination worth calling out on its own. Credentials that
+         * work plus DNS that does not is the state where every send succeeds
+         * locally and lands in spam — and §85 turns that from one lost password
+         * reset into a campaign to the whole customer list.
+         */
+        if ($this->transport->isConfigured() && $this->hasGap($rows)) {
+            WP_CLI::warning(
+                'SMTP is configured but the domain is not fully authenticated. '
+                . 'Mail will send and may still be filtered. See docs/DEPLOYMENT.md.'
+            );
+        }
+    }
+
+    /** @param list<array{record: string, host: string, status: string, detail: string}> $rows */
+    private function allUnknown(array $rows): bool
+    {
+        foreach ($rows as $row) {
+            if ($row['status'] !== MailDns::UNKNOWN) {
+                return false;
+            }
+        }
+
+        return $rows !== [];
+    }
+
+    /** @param list<array{record: string, host: string, status: string, detail: string}> $rows */
+    private function hasGap(array $rows): bool
+    {
+        foreach ($rows as $row) {
+            if ($row['status'] === MailDns::MISSING || $row['status'] === MailDns::PROBLEM) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
