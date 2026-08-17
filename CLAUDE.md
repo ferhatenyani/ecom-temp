@@ -25,9 +25,26 @@ Chargily with PLAN §19's transaction table, §60's three webhooks, §61's CMS a
 §68's version pinning, §69's API walkthrough, §59b's cart and checkout, §59c's shopper
 accounts, §59d's coupons and notifications, §66's automation scripts and §67's seed data.
 **§4's build order is now complete through step 42 (backup/recovery); steps 43 and 44 are the Next.js
-admin and storefront, which are separate repositories.** What is left in *this* repository is §70's
-integration contract, §71's client configuration, §72's feature flags, and the two documents that still
-do not exist — `docs/API.md` and `docs/DEPLOYMENT.md`.
+admin and storefront, which are separate repositories.** §70's contract is written and checked. What is
+left in *this* repository is §71's client configuration, §72's feature flags, and `docs/DEPLOYMENT.md`.
+
+**§70 is [docs/API.md](docs/API.md), and it is a check rather than a document.** The rule §70 states was
+already obeyed — the API is `/algerian-commerce/v1`, nothing depends on `/wp/v2` or `/wc/v3`, `Cors`
+serves an allowlist. What was missing was the contract *written down*: the envelope, the error codes, the
+three credentials, CORS, rate limits, pagination, every route with its capability, a checkout walkthrough,
+and the list of what bites people. **The three credentials lead it, because confusing them is the
+integration mistake it exists to prevent** — an Application Password over `Authorization: Basic`, a
+shopper session over `X-Customer-Token`, a cart token over `Cart-Token`, none interchangeable.
+
+**A reference that drifts from the router is worse than none**, so `scripts/test-api.sh` → "documented
+contract" fetches the namespace index over HTTP, normalises `(?P<id>\d+)` to `{id}`, and asserts every
+registered route appears in the document — with a floor of 80, because a grep matching nothing reports a
+fully documented API exactly as a fully documented one does. §68's argument a second time. **It found two
+defects on its first run**: the CMS page route is `{slug}` and the document wrote `{path}`, and
+`/inventory/lookup` had been written with its query string attached so it matched nothing. The check runs
+in `test-api.sh` rather than a `tests/Api` suite because `docs/` is not inside the plugin and only the
+plugin is mounted into the containers. It is one-directional on purpose: a documented route with no
+registration is legitimate, since the courier webhooks are 404 until their secrets are set.
 
 **§66 is six scripts and §67 is `src/Seed/` plus `data/seed/`, built together because `seed.sh` is
 §67's delivery mechanism.** No migration and no table — `Schema::VERSION` is still 10.
@@ -558,7 +575,8 @@ national commune code, not a postal code.
 its "Webhooks" section is the §55 rule every inbound endpoint follows, its "File uploads" section is the
 §61 rule every route that writes a file follows, and its "CSRF" section is the §65 rule-out) and
 [docs/TESTING.md](docs/TESTING.md) (§65's map — read before writing a suite) supersede the roadmap for their
-topics. `docs/API.md` and `docs/DEPLOYMENT.md` do not exist yet.
+topics. [docs/API.md](docs/API.md) is §70's contract and is verified by `scripts/test-api.sh` — read it
+before changing a route's shape. `docs/DEPLOYMENT.md` does not exist yet.
 
 ## Architecture
 
