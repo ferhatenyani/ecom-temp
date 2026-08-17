@@ -83,6 +83,9 @@ services:
       AC_RATE_LIMIT_READS: ${AC_RATE_LIMIT_READS:-}
       AC_RATE_LIMIT_WRITES: ${AC_RATE_LIMIT_WRITES:-}
       AC_RATE_LIMIT_UPLOADS: ${AC_RATE_LIMIT_UPLOADS:-}
+      # GET /orders/track only, per IP — roadmap §84. An unauthenticated read
+      # whose key is a MAC does not belong on the 600-a-minute read allowance.
+      AC_RATE_LIMIT_TRACKING: ${AC_RATE_LIMIT_TRACKING:-}
       AC_RATE_LIMIT_AUTH_FAILURES: ${AC_RATE_LIMIT_AUTH_FAILURES:-}
       AC_RATE_LIMIT_TRUSTED_IPS: ${AC_RATE_LIMIT_TRUSTED_IPS:-}
       # The upload cap in bytes. docker/php-uploads.ini raises PHP's own limit
@@ -175,6 +178,8 @@ services:
       AC_RATE_LIMIT_READS: ${AC_RATE_LIMIT_READS:-}
       AC_RATE_LIMIT_WRITES: ${AC_RATE_LIMIT_WRITES:-}
       AC_RATE_LIMIT_UPLOADS: ${AC_RATE_LIMIT_UPLOADS:-}
+      # GET /orders/track only, per IP — roadmap §84.
+      AC_RATE_LIMIT_TRACKING: ${AC_RATE_LIMIT_TRACKING:-}
       AC_RATE_LIMIT_AUTH_FAILURES: ${AC_RATE_LIMIT_AUTH_FAILURES:-}
       AC_RATE_LIMIT_TRUSTED_IPS: ${AC_RATE_LIMIT_TRUSTED_IPS:-}
       AC_MEDIA_MAX_BYTES: ${AC_MEDIA_MAX_BYTES:-}

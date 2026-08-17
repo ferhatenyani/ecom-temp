@@ -26,6 +26,7 @@ final class RateLimiter
     public const DEFAULT_READS = 600;
     public const DEFAULT_WRITES = 120;
     public const DEFAULT_UPLOADS = 30;
+    public const DEFAULT_TRACKING = 20;
     public const DEFAULT_AUTH_FAILURES = 10;
 
     public const WINDOW = 60;
@@ -61,6 +62,33 @@ final class RateLimiter
     public function uploadLimit(): RateLimit
     {
         return new RateLimit('upload', $this->limitFrom('AC_RATE_LIMIT_UPLOADS', self::DEFAULT_UPLOADS), self::WINDOW);
+    }
+
+    /**
+     * `GET /orders/track`, per IP — roadmap §84.
+     *
+     * An unauthenticated read whose only key is a MAC, which makes it the one
+     * route in this API where an attacker's best move is volume. The read limit
+     * would also apply, and it is 600 a minute: sized for a Next.js admin
+     * rendering a dashboard behind a credential, which is not the right
+     * allowance for a public endpoint that answers questions about orders.
+     *
+     * Twenty a minute is generous for the traffic this route actually has — a
+     * customer opens a link and refreshes it a few times — and it is nowhere
+     * near enough to search a 128-bit space.
+     *
+     * Deliberately not the failed-authentication counter, which
+     * `PasswordResetService` does share: that one locks an IP out of signing in
+     * for fifteen minutes, and clicking a stale tracking link is not evidence
+     * of credential guessing.
+     */
+    public function trackingLimit(): RateLimit
+    {
+        return new RateLimit(
+            'tracking',
+            $this->limitFrom('AC_RATE_LIMIT_TRACKING', self::DEFAULT_TRACKING),
+            self::WINDOW
+        );
     }
 
     /**

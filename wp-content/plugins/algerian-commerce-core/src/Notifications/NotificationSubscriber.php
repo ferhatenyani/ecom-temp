@@ -6,6 +6,7 @@ namespace AlgerianCommerce\Notifications;
 
 use AlgerianCommerce\Shipping\Shipment;
 use AlgerianCommerce\Shipping\ShipmentStatus;
+use AlgerianCommerce\Tracking\TrackingLink;
 use WC_Order;
 use WC_Product;
 
@@ -34,8 +35,16 @@ use WC_Product;
  */
 final class NotificationSubscriber
 {
-    public function __construct(private readonly NotificationService $service)
-    {
+    /**
+     * Roadmap §84 makes the tracking link "a message template and a queue row,
+     * not a mechanism", and `$links` is the whole of the mechanism it needed.
+     * Optional, so a subscriber built without it queues exactly the messages it
+     * queued before — with no link rather than a broken one.
+     */
+    public function __construct(
+        private readonly NotificationService $service,
+        private readonly ?TrackingLink $links = null
+    ) {
     }
 
     public function register(): void
@@ -126,6 +135,22 @@ final class NotificationSubscriber
         $this->queueOrderEvent($event, $order, [
             'provider' => $shipment->provider,
             'tracking_number' => $shipment->trackingNumber,
+            /*
+             * Roadmap §84's one precondition, and it is the one
+             * `PasswordResetService` already established: **the link needs the
+             * storefront URL, which this backend cannot derive.** §71 stores it
+             * and §62 refused to guess the same value for canonical URLs, so
+             * `urlFor()` answers `''` when it is unset and the message is queued
+             * without a link. Inventing one on the admin domain would send a
+             * customer to a login screen they have no account for — which is
+             * worse than no link, because it looks like one that works.
+             *
+             * A reset refuses outright in the same situation and this does not,
+             * because the two messages differ: a reset with no link is useless,
+             * while "your parcel is on its way, tracking number X" is worth
+             * sending on its own.
+             */
+            'tracking_url' => $this->links?->urlFor($order) ?? '',
         ]);
     }
 

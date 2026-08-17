@@ -36,7 +36,7 @@ real upload can only happen in `http`.
 
 ## §65's five categories
 
-### Unit — 1,443 tests, 3,149 assertions, 83 files
+### Unit — 1,516 tests, 3,431 assertions, 85 files
 
 | §65 asks for | Covered by |
 |---|---|
@@ -46,13 +46,15 @@ real upload can only happen in `http`.
 | provider mapping | `YalidineStatusMapTest`, `YalidineParcelTest`, `ZRExpressProviderTest`, `ChargilyProviderTest`, `MetaProviderTest`, `CourierWebhookTest` |
 | validation | every `*InputTest` — 14 of them — plus `ProductFiltersTest` for the read side and `OptionSetTest` for §83's document |
 | permissions | `CapabilitiesTest`, `IdentityTest` |
+| credentials this project mints | `TrackingTokenTest` — §84's token is the only one, and the properties it must have are arithmetic |
+| what a public payload may say | `TrackingPresenterTest` — §84's disclosure list, key by key |
 
 Everything here is pure: no WordPress, no database, no clock. That is a deliberate constraint rather than
 an accident — `AnalyticsRange` takes the current instant as an argument so that "what does `7d` mean at a
 timezone boundary" is decidable in a test, and `AnalyticsCache::key()` is pure so that "a payload with
 money in it never shares a key with one without" is a unit test rather than an argument.
 
-### Integration — 25 suites in `tests/Api/`
+### Integration — 26 suites in `tests/Api/`
 
 §65's four words (WordPress, WooCommerce, custom plugin, database) are not four separate suites here.
 Every `tests/Api/` suite is an integration test by that definition: it runs inside a booted WordPress,
@@ -221,6 +223,35 @@ order **and** customer A is served their own": a refusal on its own proves only 
 broken, which is this document's standing rule about controls applied to the case that will most need
 it.
 
+**That is now built twice.** `tests/Api/account.php` holds the original pair against an order, and
+`tests/Api/tracking.php` holds it again against §84's parcel — "B is refused A's order **and** learns no
+tracking number from the 403", beside A being served their own with the parcel attached. The `shipment`
+block is added *after* `assertOwnsOr()` in `AccountService::order()`, and the pair is what would show it if
+somebody moved it above.
+
+**§84 also added the first owner-*less* resource, and it needs a different shape.** A guest order has
+`customer_id` 0, so there is nothing to compare a session against; `GET /orders/track` is keyed on a token
+instead. The tests that replace the ownership pair are: a tampered MAC is refused while the real token
+works; another order's MAC against this order's id is refused while that order's own token works; the ids
+either side of a real order cannot be walked with a valid MAC; and a revoked link stops working while a
+re-issued one does not. Every one of them carries the positive control, because a route that refused
+everything would pass all four halves that matter and none of the ones that prove it works.
+
+#### Disclosure lists are asserted twice — by key and by value
+
+§84 publishes a fixed list of fields on a public page, and the failure mode is not a leak today: it is a
+presenter that grows a field in six months. Asserting the keys catches a field being *added*; it does not
+catch one being *renamed*, so both halves are written.
+
+`tests/Unit/TrackingPresenterTest` hands the presenter a whole shipment row whose metadata holds a Yalidine
+`label` URL, a phone number and a street address — everything §84 forbids — and asserts the output's keys
+are exactly `TrackingPresenter::PUBLIC_FIELDS`. `tests/Api/tracking.php` does the same over a real order and
+then greps the encoded response for each forbidden **value**. A presenter emitting `courier_label` instead
+of `label` passes the first and fails the second.
+
+This is the same discipline as "assert a payload does not widen a result set": the assertion has to be one
+the broken implementation actually fails.
+
 #### Privilege escalation — the sweep is the new part
 
 Each feature's own suite asserts a 403 for the wrong capability on its own routes. What none of them can
@@ -304,6 +335,18 @@ transport, not the logic. It found the trashed-SKU 500 on its first run.
 Order writes are deliberately not in it: an order write leaves stock movements and audit rows behind in a
 database this script does not own, and `tests/Api/orders.php` already drives the whole lifecycle
 in-process.
+
+**§84's tracking block was added to the same stage for the same class of reason.** Two of its properties
+cannot be seen anywhere else: the rate limit, because the counter keys on a client IP that
+`rest_do_request()` does not have — and because the `rest` stage runs with `AC_RATE_LIMIT_DISABLED=1`, so
+one suite's counters cannot fail the next one's — and the `X-Tracking-Token` header, because
+`rest_do_request()` parses no headers, exactly as §59b's `Cart-Token` and §59c's `X-Customer-Token` are
+covered here rather than in their own suites.
+
+That block also asserts the *separation* of the counters, which is the part that would fail silently: while
+tracking is throttled, an authenticated read must still answer 200 and a wrong customer login must still
+answer **401 rather than 429**. If the tracking group had been wired to the failed-login counter, any
+forwarded tracking link would be a denial of service against the shop's own customers signing in.
 
 ## Conventions for the next suite
 

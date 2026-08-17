@@ -128,6 +128,9 @@ use AlgerianCommerce\Shipping\ShippingController;
 use AlgerianCommerce\Shipping\ShippingRuleRepository;
 use AlgerianCommerce\Shipping\ShippingService;
 use AlgerianCommerce\Shipping\ShippingWebhookController;
+use AlgerianCommerce\Tracking\TrackingController;
+use AlgerianCommerce\Tracking\TrackingLink;
+use AlgerianCommerce\Tracking\TrackingService;
 use AlgerianCommerce\Products\ProductCategoryController;
 use AlgerianCommerce\Cart\OptionPriceSubscriber;
 use AlgerianCommerce\Products\AttributeCatalogue;
@@ -259,6 +262,8 @@ final class Plugin
     private ?AnalyticsService $analyticsService = null;
     private ?ImportService $importService = null;
     private ?ExportService $exportService = null;
+    private ?TrackingLink $trackingLink = null;
+    private ?TrackingService $trackingService = null;
     private bool $booted = false;
 
     private function __construct()
@@ -310,7 +315,9 @@ final class Plugin
         $this->registerPaymentPolling();
         $this->registerMarketingDrain();
         $this->registerNotificationDrain();
-        (new NotificationSubscriber($this->notificationService()))->register();
+        // Roadmap §84: the shipment messages carry a tracking link when §71
+        // knows where the storefront is, and no link at all when it does not.
+        (new NotificationSubscriber($this->notificationService(), $this->trackingLink()))->register();
         /*
          * The SMTP transport, hooked here rather than lazily: it exists to
          * answer `phpmailer_init`, and a hook nobody registered is a mail
@@ -521,6 +528,7 @@ final class Plugin
             new CouponController($this->logger(), $this->couponService()),
             new CartController($this->logger(), $this->cartService()),
             new CheckoutController($this->logger(), $this->checkoutService()),
+            new TrackingController($this->logger(), $this->trackingService()),
             new CmsController($this->logger(), $this->cmsService()),
             new MediaController($this->logger(), $this->mediaService()),
             new MarketingController($this->logger(), $this->marketingService()),
@@ -795,7 +803,10 @@ final class Plugin
             $this->customerRepository(),
             $this->orderRepository(),
             $this->auditLogger(),
-            $this->rateLimiter()
+            $this->rateLimiter(),
+            // Roadmap §84's first door: the `shipment` block on
+            // GET /account/orders/{id}, added after the ownership check.
+            $this->trackingService()
         );
     }
 
@@ -852,7 +863,10 @@ final class Plugin
             $this->paymentProviders(),
             $this->logger(),
             $this->cartService(),
-            $this->optionSetRepository()
+            $this->optionSetRepository(),
+            // Roadmap §84: the checkout response carries the tracking token,
+            // because this is the last moment the caller is provably the buyer.
+            $this->trackingLink()
         );
     }
 
@@ -901,6 +915,41 @@ final class Plugin
         global $wpdb;
 
         return $this->shipmentRepository ??= new ShipmentRepository($wpdb);
+    }
+
+    /**
+     * Tracking links — roadmap §84.
+     *
+     * One instance, shared by three callers that each want a different half:
+     * `CheckoutService` returns the token, `NotificationSubscriber` puts the URL
+     * in a shipment email, and `TrackingService` resolves one back to an order.
+     * It takes `SettingsRepository` because the link points at the storefront and
+     * only §71 knows where that is — the same dependency and the same reason as
+     * `passwordResetService()`.
+     */
+    public function trackingLink(): TrackingLink
+    {
+        return $this->trackingLink ??= new TrackingLink(new SettingsRepository());
+    }
+
+    /**
+     * Takes the shipment, audit and geography repositories: a parcel's
+     * whereabouts, its journey and the wilaya it is going to. The dependencies
+     * run one way — nothing in `Shipping/` knows tracking exists — and the
+     * rate limiter is here because `GET /orders/track` is unauthenticated and
+     * `RateLimitGuard` watches Application Password failures, which a tracking
+     * token is not.
+     */
+    public function trackingService(): TrackingService
+    {
+        return $this->trackingService ??= new TrackingService(
+            $this->trackingLink(),
+            $this->shipmentRepository(),
+            $this->auditRepository(),
+            $this->geoRepository(),
+            $this->rateLimiter(),
+            $this->logger()
+        );
     }
 
     public function shippingRuleRepository(): ShippingRuleRepository

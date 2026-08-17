@@ -14,6 +14,7 @@ use AlgerianCommerce\Orders\OrderRepository;
 use AlgerianCommerce\Permissions\Capabilities;
 use AlgerianCommerce\Permissions\Permissions;
 use AlgerianCommerce\Security\RateLimiter;
+use AlgerianCommerce\Tracking\TrackingService;
 use WC_Customer;
 use WC_Order;
 use WP_REST_Request;
@@ -53,7 +54,13 @@ final class AccountService
         private readonly CustomerRepository $customers,
         private readonly OrderRepository $orders,
         private readonly AuditLogger $audit,
-        private readonly RateLimiter $rateLimiter
+        private readonly RateLimiter $rateLimiter,
+        /*
+         * Roadmap §84's first door. Optional so every existing construction of
+         * this service keeps working — a service built without it simply serves
+         * an order with no `shipment` block, which is what §59c did.
+         */
+        private readonly ?TrackingService $tracking = null
     ) {
     }
 
@@ -297,6 +304,8 @@ final class AccountService
      * guest and later registered has no claim this API can verify: the only
      * evidence is an email address, and treating that as proof of ownership
      * would make an order readable by anyone who could name the address on it.
+     * §84's public `GET /orders/track` is the door a guest gets instead, keyed on
+     * a token the shop handed out rather than on an address anyone can name.
      *
      * @return array<string, mixed>
      */
@@ -319,7 +328,20 @@ final class AccountService
         // The first call site `Permissions::assertOwnsOr()` has ever had.
         Permissions::assertOwnsOr($owner, Capabilities::MANAGE_ORDERS);
 
-        return OrderPresenter::toArray($order);
+        $payload = OrderPresenter::toArray($order);
+
+        /*
+         * Roadmap §84, the session-owned door — added *after* the ownership
+         * check and not before it, which is the whole point of where these four
+         * lines sit. The block is null while the order has no parcel, which is
+         * the ordinary state of a `pending` order rather than an error, and it
+         * carries no provider metadata: a Yalidine `label` URL is a credential to
+         * this customer's own name, phone and address, and §84 allows it no
+         * exception for the customer it is about.
+         */
+        $payload['shipment'] = $this->tracking?->forOwner($orderId);
+
+        return $payload;
     }
 
     /**

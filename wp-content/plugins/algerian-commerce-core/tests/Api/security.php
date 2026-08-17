@@ -170,6 +170,14 @@ $publicPrefixes = [
     // session, a forged session and another shopper's session, because the
     // route table cannot show what is protecting them.
     '/algerian-commerce/v1/account',
+    // §84. Same argument one step further out: a guest order has no owner at
+    // all, so no capability and no session could express "whoever holds this
+    // link". What protects it is a 128-bit HMAC the shop handed to the buyer,
+    // checked in `TrackingService::track()`, with its own rate-limit group
+    // because it is unauthenticated. `tests/Api/tracking.php` calls it with no
+    // token, a malformed one, a tampered MAC, another order's MAC, a revoked
+    // link and an expired one — each beside a positive control.
+    '/algerian-commerce/v1/orders/track',
 ];
 
 $guarded = [];

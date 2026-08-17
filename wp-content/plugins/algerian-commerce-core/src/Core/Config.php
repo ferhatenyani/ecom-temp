@@ -90,6 +90,13 @@ final class Config
             'AC_RATE_LIMIT_READS',
             'AC_RATE_LIMIT_WRITES',
             'AC_RATE_LIMIT_UPLOADS',
+            /*
+             * `GET /orders/track` only (roadmap §84), on top of the read limit.
+             * The read limit is 600 a minute and was sized for a dashboard
+             * holding a credential; this route is unauthenticated and its key is
+             * a MAC, so it gets its own, much smaller allowance.
+             */
+            'AC_RATE_LIMIT_TRACKING',
             'AC_RATE_LIMIT_AUTH_FAILURES',
             'AC_RATE_LIMIT_DISABLED',
             'AC_RATE_LIMIT_TRUSTED_IPS',

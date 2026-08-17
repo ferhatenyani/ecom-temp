@@ -12,6 +12,8 @@ use AlgerianCommerce\Products\OptionSetRepository;
 use AlgerianCommerce\Shipping\Destination;
 use AlgerianCommerce\Shipping\RateResolver;
 use AlgerianCommerce\Shipping\ShippingRuleRepository;
+use AlgerianCommerce\Tracking\TrackingController;
+use AlgerianCommerce\Tracking\TrackingLink;
 use WC_Cart;
 use WC_Order;
 use WP_REST_Request;
@@ -64,7 +66,13 @@ final class CheckoutService
         private readonly PaymentProviderRegistry $payments,
         private readonly Logger $logger,
         private readonly CartService $cartService,
-        private readonly OptionSetRepository $optionSets
+        private readonly OptionSetRepository $optionSets,
+        /*
+         * Roadmap §84. Optional so every existing construction keeps working; a
+         * checkout built without it simply returns no `tracking` block, which is
+         * what §59b did.
+         */
+        private readonly ?TrackingLink $tracking = null
     ) {
     }
 
@@ -188,7 +196,49 @@ final class CheckoutService
                 'endpoint' => '/orders/' . $order->get_id() . '/payments',
                 'payment_method' => $provider,
             ],
+            // Roadmap §84. Minted here because this is the one moment the caller
+            // is provably the person who placed the order — after this the only
+            // way back to it is the token, which is the whole design.
+            'tracking' => $this->trackingBlock($order),
         ];
+    }
+
+    /**
+     * The tracking token, and the link when this shop knows its storefront.
+     *
+     * `endpoint` is always present and is this API's own route, so a storefront
+     * that renders its own tracking page has what it needs. `url` appears only
+     * when §71's `store.storefront_url` is set: this backend cannot derive it —
+     * WordPress's permalink is the admin domain — and §62 refused the same guess
+     * for canonical URLs. A guessed URL here would be printed in a confirmation
+     * email and send a customer to a login screen they have no account for.
+     *
+     * @return array<string, string>
+     */
+    private function trackingBlock(WC_Order $order): array
+    {
+        if ($this->tracking === null) {
+            return [];
+        }
+
+        $token = $this->tracking->tokenFor($order);
+
+        if ($token === '') {
+            return [];
+        }
+
+        $block = [
+            'token' => $token,
+            'endpoint' => '/orders/track?' . TrackingController::PARAM . '=' . rawurlencode($token),
+        ];
+
+        $url = $this->tracking->urlFor($order);
+
+        if ($url !== '') {
+            $block['url'] = $url;
+        }
+
+        return $block;
     }
 
     /**

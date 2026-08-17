@@ -135,6 +135,7 @@ final class NotificationMessages
     ): string {
         $courier = (string) ($context['provider'] ?? '');
         $tracking = trim((string) ($context['tracking_number'] ?? ''));
+        $url = trim((string) ($context['tracking_url'] ?? ''));
 
         $line = $courier !== ''
             ? "Order {$number} {$verb} {$courier}."
@@ -145,6 +146,18 @@ final class NotificationMessages
         // readable — so the sentence has to work without one.
         if ($tracking !== '') {
             $line .= "\n\nTracking number: {$tracking}";
+        }
+
+        /*
+         * Roadmap §84's tracking link, and the reason it is a conditional rather
+         * than a template variable: it is empty whenever §71's
+         * `store.storefront_url` is unset, and this backend must not guess one —
+         * WordPress's permalink is the admin domain (§62 refused the same guess
+         * for canonical URLs). A message with no link is worth sending; one
+         * pointing at a login screen the customer has no account for is not.
+         */
+        if ($url !== '') {
+            $line .= "\n\nFollow it here:\n{$url}";
         }
 
         return <<<TEXT

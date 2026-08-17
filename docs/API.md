@@ -138,6 +138,12 @@ else's.
 
 Keep it. Send it back on every cart call. Losing it loses the cart.
 
+### The tracking token
+
+`POST /checkout` returns a fourth thing, and it is not interchangeable with the other three. See
+[Order tracking](#order-tracking-storefront) — it opens exactly one order's delivery status on
+`GET /orders/track` and nothing else, and it is the only key a **guest** order has.
+
 ---
 
 ## CORS
@@ -159,7 +165,12 @@ Per credential (or per IP for anonymous callers), in a rolling 60-second window:
 | reads | 600/min | `AC_RATE_LIMIT_READS` |
 | writes | 120/min | `AC_RATE_LIMIT_WRITES` |
 | uploads | 30/min | `AC_RATE_LIMIT_UPLOADS` |
+| order tracking | 20/min, per IP | `AC_RATE_LIMIT_TRACKING` |
 | failed logins | 10 per 15 min, per IP | `AC_RATE_LIMIT_AUTH_FAILURES` |
+
+`GET /orders/track` has its own, much smaller bucket because it is unauthenticated and its only key is a
+MAC. It is **not** the failed-login bucket: a stale tracking link does not lock a customer out of signing
+in.
 
 A 429 carries `Retry-After` in seconds. A locked-out address is refused **even with the correct
 password** until the window passes — an operator lifts it with
@@ -372,6 +383,7 @@ Every stock change writes a movement row. There is no path that changes stock wi
 | POST | `/orders/{id}/cancel` | `ac_manage_orders` |
 | GET, POST | `/orders/{id}/notes` | `ac_manage_orders` |
 | GET | `/orders/{id}/timeline` | `ac_manage_orders` |
+| GET | `/orders/track` | public — tracking token |
 
 Statuses: `pending processing on-hold completed cancelled refunded failed`.
 **Not every move is allowed.** A new order may only be created as `pending`, `processing`, `on-hold`,
@@ -420,6 +432,12 @@ redirected. `/account/orders/{id}` checks ownership in the service layer: custom
 B's order gets **403**, and is served their own order normally. Both halves are tested.
 
 **Guest orders are reachable by nobody here.** An order placed without an account has no owner to match.
+They are reachable through [order tracking](#order-tracking-storefront), which is keyed on a token rather
+than on an identity.
+
+`GET /account/orders/{id}` carries a `shipment` block — the parcel, its status and its history — or
+`shipment: null` when nothing has shipped yet, which is the ordinary state of a `pending` order. It never
+carries the courier's provider metadata; see the tracking section for why.
 
 ### Password reset
 
@@ -485,12 +503,100 @@ own subtotal.
       "action": "create_payment",
       "endpoint": "/orders/4211/payments",
       "payment_method": "chargily"
+    },
+    "tracking": {
+      "token": "4211.9f3c1a4e07b52d6890fa1c3b4d5e6f70",
+      "endpoint": "/orders/track?token=4211.9f3c1a4e07b52d6890fa1c3b4d5e6f70",
+      "url": "https://shop.example.dz/orders/track?token=4211.9f3c1a4e07b52d6890fa1c3b4d5e6f70"
     }
   }
 }
 ```
 
 Call that endpoint next. A payment that fails must not orphan an order that succeeded.
+
+**Keep `tracking.token`.** It is the only key a guest order will ever have, and this is the one moment the
+caller is provably the buyer. `url` is present only when `store.storefront_url` is set in `/settings` —
+this backend will not guess a storefront address.
+
+## Order tracking (storefront)
+
+| Method | Route | Guard |
+|---|---|---|
+| GET | `/orders/track` | public — tracking token |
+
+```
+GET /orders/track?token=4211.9f3c1a…
+GET /orders/track            X-Tracking-Token: 4211.9f3c1a…
+```
+
+The header takes precedence, and is worth preferring: a query string lands in access logs and in
+`Referer` on every outbound link from your tracking page.
+
+**This route exists for guest orders.** A registered shopper can use `/account/orders/{id}` instead, and
+should. A guest has no account to sign in to and this is their only door.
+
+The token is minted at checkout and is stable — the same order always yields the same token, so the
+confirmation response and the "your parcel is on its way" email carry the same link.
+
+**What it returns, and this list is exhaustive:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "order_number": "4211",
+    "order_status": "processing",
+    "destination": { "wilaya_id": 16, "wilaya_code": "16", "wilaya": "Alger", "wilaya_ar": "الجزائر" },
+    "shipment": {
+      "courier": "yalidine",
+      "tracking_number": "yal-16-ABCDEF",
+      "status": "in_transit",
+      "is_live": true,
+      "estimated_delivery": null,
+      "created_at": "2026-08-01T09:00:00+00:00",
+      "updated_at": "2026-08-03T14:30:00+00:00"
+    },
+    "history": [
+      { "status": "created",    "at": "2026-08-01T09:00:00+00:00" },
+      { "status": "in_transit", "at": "2026-08-03T14:30:00+00:00" }
+    ]
+  }
+}
+```
+
+**What it will never return**: the delivery address, the commune, the phone, the email, the customer's
+name, line items, quantities, totals, the payment method, order notes, or the courier's label URL. A
+tracking link is forwarded, pasted into chats and screenshotted; a page that echoed the address would turn
+one leaked link into a doxxing tool. The wilaya is enough to recognise your own parcel and nowhere near
+enough to find anybody. See `docs/SECURITY.md` → "Order tracking" for the rule.
+
+**`order_status` and `shipment.status` are two different things and are never merged.** A parcel's
+progress does not move the order — that has been true since §55 — so an order can be `processing` while
+its parcel is `delivered`, and the shop decides when to complete it.
+
+`shipment` is `null` and `history` is `[]` until something ships. `destination` is `null` for an order
+that did not go through this API's checkout and whose parcel recorded no wilaya — never guessed from the
+address.
+
+**Statuses**: `pending created picked_up in_transit out_for_delivery delivered returning returned
+cancelled failed`. `is_live` is false for the last four.
+
+**Errors:**
+
+| Status | Code | Means |
+|---|---|---|
+| 404 | `not_found` | no token, malformed, wrong MAC, unknown order, or a link that was revoked |
+| 410 | `tracking_link_expired` | a genuine token, more than 90 days after the parcel finished |
+| 429 | `too_many_requests` | 20/min per IP; `Retry-After` in seconds |
+
+The 404 is deliberately one answer for several causes — telling them apart tells somebody guessing which
+half of the guess was right. The 410 is separate because reaching it requires a valid MAC, so the holder
+learns nothing they did not already have, and a customer with a three-month-old email deserves a reason.
+
+`estimated_delivery` is present in the contract and is **null today**: neither Yalidine nor ZR Express
+publishes one in the responses this project has measured. It will fill in when an adapter supplies it; do
+not build UI that requires it.
 
 ## Coupons
 
@@ -710,7 +816,9 @@ POST /cart/coupons        { code }                        (optional)
 GET  /cart                                                → final totals, from the server
 POST /checkout            { wilaya_id, commune_id, delivery_type, payment_method }
                                                           → order created, status pending
+                                                          → keep data.tracking.token
 POST /orders/{id}/payments                                → checkout_url, redirect the shopper
+GET  /orders/track?token=…                                → afterwards, for as long as they keep the link
 ```
 
 Cash on delivery ends at `/checkout`; there is no redirect.
@@ -723,6 +831,8 @@ reuse.
 # Things that will bite you
 
 - **Send tokens back.** Cart and customer tokens are the whole identity. Drop one and the cart is empty.
+- **Keep the tracking token from the checkout response.** For a guest order it is the only way back to it,
+  and nothing on this API will hand it out a second time to a caller who cannot already prove the order.
 - **Never expose the Application Password.** Browser → your server → this API. Always.
 - **You cannot set prices.** Anything resembling money in a cart payload is refused by name.
 - **`GET` then `PATCH` the whole object works** — read-only fields are dropped, not rejected.
