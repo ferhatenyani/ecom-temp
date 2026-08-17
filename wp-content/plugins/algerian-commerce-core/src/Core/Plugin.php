@@ -92,6 +92,7 @@ use AlgerianCommerce\Media\UploadPolicy;
 use AlgerianCommerce\Notifications\EmailChannel;
 use AlgerianCommerce\Notifications\NotificationChannelRegistry;
 use AlgerianCommerce\Notifications\NotificationRepository;
+use AlgerianCommerce\Notifications\NotificationController;
 use AlgerianCommerce\Notifications\NotificationService;
 use AlgerianCommerce\Notifications\NotificationSubscriber;
 use AlgerianCommerce\Orders\OrderController;
@@ -593,6 +594,7 @@ final class Plugin
             new ImportExportController($this->logger(), $this->importService(), $this->exportService()),
             new SettingsController($this->logger(), $this->settingsService()),
             new UserController($this->logger(), $this->userService()),
+            new NotificationController($this->logger(), $this->notificationService()),
         ]);
     }
 
@@ -917,7 +919,8 @@ final class Plugin
         return $this->notificationService ??= new NotificationService(
             $this->notificationChannels(),
             $this->notificationRepository(),
-            $this->logger()
+            $this->logger(),
+            $this->auditLogger()
         );
     }
 

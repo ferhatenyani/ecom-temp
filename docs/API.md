@@ -1148,6 +1148,56 @@ credential.
 requires HTTPS unless `WP_ENVIRONMENT_TYPE` is `local`. That is a deployment fact, not a request
 problem — see `docs/DEPLOYMENT.md`.
 
+## Notifications — §90
+
+| Method | Route | Guard |
+|---|---|---|
+| GET | `/notifications` | `ac_manage_customers` |
+| GET | `/notifications/{id}` | `ac_manage_customers` |
+| POST | `/notifications/{id}/retry` | `ac_manage_customers` |
+
+The transactional queue §59d built, read back. It exists to answer one question — *did the customer get
+their confirmation?* — which had no answer outside `wp eval`.
+
+**The capability is `ac_manage_customers` and no new one is invented.** A row holds a customer's address
+and, on the single read, the frozen body of their order confirmation: their name and what they bought.
+§63's rule applies — reporting may not disclose in aggregate what the caller cannot already read in
+detail — so the gate is the capability that already reads a customer's record. A Product Manager holding
+ten other management capabilities is refused.
+
+**Nothing here sends.** That was §59d's whole design and it is stronger at this door: an SMTP server that
+hangs would hang the admin panel, and the operator most likely to press retry is the one whose mail server
+is already misbehaving.
+
+`GET /notifications` filters by `channel`, `status` (`pending`, `sent`, `failed`), `dedupe_key` and
+`date_from` / `date_to` (`Y-m-d`, **UTC**, both ends covering the whole day). Newest first — the opposite
+of the drain, which sends oldest first so a customer is not told "delivered" before "shipped".
+
+**`dedupe_key` is the filter that answers the question.** It is `event:subject_id` by construction, so
+`?dedupe_key=order.placed:1234` finds the confirmation for order 1234 in one request.
+
+**The list omits the message; the single read carries it.** `GET /notifications/{id}` adds a `message`
+block — `subject`, `body`, `context` — read out of the stored payload by allowlist, so a key a future
+channel adds is not published by accident. A payload that will not decode reports `readable: false`
+rather than an empty message: that is the row the drain marks permanently failed, and an operator needs
+to see what the drain saw.
+
+```
+POST /notifications/{id}/retry
+→ 202 { … status: "pending", attempts: 0, last_error: null }
+     meta: { queued: true, already_pending: false, drain: "wp algerian-commerce send-notifications" }
+```
+
+**202, not 200**, because nothing has been sent when it returns — a row has gone back in a queue that
+something else drains, and the response names the command rather than leaving anybody to wonder. Retry
+clears `status`, `attempts` and `last_error`. A row that is already `pending` answers 202 with
+`already_pending: true`.
+
+**A `sent` row is a 409**, naming `sent_at`. It is a record of something that left the building, and
+re-queueing it would deliver a body frozen weeks ago — `Notification` freezes the message at queue time
+on purpose, so an order refunded since would still send the confirmation that was true when it was
+placed.
+
 ## Audit
 
 | Method | Route | Guard |
@@ -1159,6 +1209,13 @@ problem — see `docs/DEPLOYMENT.md`.
 change names both roles, because "somebody's role changed" answers none of the questions the trail is
 read to answer — the one place the field-names-never-values rule gives way, since here the value *is*
 the security fact.
+
+§89 records `cms.page_created`, `cms.page_updated`, `cms.page_deleted` and the same three for banners,
+FAQs and FAQ categories, plus `cms.homepage_updated` and `cms.menu_updated`. A page's **path**, a
+**status transition** and a **category slug** are recorded by value for the same reason a role is;
+content never is, so a page edit records `fields: ["content"]` and the homepage records its section types
+and their count. §90 records `notification.retried` with the channel, event and dedupe key — never the
+recipient.
 
 ---
 
