@@ -60,7 +60,11 @@ services:
     depends_on:
       - db
     ports:
-      - "${WP_PORT:-8090}:80"
+      # WP_BIND=127.0.0.1 in production: Caddy reaches this container over the
+      # compose network, not through a published port, and a container that is
+      # not reachable from the internet is what makes its X-Forwarded-* headers
+      # worth believing. Development keeps 0.0.0.0 so the port works as before.
+      - "${WP_BIND:-0.0.0.0}:${WP_PORT:-8090}:80"
     environment:
       WORDPRESS_DB_HOST: db:3306
       WORDPRESS_DB_USER: wordpress
@@ -97,6 +101,10 @@ services:
       AC_ANALYTICS_CACHE_TTL: ${AC_ANALYTICS_CACHE_TTL:-}
       AC_ADMIN_EMAIL: ${AC_ADMIN_EMAIL:-}
       AC_MAIL_FROM: ${AC_MAIL_FROM:-}
+      # Roadmap §86 — whose X-Forwarded-For may be believed. Empty means the
+      # header is never read, which is what every call site did before §86.
+      # In the `proxy` profile this is the compose network Caddy sits on.
+      AC_TRUSTED_PROXIES: ${AC_TRUSTED_PROXIES:-}
       # The mail transport. WordPress sends through PHP mail() unless something
       # configures PHPMailer, and neither container has an MTA — so without
       # these every send fails with "sendmail: can't connect". `MailTransport`
@@ -138,6 +146,10 @@ services:
       - wordpress_data:/var/www/html
       - ./wp-content/plugins/algerian-commerce-core:/var/www/html/wp-content/plugins/algerian-commerce-core
       - ./docker/apache-wordpress.conf:/etc/apache2/conf-enabled/zz-wordpress.conf:ro
+      # Roadmap §86 — disable the image's mod_remoteip config, which trusts
+      # every RFC1918 range and so lets any caller overwrite REMOTE_ADDR with a
+      # header. Read docker/apache-remoteip-off.conf before removing this.
+      - ./docker/apache-remoteip-off.conf:/etc/apache2/conf-enabled/remoteip.conf:ro
       # The base image caps uploads at 2 MB, below this plugin's media cap and
       # below one photograph — see the file for why both numbers move together.
       - ./docker/php-uploads.ini:/usr/local/etc/php/conf.d/zz-uploads.ini:ro
@@ -189,6 +201,10 @@ services:
       AC_ANALYTICS_CACHE_TTL: ${AC_ANALYTICS_CACHE_TTL:-}
       AC_ADMIN_EMAIL: ${AC_ADMIN_EMAIL:-}
       AC_MAIL_FROM: ${AC_MAIL_FROM:-}
+      # Roadmap §86 — whose X-Forwarded-For may be believed. Empty means the
+      # header is never read, which is what every call site did before §86.
+      # In the `proxy` profile this is the compose network Caddy sits on.
+      AC_TRUSTED_PROXIES: ${AC_TRUSTED_PROXIES:-}
       # The mail transport. WordPress sends through PHP mail() unless something
       # configures PHPMailer, and neither container has an MTA — so without
       # these every send fails with "sendmail: can't connect". `MailTransport`
@@ -235,6 +251,38 @@ services:
       # differs depending on which container ran the code is not a limit.
       - ./docker/php-uploads.ini:/usr/local/etc/php/conf.d/zz-uploads.ini:ro
 
+  # Roadmap §86 — TLS termination and the only thing exposed in production.
+  #
+  # Behind a profile, so `docker compose up -d` is exactly what it was: the
+  # development stack is plain HTTP on WP_PORT and unaffected. Bring the proxy
+  # up with `docker compose --profile proxy up -d`.
+  proxy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    profiles: ["proxy"]
+    depends_on:
+      - wordpress
+    ports:
+      - "${PROXY_HTTP_PORT:-80}:80"
+      - "${PROXY_HTTPS_PORT:-443}:443"
+    environment:
+      # localhost by default, which Caddy certifies from its own internal CA
+      # without reaching Let's Encrypt — so this profile runs offline and in CI.
+      SITE_DOMAIN: ${SITE_DOMAIN:-localhost}
+      # A real address, not an empty string: Caddy's {$VAR:default} fills in
+      # only when a variable is *unset*, and compose would pass an empty one —
+      # which renders as a bare `email` directive that Caddy refuses to start
+      # on. Never used for localhost, which skips ACME entirely.
+      ACME_EMAIL: ${ACME_EMAIL:-ops@localhost}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and the internal CA survive a restart. Losing them means
+      # re-issuing on every boot, which hits Let's Encrypt rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+
 volumes:
   db_data:
   wordpress_data:
+  caddy_data:
+  caddy_config:

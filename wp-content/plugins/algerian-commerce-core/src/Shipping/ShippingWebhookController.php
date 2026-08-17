@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Shipping;
 
 use AlgerianCommerce\API\AbstractWebhookController;
+use AlgerianCommerce\Core\Config;
 use AlgerianCommerce\Core\Logger;
 
 /**
@@ -34,9 +35,10 @@ final class ShippingWebhookController extends AbstractWebhookController
     public function __construct(
         Logger $logger,
         private readonly ProviderRegistry $providers,
-        private readonly ShippingService $service
+        private readonly ShippingService $service,
+        ?Config $config = null
     ) {
-        parent::__construct($logger);
+        parent::__construct($logger, $config);
     }
 
     public function registerRoutes(): void

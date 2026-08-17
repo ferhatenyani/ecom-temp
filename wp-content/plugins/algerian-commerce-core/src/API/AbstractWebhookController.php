@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace AlgerianCommerce\API;
 
+use AlgerianCommerce\Core\Config;
 use AlgerianCommerce\Core\Logger;
+use AlgerianCommerce\Security\ClientIp;
 use WP_REST_Request;
 use WP_REST_Response;
 
@@ -50,8 +52,11 @@ use WP_REST_Response;
  */
 abstract class AbstractWebhookController extends AbstractController
 {
-    public function __construct(Logger $logger)
-    {
+    public function __construct(
+        Logger $logger,
+        /* Optional, defaulting to the pre-§86 behaviour. See sourceIp(). */
+        private readonly ?Config $config = null
+    ) {
         parent::__construct($logger);
     }
 
@@ -109,7 +114,7 @@ abstract class AbstractWebhookController extends AbstractController
                 $this->logger->warning('Rejected an unverified webhook', [
                     'provider' => $provider,
                     'route' => $request->get_route(),
-                    'ip' => self::sourceIp(),
+                    'ip' => $this->sourceIp(),
                 ]);
 
                 // No WWW-Authenticate header, no echo of the body, and no hint
@@ -171,14 +176,16 @@ abstract class AbstractWebhookController extends AbstractController
     /**
      * The remote address, and only the remote address.
      *
-     * No `X-Forwarded-For`: it is caller-controlled, so a forgery loop could
-     * write whatever it liked into this shop's logs. Behind a proxy this is the
-     * proxy, which is a true statement about where the request reached us.
+     * One rule, in `Security\ClientIp`.
+     *
+     * This used to read REMOTE_ADDR only, noting that behind a proxy it logs
+     * the proxy — true, and useless for the thing this line exists for, which
+     * is telling an operator where a forgery loop is coming from. It is still
+     * never the raw header: an unverified request's headers are attacker
+     * input, so the address is read only when the peer is a configured proxy.
      */
-    private static function sourceIp(): string
+    private function sourceIp(): string
     {
-        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-
-        return is_string($ip) ? $ip : '';
+        return ClientIp::resolve($_SERVER, $this->config?->get('AC_TRUSTED_PROXIES'));
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Payments;
 
 use AlgerianCommerce\API\AbstractWebhookController;
+use AlgerianCommerce\Core\Config;
 use AlgerianCommerce\Core\Logger;
 
 /**
@@ -31,9 +32,10 @@ final class PaymentWebhookController extends AbstractWebhookController
     public function __construct(
         Logger $logger,
         private readonly PaymentProviderRegistry $providers,
-        private readonly PaymentService $service
+        private readonly PaymentService $service,
+        ?Config $config = null
     ) {
-        parent::__construct($logger);
+        parent::__construct($logger, $config);
     }
 
     public function registerRoutes(): void

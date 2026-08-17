@@ -32,6 +32,7 @@ namespace AlgerianCommerce;
 
 use AlgerianCommerce\Core\Autoloader;
 use AlgerianCommerce\Core\Plugin;
+use AlgerianCommerce\Security\ClientIp;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -94,6 +95,24 @@ const DB_VERSION = Core\Schema::VERSION;
 
 register_activation_hook(__FILE__, [Plugin::class, 'activate']);
 register_deactivation_hook(__FILE__, [Plugin::class, 'deactivate']);
+
+/*
+ * Roadmap §86 — behind a reverse proxy, TLS ends at the proxy and WordPress
+ * would otherwise build http:// URLs for an https:// site.
+ *
+ * At file load rather than on a hook, and before anything else here runs:
+ * `is_ssl()` is consulted the moment WordPress builds a URL, which includes
+ * `wp_is_application_passwords_supported()` on the §44 path. Later is a
+ * redirect loop that only appears in production.
+ *
+ * Reads `getenv()` directly rather than `Config`, which is a deliberate
+ * exception to "one place reads the environment": `Config` belongs to the
+ * container, the container is built in `Plugin::boot()` on `plugins_loaded`,
+ * and that is already too late. `ClientIp::applyForwardedScheme()` does nothing
+ * at all unless the peer is a named trusted proxy, so the exception cannot be
+ * exploited by a caller.
+ */
+ClientIp::applyForwardedScheme($_SERVER, getenv('AC_TRUSTED_PROXIES') ?: null);
 
 /*
  * Declare compatibility with High-Performance Order Storage.
