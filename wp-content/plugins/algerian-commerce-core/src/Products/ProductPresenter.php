@@ -58,9 +58,52 @@ final class ProductPresenter
             ))),
             'permalink' => $product->get_permalink(),
             'seo' => SeoResolver::resolve(self::seoSubject($product)),
+            // Roadmap §83. Absent on a product with no configurator, so a
+            // storefront does not render an empty options panel for every mug.
+            ...self::options($product),
             'date_created' => self::date($product->get_date_created()),
             'date_modified' => self::date($product->get_date_modified()),
         ];
+    }
+
+    /**
+     * The configurator, and what a bundle can actually be sold in — roadmap §83.
+     *
+     * `options` is the definition a storefront renders. `bundle` appears only
+     * when the product draws stock from others, and its `available` is
+     * **computed on every read** rather than stored: §83's oversell rule is
+     * that a bundle showing "in stock" because nobody refreshed it is a bundle
+     * the shop cannot ship.
+     *
+     * `problems` carries what `OptionSet::fromStored()` had to drop. Meta is
+     * editable by `wp post meta update` and by any plugin, and §61 settled that
+     * a group which silently vanishes is the one failure a shop cannot
+     * diagnose.
+     *
+     * @return array<string, mixed>
+     */
+    private static function options(WC_Product $product): array
+    {
+        $set = (new OptionSetRepository())->forPurchase($product);
+
+        if ($set->isEmpty()) {
+            return [];
+        }
+
+        $block = ['options' => $set->toArray()];
+
+        if ($set->problems !== []) {
+            $block['options_problems'] = $set->problems;
+        }
+
+        if ($set->isBundle()) {
+            $block['bundle'] = [
+                'items' => $set->bundleItems(),
+                'available' => BundleAvailability::forSet($set),
+            ];
+        }
+
+        return $block;
     }
 
     /** @param list<WC_Product> $products */

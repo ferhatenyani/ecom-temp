@@ -429,6 +429,46 @@ check "a client-sent price is refused over HTTP" 400 \
   "$(status -X POST -H 'Content-Type: application/json' \
      -d "{\"product_id\":${CART_PID:-0},\"quantity\":1,\"price\":\"0.01\"}" "${API}/cart/items")"
 
+# ─────────────────────────────────────────────────── configurators (§83) ──
+#
+# The same rule one step further in, and the reason it is here rather than only
+# in tests/Api/options.php: this is a **write path that prices money**, and
+# §86's definition of done asks for it over real HTTP. rest_do_request() never
+# parses an Authorization header and never runs the real request pipeline, so
+# "the server priced it and refused to be told a price" has to be shown once
+# where a browser would actually be.
+wpcli -e AC_PID="${CART_PID:-0}" wpcli wp eval '
+$p = wc_get_product((int) getenv("AC_PID"));
+$set = AlgerianCommerce\Products\OptionSet::fromPayload(["groups" => [[
+    "id" => "wrap", "type" => "choice", "label" => "Gift wrap", "min" => 0, "max" => 1,
+    "choices" => [["id" => "gold", "label" => "Or", "price_delta" => "250"]],
+]]]);
+(new AlgerianCommerce\Products\OptionSetRepository())->save($p->get_id(), $set);
+echo "configured";' >/dev/null
+
+OPT_BODY=$(curl -s -m 30 -X POST -H 'Content-Type: application/json' \
+  -d "{\"product_id\":${CART_PID:-0},\"quantity\":2,\"options\":{\"wrap\":\"gold\"}}" "${API}/cart/items")
+
+# THE POSITIVE CONTROL: 1000 catalogue + 250 wrap = 1250 a unit, 2500 for two.
+check "the server prices a configured line over HTTP" "1250.00" \
+  "$(printf '%s' "$OPT_BODY" | grep -o '"price":"[^"]*"' | head -1 | cut -d'"' -f4)"
+check "...and publishes the surcharge it derived" "250.00" \
+  "$(printf '%s' "$OPT_BODY" | grep -o '"options_surcharge":"[^"]*"' | head -1 | cut -d'"' -f4)"
+
+# ...and the negative half beside it. Both are needed: a refusal that also broke
+# ordinary pricing would pass this half alone.
+check "a client-sent surcharge is refused over HTTP" 400 \
+  "$(status -X POST -H 'Content-Type: application/json' \
+     -d "{\"product_id\":${CART_PID:-0},\"quantity\":1,\"options\":{\"wrap\":\"gold\"},\"surcharge\":\"-9999\"}" \
+     "${API}/cart/items")"
+check "...naming the field rather than saying \"unknown\"" "surcharge" \
+  "$(curl -s -m 30 -X POST -H 'Content-Type: application/json' \
+     -d "{\"product_id\":${CART_PID:-0},\"quantity\":1,\"options\":{\"wrap\":\"gold\"},\"surcharge\":\"-9999\"}" \
+     "${API}/cart/items" | grep -o '"surcharge":"The product decides' | head -1 | cut -d'"' -f2)"
+check "an option the product does not offer is refused" 400 \
+  "$(status -X POST -H 'Content-Type: application/json' \
+     -d "{\"product_id\":${CART_PID:-0},\"quantity\":1,\"options\":{\"monogram\":\"AB\"}}" "${API}/cart/items")"
+
 wpcli -e AC_SKU="$CART_SKU" wpcli wp eval '
 foreach (["publish", "draft", "trash"] as $status) {
     foreach (wc_get_products(["sku" => getenv("AC_SKU"), "status" => $status,

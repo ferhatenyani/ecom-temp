@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Cart;
 
 use AlgerianCommerce\API\ApiException;
+use AlgerianCommerce\Products\BundleStock;
+use AlgerianCommerce\Products\OptionSelection;
+use AlgerianCommerce\Products\OptionSetRepository;
 use WC_Cart;
 use WC_Product;
 use WP_Error;
@@ -20,7 +23,8 @@ use WP_REST_Request;
  * server, on every mutation, and read again by `CartPresenter` on the way out.
  * This is SECURITY.md → "Payments" ("never trust the frontend to tell the
  * backend that a payment succeeded") one step earlier in the flow, and it is
- * why `LineInput` accepts exactly two fields.
+ * why `LineInput` accepts exactly four fields, and why §83's `options` carries
+ * choice ids rather than what a choice costs.
  *
  * **The maths is WooCommerce's and stays WooCommerce's.** `add_to_cart()`
  * validates purchasability, stock and quantity limits; `apply_coupon()` applies
@@ -46,8 +50,12 @@ final class CartService
      */
     public const MAX_QUANTITY = 999;
 
-    public function __construct(private readonly CartSession $session)
-    {
+    public function __construct(
+        private readonly CartSession $session,
+        private readonly OptionSetRepository $optionSets,
+        private readonly BundleStock $bundles,
+        private readonly OptionPriceSubscriber $optionPrices
+    ) {
     }
 
     /**
@@ -101,7 +109,7 @@ final class CartService
     /**
      * Add a line, or increase one that is already there.
      *
-     * @param array{product_id: int, variation_id: int, quantity: int} $line
+     * @param array{product_id: int, variation_id: int, quantity: int, options?: array<string, mixed>} $line
      * @return array<string, mixed>
      */
     public function addItem(WP_REST_Request $request, array $line): array
@@ -109,6 +117,23 @@ final class CartService
         $this->session->load($request);
 
         $product = $this->requirePurchasable($line['product_id'], $line['variation_id']);
+
+        /*
+         * Options are priced **before** the line exists — roadmap §83.
+         *
+         * `OptionSelection::price()` is what refuses an unknown option, a
+         * required group left out and a combination that would price below
+         * zero, and it does it against the product's stored definition rather
+         * than anything in the payload. Doing it here means a bad configuration
+         * is a 400 naming the group, not a line silently added at the wrong
+         * price. The result is discarded: what goes into the cart is the
+         * shopper's *choice*, and `OptionPriceSubscriber` reads the money back
+         * out of the catalogue on every totals pass.
+         */
+        $options = $line['options'] ?? [];
+        OptionSelection::price($this->optionSets->forPurchase($product), $options, (string) $product->get_price());
+
+        $this->assertBundleAvailable($product, $line['quantity']);
 
         // WooCommerce answers false *or* raises a wc_add_notice rather than
         // throwing, so the notices are drained and turned into a real error.
@@ -119,7 +144,15 @@ final class CartService
         $key = WC()->cart->add_to_cart(
             $line['variation_id'] > 0 ? $line['product_id'] : $product->get_id(),
             $line['quantity'],
-            $line['variation_id']
+            $line['variation_id'],
+            [],
+            /*
+             * WooCommerce hashes cart item data into the line's key, so two
+             * configurations of one product are two lines rather than a
+             * quantity of two — which is the only correct answer when one is
+             * engraved "AB" and the other "CD".
+             */
+            $options === [] ? [] : [OptionPriceSubscriber::DATA_KEY => $options]
         );
 
         if (!is_string($key) || $key === '') {
@@ -149,6 +182,19 @@ final class CartService
             WC()->cart->remove_cart_item($key);
 
             return $this->present();
+        }
+
+        /*
+         * A bundle is re-checked on every quantity change — roadmap §83. Its
+         * ceiling is the minimum of its components' stock, which WooCommerce
+         * knows nothing about: `set_quantity()` would happily take ten of a
+         * bundle whose scarcest component has three left.
+         */
+        $line = $this->cart()->get_cart()[$key] ?? null;
+        $product = is_array($line) ? ($line['data'] ?? null) : null;
+
+        if ($product instanceof WC_Product) {
+            $this->assertBundleAvailable($product, $quantity);
         }
 
         if (!WC()->cart->set_quantity($key, $quantity, true)) {
@@ -254,10 +300,53 @@ final class CartService
         $cart->calculate_totals();
         $this->session->save();
 
-        return [
-            'cart' => CartPresenter::toArray($cart),
+        $result = [
+            'cart' => CartPresenter::toArray($cart, $this->optionPrices),
             'token' => $this->session->token(),
         ];
+
+        /*
+         * Reported, never swallowed — roadmap §83, §61's rule.
+         *
+         * A shop can delete an option group while it sits in a basket. The
+         * surcharge is then uncomputable, the line falls back to its catalogue
+         * price, and saying nothing would be a shop giving gift wrap away to
+         * somebody who cannot tell that anything changed. `CheckoutService`
+         * refuses to place an order while this list is non-empty.
+         */
+        $problems = $this->optionPrices->problems();
+
+        if ($problems !== []) {
+            $result['problems'] = array_values($problems);
+        }
+
+        return $result;
+    }
+
+    /** Lines whose stored options no longer price — see `present()`. */
+    public function optionProblems(): array
+    {
+        return $this->optionPrices->problems();
+    }
+
+    /**
+     * A bundle can only be sold as often as its scarcest component allows.
+     *
+     * §83: "A bundle's purchasability is the minimum of its components',
+     * recomputed on the server, not a stock field of its own. A bundle showing
+     * 'in stock' because nobody refreshed it is an oversell."
+     *
+     * @throws ApiException
+     */
+    private function assertBundleAvailable(WC_Product $product, int $quantity): void
+    {
+        if ($this->bundles->canSell($product, $quantity)) {
+            return;
+        }
+
+        throw ApiException::invalidRequest('That bundle is not available in that quantity.', [
+            'fields' => ['quantity' => $this->bundles->shortfallReason($product, $quantity)],
+        ]);
     }
 
     /**

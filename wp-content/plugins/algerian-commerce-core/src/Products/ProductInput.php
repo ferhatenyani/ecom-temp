@@ -41,6 +41,13 @@ final class ProductInput
         // Enriched read shapes. The writable forms are image_id and
         // gallery_image_ids, which the presenter also emits.
         'image', 'gallery',
+        /*
+         * Roadmap §83. `options` itself is writable and round-trips; these two
+         * are derived from it — a bundle's live availability and whatever the
+         * stored document had to drop — and a client that PATCHed a whole GET
+         * body back would otherwise be told it had invented two fields.
+         */
+        'bundle', 'options_problems',
     ];
 
     private const STRING_FIELDS = ['name', 'slug', 'description', 'short_description', 'sku'];
@@ -99,6 +106,7 @@ final class ProductInput
             'attributes',
             'image_id',
             'seo',
+            'options',
         ];
     }
 
@@ -250,6 +258,17 @@ final class ProductInput
 
         if ($errors !== []) {
             throw ApiException::invalidRequest('The product data is invalid.', ['fields' => $errors]);
+        }
+
+        /*
+         * The configurator's definition — roadmap §83. Like `attributes`, it
+         * throws on its own rather than folding into `$errors`, because it
+         * reports per group and per choice (`options.groups[0].choices[2].id`)
+         * and flattening that into this list would lose the position that makes
+         * the message usable.
+         */
+        if (array_key_exists('options', $payload)) {
+            $clean['options'] = OptionSet::fromPayload($payload['options']);
         }
 
         // Last, so a malformed attribute list does not mask the simpler

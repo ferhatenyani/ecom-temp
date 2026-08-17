@@ -36,15 +36,15 @@ real upload can only happen in `http`.
 
 ## §65's five categories
 
-### Unit — 1,370 tests, 3,030 assertions, 81 files
+### Unit — 1,443 tests, 3,149 assertions, 83 files
 
 | §65 asks for | Covered by |
 |---|---|
-| price calculations | `RateResolverTest`, `RevenueReportTest`, `MetricsTest`, `ProductInputTest` |
+| price calculations | `RateResolverTest`, `RevenueReportTest`, `MetricsTest`, `ProductInputTest`, `OptionSelectionTest` |
 | shipping calculations | `RateResolverTest`, `ShippingRuleInputTest`, `DestinationMatcherTest` |
 | COD risk | `CodStateTest`, `CodStatusTest`, `CodStatisticsTest`, `CodAttemptInputTest` |
 | provider mapping | `YalidineStatusMapTest`, `YalidineParcelTest`, `ZRExpressProviderTest`, `ChargilyProviderTest`, `MetaProviderTest`, `CourierWebhookTest` |
-| validation | every `*InputTest` — 14 of them — plus `ProductFiltersTest` for the read side |
+| validation | every `*InputTest` — 14 of them — plus `ProductFiltersTest` for the read side and `OptionSetTest` for §83's document |
 | permissions | `CapabilitiesTest`, `IdentityTest` |
 
 Everything here is pure: no WordPress, no database, no clock. That is a deliberate constraint rather than
@@ -52,7 +52,7 @@ an accident — `AnalyticsRange` takes the current instant as an argument so tha
 timezone boundary" is decidable in a test, and `AnalyticsCache::key()` is pure so that "a payload with
 money in it never shares a key with one without" is a unit test rather than an argument.
 
-### Integration — 24 suites in `tests/Api/`
+### Integration — 25 suites in `tests/Api/`
 
 §65's four words (WordPress, WooCommerce, custom plugin, database) are not four separate suites here.
 Every `tests/Api/` suite is an integration test by that definition: it runs inside a booted WordPress,
@@ -101,6 +101,30 @@ created in the same process cannot be counted.** `ProductCollectionData` skips a
 invisible to the facet counter — which answers 200 with an empty list. A live shop never sees it, because
 the attribute is created by one request and counted by a later one; only a fixture inside one process can.
 The suite fills the global itself, which is what the next request would do.
+
+**§83 got its own suite, `tests/Api/options.php`**, rather than extending `products.php` or `cart.php`,
+because a configurator spans both and the assertions only mean something together: a definition written
+through `PATCH /products/{id}`, a cart line priced from it, an order carrying it to fulfilment, and a
+bundle drawing its components down through the ledger. The arithmetic is not here — §83 puts the pricing
+calculator in `tests/Unit/OptionSelectionTest`, where all five of its named boundary cases live (unknown
+option id, required group omitted, min/max violation, negative delta, a delta that would take a line
+below zero).
+
+Its central pair is §83's own instruction: **a cart payload carrying its own surcharge is refused with
+the field named**, with the positive control beside it — the same cart without that field priced to the
+dinar by the server. Both halves are needed. A refusal that also broke ordinary pricing passes the
+negative half alone, and the positive half is asserted as an exact figure (1,000 + 250 + 500 = 1,750 a
+unit, 3,500 for two) because "a number came back" is what the bug this guards against also produces.
+
+Three things writing it found, all in the code rather than the tests. **The surcharge compounded**:
+`OptionPriceSubscriber` calls `set_price()` on the cart line's product object, that object lives in the
+session, and `calculate_totals()` runs on every response — so reading the base price back off it added
+the surcharge again, every pass. A 1,750 line was reported as **3,250**, with no error and totals that
+were internally consistent. It reads the catalogue fresh now. **The cart controller dropped the
+problems**: `respond()` carried only `cart` and `token`, so a line that could no longer be priced said
+nothing to anybody. **`ProductRepository` built its own `OptionSetRepository`**, so clearing a product's
+options left the cart holding the memoised old set — one product, two answers, in one request. All three
+are the same shape as §82's `wc_get_products()` findings: nothing throws, and the output looks right.
 
 `tests/Api/cart.php` (§59b) is the other suite written to this shape, and it carries the module's
 central security property: **a forged cart token opens an empty cart rather than somebody else's.**

@@ -33,9 +33,9 @@ implemented** — no messaging, notifications or automations — beyond the flag
 
 [ROADMAP_PHASE_2.md](ROADMAP_PHASE_2.md) is the companion document and adds **§82–§85 / steps 45–48**:
 advanced filtering and faceted search, product configurators, order tracking and email marketing
-campaigns. It supersedes nothing — where the two disagree about a rule, the first one wins. **§82 is
-built; §83–§85 are not.** Each of the four is done only when its "What was built" subsection is written
-into that document, so read the section *and* its outcome before extending one.
+campaigns. It supersedes nothing — where the two disagree about a rule, the first one wins. **§82 and
+§83 are built; §84 and §85 are not.** Each of the four is done only when its "What was built" subsection
+is written into that document, so read the section *and* its outcome before extending one.
 
 **§82 is `src/Products/ProductFilters.php`, `AttributeCatalogue.php` and `FacetResolver.php` — nine new
 filters on `GET /products` plus an opt-in `meta.facets` block, no migration and no new `$wpdb` call
@@ -73,6 +73,42 @@ attribute-bearing products carry *custom* attributes and this install registers 
 written against the seed would assert zeroes and pass against anything. It carries **two** attributes on
 purpose: lifting every attribute filter instead of only the group's own passes one assertion and fails
 the other.
+
+**§83 is `OptionSet`, `OptionSelection`, `OptionSetRepository`, `BundleAvailability` and `BundleStock`
+in `src/Products/`, plus `Cart\OptionPriceSubscriber` — no migration, no table, no new route and no new
+capability.** An option set is one JSON document in product meta, written and read as `options` on the
+product; a **bundle is a group type, not a product type**, so `ProductInput::TYPES` is still
+`simple`/`variable`. The boundary is the whole design: **a variation is a thing with a SKU and stock, an
+option is a modifier with neither** — five attributes of six options is 7,776 variations and one product
+with five option groups is one product. Anything ambiguous is a variation.
+
+**The client sends the choice; the server reads the price.** `LineInput` gained `options` (identifiers
+and free text, never money) and four refusals beside §59b's six — `option_price`, `options_price`,
+`surcharge`, `option_total` — each by name with the reason. The cart stores only the choice;
+`OptionPriceSubscriber` recomputes the surcharge from the product's definition on **every**
+`calculate_totals()`, so no money survives in the session.
+
+**The bug this section warns about was in this section's own code, and the positive control found it,
+not the refusal.** The subscriber calls `set_price()` on the cart line's product object, that object
+lives in the session, and `calculate_totals()` runs more than once per request — so reading the base
+back off it re-added the surcharge every pass. A 1,750 line reported **3,250**; nothing errored and the
+totals were internally consistent. **Never re-price against the cart line's own product; always read a
+fresh `wc_get_product()`.** Two more of the same shape: `CartController::respond()` dropped the
+`problems` list, so a line that could no longer be priced said nothing (it is `meta.problems` now, and
+checkout refuses while it is non-empty); and `ProductRepository` built its own `OptionSetRepository`, so
+clearing a product's options left the cart holding the memoised old document.
+
+**Bundles decrement through `StockLedger`, not `InventoryService`, and the reason is
+`OrderStockSubscriber`'s**: stock moves on an order *status transition* fired by a webhook with no user,
+by the poller, by wp-admin. §64's rule — nothing moves stock without writing a movement — holds either
+way. Verified: two kits of one mug and two boxes took mug 50→48 and box 10→6, wrote exactly two ledger
+rows keyed to the order, did **not** decrement again on `completed`, and restored both on cancellation.
+**Availability is computed on every read** as the minimum the components allow, never stored, and the
+shortfall message names neither component nor stock because `POST /cart/items` is public. **Bundles do
+not recurse** and a **variation inherits its parent's set**; both are named limitations, as is a
+**partially-refundable bundle**, which is out of scope. Free text is capped and stripped of markup and
+control characters, but **a leading `=` is deliberately left alone** — §64's escape belongs at the CSV
+boundary where `CsvWriter` already does it, and stripping it here would mangle "A=B" on a keepsake.
 
 **Password reset exists, and the SMTP settings finally reach WordPress** — PLAN §29/§30, the one thing
 §59c deferred. Two gaps were closed together because neither was useful alone. **`SMTP_HOST`,

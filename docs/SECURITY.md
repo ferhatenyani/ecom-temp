@@ -74,6 +74,37 @@ search, and they are the same problem wearing a query string:
   separately. §63's rule still holds — reporting may not disclose in aggregate what the caller cannot
   already read in detail — and here the caller can already read every product.
 
+### A configured line prices on the server — §83
+
+`Cart\LineInput` has refused `price`, `line_total`, `subtotal`, `total`, `discount` and `currency` by
+name since §59b. §83 added the first new field to that input since, and the rule did not move:
+
+- **The client sends the option *choice*; the server reads the *price*.** A payload carries
+  `options: {"wrap": "gold"}` — identifiers and free text, never money. What `gold` costs is read from
+  the product's own stored definition by `Products\OptionSelection`, on every cart mutation and again at
+  checkout. `option_price`, `options_price`, `surcharge` and `option_total` are refused **by name with
+  the reason**, beside the six already there.
+- **This failure is quieter than a client-sent `price`, which is why it gets its own rule.** A shop that
+  honoured a payload's surcharge would still produce totals that add up, line items that look like
+  money, and an order that reconciles against itself. Nothing errors. The only way to see it is to know
+  what the answer should have been — so `tests/Api/options.php` asserts the refusal **and** a positive
+  control priced to the dinar beside it.
+- **Never re-price against the cart line's own product object.** `OptionPriceSubscriber` calls
+  `set_price()` on it and that object lives in the session, so reading the base back from it compounds
+  the surcharge on every `calculate_totals()` — measured at 3,250 for a line that should have been
+  1,750, with no error anywhere. The base is always a fresh `wc_get_product()`.
+- **Free text is capped and stripped, but a leading `=` is left alone.** Markup and control characters
+  never belong in engraving; a formula prefix is escaped at the CSV boundary, where
+  `ImportExport\CsvWriter` already does what `WC_CSV_Exporter::escape_data()` does. Escape where the
+  danger is, not where the data is born — stripping it at input would mangle "A=B" and still protect
+  no other export path.
+- **A bundle's shortfall message names no component and no stock figure.** `POST /cart/items` is public;
+  a reason reading "only 3 left of SKU X" would turn it into an inventory read for anyone willing to
+  guess quantities.
+- **Option images are references, never uploads.** `POST /media` is the highest-risk endpoint in this
+  API and an option group is not a reason to widen its call sites. A choice names an attachment that
+  already exists, or nothing — and that it *is* an image is checked against the database on write.
+
 ## Authorization
 
 - Every route has a real `permission_callback`. `__return_true` is only acceptable on genuinely public
