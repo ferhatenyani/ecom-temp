@@ -34,7 +34,11 @@ final class LineInputTest extends TestCase
     {
         $line = LineInput::fromArray(['product_id' => 42, 'variation_id' => 43, 'quantity' => 2]);
 
-        self::assertSame(['product_id' => 42, 'variation_id' => 43, 'quantity' => 2], $line->toArray());
+        self::assertSame(
+            // `options` since §83 — always present, empty when nothing was chosen.
+            ['product_id' => 42, 'variation_id' => 43, 'quantity' => 2, 'options' => []],
+            $line->toArray()
+        );
     }
 
     /** @return array<string, array{0: string}> */
@@ -42,6 +46,16 @@ final class LineInputTest extends TestCase
     {
         return [
             'price' => ['price'],
+            /*
+             * Roadmap §83's four. A configurator that trusts an option's price
+             * is a shop that sells at whatever the customer types — with a
+             * longer fuse than a client-sent `price`, because the totals still
+             * look plausible. They are refused by name, beside §59b's six.
+             */
+            'option_price' => ['option_price'],
+            'options_price' => ['options_price'],
+            'surcharge' => ['surcharge'],
+            'option_total' => ['option_total'],
             'line_total' => ['line_total'],
             'line_subtotal' => ['line_subtotal'],
             'subtotal' => ['subtotal'],
@@ -138,5 +152,35 @@ final class LineInputTest extends TestCase
                 'a form should be able to mark every bad field in one pass'
             );
         }
+    }
+
+    // ── roadmap §83: the choice is the client's, the price is the shop's ──
+
+    public function testChosenOptionsAreCarried(): void
+    {
+        $line = LineInput::fromArray([
+            'product_id' => 42,
+            'options' => ['wrap' => 'gold', 'engraving' => 'AB'],
+        ]);
+
+        self::assertSame(['wrap' => 'gold', 'engraving' => 'AB'], $line->options);
+    }
+
+    public function testAbsentOptionsAreAnEmptyMap(): void
+    {
+        self::assertSame([], LineInput::fromArray(['product_id' => 42])->options);
+        self::assertSame([], LineInput::fromArray(['product_id' => 42, 'options' => null])->options);
+    }
+
+    /**
+     * Only the shape is checked here. Which options exist and what they cost
+     * are questions about the *product*, and `OptionSelection` answers them
+     * against the stored definition — this class has no product to ask.
+     */
+    public function testAScalarWhereAnOptionMapBelongsIsRefused(): void
+    {
+        $this->expectException(ApiException::class);
+
+        LineInput::fromArray(['product_id' => 42, 'options' => 'gold']);
     }
 }

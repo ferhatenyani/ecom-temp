@@ -37,10 +37,10 @@ use WC_Product;
 final class CartPresenter
 {
     /** @return array<string, mixed> */
-    public static function toArray(WC_Cart $cart): array
+    public static function toArray(WC_Cart $cart, ?OptionPriceSubscriber $optionPrices = null): array
     {
         return [
-            'items' => self::items($cart),
+            'items' => self::items($cart, $optionPrices),
             'items_count' => $cart->get_cart_contents_count(),
             'coupons' => self::coupons($cart),
             'currency' => get_woocommerce_currency(),
@@ -53,7 +53,7 @@ final class CartPresenter
     }
 
     /** @return list<array<string, mixed>> */
-    private static function items(WC_Cart $cart): array
+    private static function items(WC_Cart $cart, ?OptionPriceSubscriber $optionPrices): array
     {
         $items = [];
 
@@ -83,10 +83,39 @@ final class CartPresenter
                 'line_total' => self::money($line['line_total'] ?? 0),
                 'image' => self::image($product),
                 'stock_status' => $product->get_stock_status(),
-            ];
+            ] + self::options((string) $key, $optionPrices);
         }
 
         return $items;
+    }
+
+    /**
+     * The chosen options and what the server decided they cost — roadmap §83.
+     *
+     * Both come from `OptionPriceSubscriber`, which recomputed them from the
+     * product's own definition during `calculate_totals()`. Neither is echoed
+     * from the request: `price` above already includes the surcharge, and
+     * `options_surcharge` is published beside it so a storefront can show
+     * "Tapis 24,000 + gravure 500" without doing the arithmetic itself — and
+     * without being trusted to.
+     *
+     * Absent, not empty, on a line with no options: a storefront rendering an
+     * options block for every mug is a storefront that has to check anyway.
+     *
+     * @return array<string, mixed>
+     */
+    private static function options(string $key, ?OptionPriceSubscriber $optionPrices): array
+    {
+        $priced = $optionPrices?->pricedLine($key);
+
+        if ($priced === null || ($priced['options'] ?? []) === []) {
+            return [];
+        }
+
+        return [
+            'options' => $priced['options'],
+            'options_surcharge' => self::money($priced['surcharge']),
+        ];
     }
 
     /** @return list<array<string, mixed>> */

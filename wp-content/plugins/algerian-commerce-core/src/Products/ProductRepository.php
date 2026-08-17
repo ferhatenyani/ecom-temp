@@ -25,6 +25,20 @@ use WC_Product_Variation;
  */
 final class ProductRepository
 {
+    /**
+     * Shared, not constructed on demand — roadmap §83.
+     *
+     * `OptionSetRepository` memoises each product's document for the length of
+     * a request, and `save()` refreshes that memo. A second instance would keep
+     * its own, so a PATCH that cleared a product's options through *this* class
+     * would leave the cart's copy still holding the old set — the same product,
+     * two answers, in one request. Found by `tests/Api/options.php`, whose
+     * "definition deleted under a live cart" case is exactly that sequence.
+     */
+    public function __construct(private readonly OptionSetRepository $optionSets = new OptionSetRepository())
+    {
+    }
+
     public function find(int $id): ?WC_Product
     {
         $product = wc_get_product($id);
@@ -349,6 +363,7 @@ final class ProductRepository
         $this->apply($product, $input);
         $product->save();
         $this->applySeo($product, $input);
+        $this->applyOptions($product, $input);
 
         return $product;
     }
@@ -358,6 +373,7 @@ final class ProductRepository
         $this->apply($product, $input);
         $product->save();
         $this->applySeo($product, $input);
+        $this->applyOptions($product, $input);
 
         $type = $input->get('type');
 
@@ -388,6 +404,34 @@ final class ProductRepository
         }
 
         (new SeoRepository())->save($product->get_id(), $seo);
+    }
+
+    /**
+     * The configurator's definition — roadmap §83.
+     *
+     * After the save, for the reason `applySeo()` gives: on a create there is
+     * no post id to attach meta to until WooCommerce has written the row.
+     *
+     * The references are checked *here* rather than in `OptionSet`, because
+     * "is 412 an image" and "is 88 a product that is not this one" are database
+     * questions and `OptionSet` is pure. A bundle naming a product that does
+     * not exist would otherwise be stored happily and only fail at the moment
+     * somebody tried to buy it.
+     */
+    private function applyOptions(WC_Product $product, ProductInput $input): void
+    {
+        if (!$input->has('options')) {
+            return;
+        }
+
+        $set = $input->get('options');
+
+        if (!$set instanceof OptionSet) {
+            return;
+        }
+
+        $this->optionSets->assertReferences($set, $product->get_id());
+        $this->optionSets->save($product->get_id(), $set);
     }
 
     /**

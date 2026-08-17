@@ -7,6 +7,8 @@ namespace AlgerianCommerce\Cart;
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Core\Logger;
 use AlgerianCommerce\Payments\PaymentProviderRegistry;
+use AlgerianCommerce\Products\OptionSelection;
+use AlgerianCommerce\Products\OptionSetRepository;
 use AlgerianCommerce\Shipping\Destination;
 use AlgerianCommerce\Shipping\RateResolver;
 use AlgerianCommerce\Shipping\ShippingRuleRepository;
@@ -60,7 +62,9 @@ final class CheckoutService
         private readonly CartSession $session,
         private readonly ShippingRuleRepository $rules,
         private readonly PaymentProviderRegistry $payments,
-        private readonly Logger $logger
+        private readonly Logger $logger,
+        private readonly CartService $cartService,
+        private readonly OptionSetRepository $optionSets
     ) {
     }
 
@@ -118,6 +122,24 @@ final class CheckoutService
         }
 
         $cart->calculate_totals();
+
+        /*
+         * A line whose options no longer price cannot be sold — roadmap §83.
+         *
+         * `OptionPriceSubscriber` falls back to the catalogue price and records
+         * why, which is the safe direction for a *cart* (nothing is charged
+         * yet). It is the wrong direction for an order: placing one would sell
+         * gift wrap at nothing and there would be no record that it happened.
+         * The shopper is told to re-choose, which is a nuisance; the
+         * alternative is a shop that quietly undercharges.
+         */
+        $problems = $this->cartService->optionProblems();
+
+        if ($problems !== []) {
+            throw ApiException::invalidRequest('Some items need their options chosen again.', [
+                'fields' => ['cart' => implode(' ', $problems)],
+            ]);
+        }
 
         $provider = $this->requireProvider($input['payment_method']);
         $destination = $this->destination($input);
@@ -181,6 +203,69 @@ final class CheckoutService
      * @param array<string, mixed> $input
      * @param array<string, mixed>|null $shipping
      */
+    /**
+     * Chosen options land on the order line item — roadmap §83.
+     *
+     * Two shapes, on purpose. **Visible meta** — "Gravure: AB" — is what
+     * WooCommerce already renders on a packing slip, in the admin order screen
+     * and in its own emails, so fulfilment sees what to engrave without anybody
+     * teaching those surfaces about this plugin. **Hidden `_ac_options`** keeps
+     * the structured selection with the ids and the deltas that applied *at the
+     * time of sale*, frozen — the same argument migrations 009 and 010 make for
+     * freezing a payload at queue time. A shop that later renames "gold" to
+     * "brass" must not change what an order says it sold.
+     *
+     * Nothing here is read back from the request. The line came out of the
+     * cart, which was priced from the catalogue on the pass immediately above.
+     *
+     * @param array<string, mixed> $line
+     */
+    private function attachOptions(WC_Order $order, int $itemId, array $line): void
+    {
+        $chosen = $line[OptionPriceSubscriber::DATA_KEY] ?? null;
+
+        if (!is_array($chosen) || $chosen === [] || $itemId <= 0) {
+            return;
+        }
+
+        $item = $order->get_item($itemId);
+
+        if (!$item instanceof \WC_Order_Item_Product) {
+            return;
+        }
+
+        $product = $line['data'] ?? null;
+
+        /*
+         * The catalogue's price, read fresh — never the cart line's own. That
+         * object has had `set_price()` called on it by `OptionPriceSubscriber`
+         * and re-pricing against it double-counts the surcharge; see that
+         * class's `cataloguePrice()` for the measurement. Here it only feeds
+         * the below-zero check, but a wrong base there would refuse a
+         * legitimate order rather than mispricing one, which is no better.
+         */
+        $catalogue = $product instanceof \WC_Product ? wc_get_product($product->get_id()) : null;
+
+        $priced = $product instanceof \WC_Product
+            ? OptionSelection::price(
+                $this->optionSets->forPurchase($product),
+                $chosen,
+                (string) ($catalogue instanceof \WC_Product ? $catalogue->get_price() : $product->get_price())
+            )
+            : null;
+
+        if ($priced === null) {
+            return;
+        }
+
+        foreach ($priced->toItemMeta() as $label => $value) {
+            $item->add_meta_data($label, $value);
+        }
+
+        $item->add_meta_data('_ac_options', $priced->toArray());
+        $item->save();
+    }
+
     private function createOrder(WC_Cart $cart, array $input, ?array $shipping): WC_Order
     {
         $order = wc_create_order(['status' => 'pending']);
@@ -196,7 +281,7 @@ final class CheckoutService
                 continue;
             }
 
-            $order->add_product(
+            $itemId = $order->add_product(
                 $product,
                 (int) ($line['quantity'] ?? 1),
                 [
@@ -204,6 +289,8 @@ final class CheckoutService
                     'total' => (float) ($line['line_total'] ?? 0),
                 ]
             );
+
+            $this->attachOptions($order, (int) $itemId, $line);
         }
 
         foreach ($cart->get_coupons() as $code => $coupon) {

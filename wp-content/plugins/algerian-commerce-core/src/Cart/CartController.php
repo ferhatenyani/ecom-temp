@@ -181,7 +181,7 @@ final class CartController extends AbstractController
      * it in the object it already parsed. The header is still *accepted* on the
      * way in, so a storefront can send whichever it finds convenient.
      *
-     * @param array{cart: array<string, mixed>, token: string} $result
+     * @param array{cart: array<string, mixed>, token: string, problems?: list<string>} $result
      */
     private function respond(array $result, int $status = 200): WP_REST_Response
     {
@@ -191,6 +191,17 @@ final class CartController extends AbstractController
         // cart has no token, and a client that stores `""` would send it back.
         if ($result['token'] !== '') {
             $meta['cart_token'] = $result['token'];
+        }
+
+        /*
+         * Roadmap §83. A line whose stored options no longer price keeps its
+         * catalogue price and says so here, rather than quietly costing the
+         * shop the surcharge. `CheckoutService` refuses to place an order
+         * while this list is non-empty, so the storefront's job is to show it
+         * and let the shopper choose again.
+         */
+        if (($result['problems'] ?? []) !== []) {
+            $meta['problems'] = $result['problems'];
         }
 
         return Response::success($result['cart'], $status, $meta);

@@ -245,6 +245,74 @@ attribute can be filtered or counted**: an attribute typed directly onto one
 product has no shared vocabulary and no term to count. Naming one is a `400`
 whose `details.facetable_attributes` lists what this shop does offer.
 
+### Configurable options — §83
+
+A product may carry an **option set**: choices that change the price without
+being variations. Written and read as `options` on the product itself — there is
+no separate endpoint, and no table.
+
+> **A variation is a thing with a SKU and stock. An option is a modifier with
+> neither.** If a choice needs its own stock count, it is a variation (§47).
+
+```json
+"options": { "groups": [
+  { "id": "wrap", "type": "choice", "label": "Gift wrap",
+    "required": false, "min": 0, "max": 1,
+    "choices": [ { "id": "gold", "label": "Or", "price_delta": "250", "image_id": 0 },
+                 { "id": "none", "label": "Sans coffret", "price_delta": "-100", "image_id": 0 } ] },
+  { "id": "engraving", "type": "text", "label": "Gravure",
+    "required": false, "max_length": 20, "price_delta": "500" },
+  { "id": "contents", "type": "bundle", "label": "Contenu",
+    "items": [ { "product_id": 12, "quantity": 2 } ] }
+] }
+```
+
+| Group type | Keys | Notes |
+|---|---|---|
+| `choice` | `required` `min` `max` `choices[]` | `price_delta` may be **negative**; `image_id` must already exist |
+| `text` | `required` `max_length` `price_delta` | `max_length` 1–500 |
+| `bundle` | `items[]` | components this product draws stock from |
+
+Caps: 20 groups, 50 choices per group, 20 bundle components. `required: true`
+with `min: 0` is refused as contradictory rather than normalised. Send
+`"options": null` to clear. Errors name the position —
+`options.groups[0].choices[2].price_delta`.
+
+Two **read-only** fields come back beside it and are ignored on write, so a
+whole GET body PATCHes back unchanged:
+
+- `bundle` — `{ items, available }`. `available` is **computed on every read**
+  as the minimum its components allow; it is never stored.
+- `options_problems` — groups the stored document could not be read. Present
+  only when something is wrong with it.
+
+### Choosing options on a cart line
+
+`POST /cart/items` accepts `options` — **identifiers only**:
+
+```json
+{ "product_id": 42, "quantity": 2, "options": { "wrap": "gold", "engraving": "AB" } }
+```
+
+**The client sends the choice; the server reads the price.** `price`,
+`option_price`, `options_price`, `surcharge`, `option_total` and the rest are
+refused **by name** with the reason. The surcharge is re-read from the product's
+stored definition on every cart mutation and again at checkout.
+
+Each configured line comes back with `options` (the priced selection) and
+`options_surcharge`; `price` already includes it. **Two configurations of one
+product are two lines** — one mug engraved "AB" and one "CD" cannot be a
+quantity of two — so a line is addressed by its key, as it always was.
+
+`meta.problems` appears when a line's stored options can no longer be priced,
+which happens if the shop edits the definition while the cart is live. The line
+keeps its catalogue price and **`POST /checkout` refuses** until the shopper
+chooses again.
+
+On the order, chosen options land on the line item twice: as visible meta
+(`"Gift wrap": "Or"`), which packing slips and WooCommerce's own emails already
+render, and as `_ac_options`, frozen at the time of sale.
+
 Facets are **opt-in** and arrive under `meta.facets`, never in `data`:
 
 ```json

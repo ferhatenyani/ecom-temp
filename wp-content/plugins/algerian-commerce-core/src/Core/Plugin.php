@@ -129,7 +129,10 @@ use AlgerianCommerce\Shipping\ShippingRuleRepository;
 use AlgerianCommerce\Shipping\ShippingService;
 use AlgerianCommerce\Shipping\ShippingWebhookController;
 use AlgerianCommerce\Products\ProductCategoryController;
+use AlgerianCommerce\Cart\OptionPriceSubscriber;
 use AlgerianCommerce\Products\AttributeCatalogue;
+use AlgerianCommerce\Products\BundleStock;
+use AlgerianCommerce\Products\OptionSetRepository;
 use AlgerianCommerce\Products\FacetResolver;
 use AlgerianCommerce\Products\ProductController;
 use AlgerianCommerce\Products\ProductRepository;
@@ -192,6 +195,9 @@ final class Plugin
     private ?RateLimiter $rateLimiter = null;
     private ?RateLimitGuard $rateLimitGuard = null;
     private ?AttributeCatalogue $attributeCatalogue = null;
+    private ?OptionSetRepository $optionSetRepository = null;
+    private ?OptionPriceSubscriber $optionPriceSubscriber = null;
+    private ?BundleStock $bundleStock = null;
     private ?ProductRepository $productRepository = null;
     private ?ProductService $productService = null;
     private ?VariationService $variationService = null;
@@ -282,6 +288,11 @@ final class Plugin
          * to see all of it — see OrderStockSubscriber.
          */
         $this->orderStockSubscriber()->register();
+        // Roadmap §83. The first re-prices a configured cart line on every
+        // totals pass; the second draws a bundle's components down when an
+        // order's stock moves — from wherever that transition was triggered.
+        $this->optionPriceSubscriber()->register();
+        $this->bundleStock()->register();
         /*
          * Also not tied to the REST API: an order is cancelled from wp-admin,
          * WP-CLI, cron and gateways too, and a confirmation queue that keeps
@@ -788,9 +799,42 @@ final class Plugin
         );
     }
 
+    /**
+     * One option-set repository per request — roadmap §83.
+     *
+     * It memoises the document per product, and a single cart mutation reads
+     * the same product several times: once to price the chosen options, once
+     * to check a bundle's ceiling, and once more on every `calculate_totals()`
+     * pass. Two instances would be two sets of reads answering the same
+     * question.
+     */
+    public function optionSetRepository(): OptionSetRepository
+    {
+        return $this->optionSetRepository ??= new OptionSetRepository();
+    }
+
+    public function optionPriceSubscriber(): OptionPriceSubscriber
+    {
+        return $this->optionPriceSubscriber ??= new OptionPriceSubscriber($this->optionSetRepository());
+    }
+
+    public function bundleStock(): BundleStock
+    {
+        return $this->bundleStock ??= new BundleStock(
+            $this->optionSetRepository(),
+            $this->stockLedger(),
+            $this->logger()
+        );
+    }
+
     public function cartService(): CartService
     {
-        return $this->cartService ??= new CartService($this->cartSession());
+        return $this->cartService ??= new CartService(
+            $this->cartSession(),
+            $this->optionSetRepository(),
+            $this->bundleStock(),
+            $this->optionPriceSubscriber()
+        );
     }
 
     /**
@@ -806,7 +850,9 @@ final class Plugin
             $this->cartSession(),
             $this->shippingRuleRepository(),
             $this->paymentProviders(),
-            $this->logger()
+            $this->logger(),
+            $this->cartService(),
+            $this->optionSetRepository()
         );
     }
 
@@ -1365,7 +1411,7 @@ final class Plugin
 
     public function productRepository(): ProductRepository
     {
-        return $this->productRepository ??= new ProductRepository();
+        return $this->productRepository ??= new ProductRepository($this->optionSetRepository());
     }
 
     /**

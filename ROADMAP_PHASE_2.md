@@ -363,6 +363,93 @@ cart without that field is priced correctly by the server. §65's rule: a refusa
 unreachable route look identical from outside, so every negative test needs a positive
 control.
 
+## What was built
+
+**§83 is five classes in `src/Products/` — `OptionSet`, `OptionSelection`,
+`OptionSetRepository`, `BundleAvailability`, `BundleStock` — plus
+`Cart\OptionPriceSubscriber`. No migration, no table, no new route and no new
+capability**; `Schema::VERSION` is unchanged. A definition is written and read as `options`
+on the product it belongs to, and a bundle is a **group type** rather than a product type,
+so `ProductInput::TYPES` is still `simple` and `variable`.
+
+**The client sends the choice; the server reads the price**, and the shape of the code is
+that sentence. `LineInput` gained `options` — a map of group id to chosen value,
+identifiers and free text only — and gained four refusals beside §59b's six:
+`option_price`, `options_price`, `surcharge` and `option_total`, each **by name with the
+reason**. The cart stores only what was chosen; the surcharge is recomputed from the
+product's own definition on every `calculate_totals()`, which `CartService::present()` runs
+on every response and not only after a mutation. Nothing about money survives in the
+session, so there is no stale number and nothing to tamper with if the session's signing is
+ever loosened.
+
+**The bug that proves the section's point was in this code, and it was found by writing the
+positive control rather than the refusal.** `OptionPriceSubscriber` calls `set_price()` on
+the cart line's product object; that object lives in the session; `calculate_totals()` runs
+more than once per request. So reading the base price back off it re-added the surcharge
+every pass. Measured 2026-08-17: a 1,000 DZD mug with a 250 wrap and a 500 engraving — 1,750
+correct — came back at **3,250**, and a second line at 2,500 for a 500 surcharge. Nothing
+errored, the totals were consistent with themselves and the line items looked like money.
+That is §83's own warning about a configurator whose failure "still looks plausible",
+arriving in the implementation of §83. The base is now always a fresh `wc_get_product()`,
+and `docs/SECURITY.md` carries the rule.
+
+**Two more of the same shape.** `CartController::respond()` carried only `cart` and `token`,
+so a line whose options could no longer be priced reported nothing to anybody — it now
+carries `meta.problems`, and `CheckoutService` refuses to place an order while that list is
+non-empty. And `ProductRepository` constructed its **own** `OptionSetRepository`, so
+clearing a product's options left the cart holding the memoised old document: one product,
+two answers, in one request. It takes the shared instance now. Both were found by
+`tests/Api/options.php`, and both are the §82 pattern again — nothing throws and the output
+looks right.
+
+**Storage is one product meta key holding one JSON document**, validated by a pure class in
+the manner of `HomepageSections`, with the two manners that class establishes:
+`fromPayload()` is strict and names the position (`options.groups[0].choices[2].price_delta`),
+`fromStored()` is lenient and drops a bad group **while reporting it** in
+`options_problems`. Unparseable meta is reported rather than read as "this product has no
+options" — the distinction a unit test insisted on, and §61's silent-vanishing rule one
+layer down. The trigger for `ac_option_sets` is named and nothing needs it yet: option sets
+**shared across products**, where a copy in each product's meta is the thing that drifts.
+
+**Bundles decrement through the ledger, and the deviation from §83's wording is deliberate.**
+§83 says component movements go through `InventoryService`; they go through `StockLedger`,
+because `InventoryService::adjust()` asserts `ac_manage_inventory` and stock moves here on
+an order *status transition* — fired by a Chargily webhook with no user at all, by the
+hourly poller, by wp-admin, by WP-CLI. That is the argument `OrderStockSubscriber` already
+records for the identical situation. The rule §64 actually protects is that nothing moves
+stock without writing a movement, and that holds: `wc_update_product_stock()` for the
+change, one `ac_inventory_movements` row per component, keyed to the order. Verified — two
+kits of one mug and two boxes took mug 50→48 and box 10→6, wrote exactly two ledger rows
+whose figures match the shelf, did **not** decrement again on the `completed` transition,
+and restored both on cancellation.
+
+**A bundle's availability is computed on every read**, never stored — §83's oversell rule —
+as the minimum of `floor(component stock ÷ component quantity)`, with a deleted or
+out-of-stock component meaning zero rather than "unbounded". The shortfall message names
+neither the component nor its stock: `POST /cart/items` is public, and a reason reading
+"only 3 left of SKU X" turns it into an inventory read for anyone willing to guess.
+
+**Refused, as §83 asks, each by name.** No conditional-logic engine — required/optional and
+min/max, nothing else. No per-option uploads; a choice references an existing attachment id
+or nothing, checked against the database on write. No customer-supplied files. Free text is
+capped by its group and stripped of markup and control characters — but a leading `=` is
+**deliberately left alone**, because §64's escape belongs at the CSV boundary where
+`CsvWriter` already does it, and stripping it here would mangle "A=B" on a keepsake while
+protecting no other export path. **A partially-refundable bundle is out of scope**, named
+rather than half-built: refunding two of three components means deciding what fraction of
+one price each was sold at, which is a pricing question §83 does not answer. A whole-order
+restock returns everything, and does.
+
+**Two limitations named rather than worked around.** Bundles **do not recurse** — a
+component that is itself a bundle has its own stock reduced and its components left alone;
+the direct self-reference is refused on write, and a longer cycle would need a graph walk on
+every order transition that nothing has asked for. And a **variation inherits its parent's
+option set** rather than carrying its own, which is the combinatorial explosion this section
+exists to avoid, one level down.
+
+**Nothing here is an assumption** — `grep -rn ASSUMPTION src/Products src/Cart` is empty, and
+every figure above was measured against this stack on 2026-08-17.
+
 ------------------------------------------------------------------------
 
 # 84. Order Tracking
