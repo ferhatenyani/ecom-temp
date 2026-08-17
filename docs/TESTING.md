@@ -291,6 +291,14 @@ in-process.
 - **Cover the category where it lives.** A new inbound endpoint's forgery test belongs in that endpoint's
   suite, not in `security.php`; `security.php` holds what is about the API as a whole.
 - **Suites clean up after themselves**, trash included, so a second run starts where the first did.
+  A fixed SKU purged at both ends satisfies this; a *generated* one does not, and the difference is
+  invisible from the test output. `tests/Api/inventory.php` used `'INV-' . wp_generate_password(6)` with
+  no teardown and had left **eighteen** products in the catalogue over nine runs before anyone counted —
+  a green suite quietly moving §63's analytics figures and §82's facet counts on every `scripts/test.sh`.
+  It now uses `INV-PROBE`, drops its fixtures before and after, **and asserts that the teardown worked**,
+  because a teardown that stops working is a suite that stays green while the catalogue grows.
+  Reusing a fixed fixture across runs — as `seo.php`, `import-export.php`, `orders.php` and the rest do —
+  is not a leak: the working set is constant, which is what the rule actually asks for.
 
 ## The seed suite, and why a data loader has a `tests/Api` suite
 

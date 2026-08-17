@@ -109,7 +109,63 @@ wp_set_current_user($manager);
 
 echo PHP_EOL, "=== fixtures ===", PHP_EOL;
 
-$sku = 'INV-' . wp_generate_password(6, false);
+/*
+ * A **fixed** SKU, and a purge before and after — roadmap §65,
+ * docs/TESTING.md → "Conventions for the next suite".
+ *
+ * This was `'INV-' . wp_generate_password(6, false)` with no teardown, which
+ * made it the only suite in the repository that did not start where the last
+ * run finished: a fresh random SKU each time meant a fresh product each time,
+ * and its unnamed companion below meant two. Nine runs had left eighteen
+ * "Inventory Probe" and "Unmanaged Probe" products in the catalogue, which is
+ * §63's analytics figures and §82's facet counts quietly drifting on every
+ * `scripts/test.sh`.
+ *
+ * A random SKU is how a suite avoids colliding with its own leftovers. Not
+ * leaving any is the better answer to that, and it is what every other suite
+ * here does. `ac_drop_fixtures()` also removes what the random-SKU era left, so
+ * one run of this file heals a database it never sees again.
+ */
+$sku = 'INV-PROBE';
+
+/**
+ * Delete this suite's products, including anything an older revision of it
+ * left behind under a generated SKU.
+ */
+function ac_drop_fixtures(string $sku): void
+{
+    $ids = [];
+
+    foreach (['publish', 'draft', 'pending', 'private', 'trash'] as $status) {
+        foreach (wc_get_products(['sku' => $sku, 'status' => $status, 'limit' => 50, 'return' => 'ids']) as $id) {
+            $ids[] = (int) $id;
+        }
+    }
+
+    /*
+     * The unmanaged probe carries no SKU, so it can only be found by name —
+     * and the generated-SKU products share that name with it. Matching on the
+     * two fixture names catches both, and nothing else in the catalogue is
+     * called either: §67's seed is Algerian handicrafts.
+     */
+    foreach (wc_get_products([
+        'limit' => 200,
+        'return' => 'ids',
+        'status' => ['publish', 'draft', 'pending', 'private', 'trash'],
+    ]) as $id) {
+        $product = wc_get_product((int) $id);
+
+        if ($product && in_array($product->get_name(), ['Inventory Probe', 'Unmanaged Probe'], true)) {
+            $ids[] = (int) $id;
+        }
+    }
+
+    foreach (array_unique($ids) as $id) {
+        wp_delete_post($id, true);
+    }
+}
+
+ac_drop_fixtures($sku);
 
 $product = ac_check(
     'POST /products (managed stock, qty 40)',
@@ -491,6 +547,32 @@ ac_check(
 );
 
 ac_check('GET /audit-logs?action= injection attempt', ac_req('GET', '/audit-logs', null, ['action' => "x' OR '1'='1"]), 400);
+
+// Tidy up, so a second run starts where the first did. The ledger rows these
+// products generated stay: `ac_inventory_movements` is a history, and deleting
+// history because its subject was deleted is the opposite of what an audit
+// trail is for.
+ac_drop_fixtures($sku);
+
+/*
+ * Asserted rather than assumed. A teardown that stops working is invisible
+ * — the suite stays green while the catalogue grows — which is exactly how
+ * this file came to leave eighteen products behind without anyone noticing.
+ */
+$survivors = wc_get_products([
+    'limit' => 5,
+    'return' => 'ids',
+    'status' => ['publish', 'draft', 'pending', 'private', 'trash'],
+    'sku' => $sku,
+]);
+
+if ($survivors === []) {
+    $GLOBALS['ac_pass']++;
+    echo "\033[32mPASS\033[0m the suite left no fixture products behind", PHP_EOL;
+} else {
+    $GLOBALS['ac_fail']++;
+    echo "\033[31mFAIL\033[0m fixture products survived teardown: ", wp_json_encode($survivors), PHP_EOL;
+}
 
 echo PHP_EOL, '=== ', $GLOBALS['ac_pass'], ' passed, ', $GLOBALS['ac_fail'], " failed ===", PHP_EOL;
 
