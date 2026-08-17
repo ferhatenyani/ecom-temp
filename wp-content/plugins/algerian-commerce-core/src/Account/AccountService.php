@@ -6,6 +6,7 @@ namespace AlgerianCommerce\Account;
 
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Audit\AuditLogger;
+use AlgerianCommerce\Campaigns\Consent;
 use AlgerianCommerce\Customers\CustomerInput;
 use AlgerianCommerce\Customers\CustomerPresenter;
 use AlgerianCommerce\Customers\CustomerRepository;
@@ -60,14 +61,20 @@ final class AccountService
          * this service keeps working — a service built without it simply serves
          * an order with no `shipment` block, which is what §59c did.
          */
-        private readonly ?TrackingService $tracking = null
+        private readonly ?TrackingService $tracking = null,
+        /*
+         * Roadmap §85's consent flag. Optional for the same reason as `$tracking` —
+         * a service built without it registers accounts with no consent, which is
+         * the correct default and what §59c did.
+         */
+        private readonly ?Consent $consent = null
     ) {
     }
 
     /**
      * Create a shopper account.
      *
-     * @param array{email: string, password: string, first_name: string, last_name: string} $input
+     * @param array{email: string, password: string, first_name: string, last_name: string, marketing_consent?: bool} $input
      * @return array<string, mixed>
      */
     public function register(WP_REST_Request $request, array $input): array
@@ -113,7 +120,49 @@ final class AccountService
             'email' => $input['email'],
         ]);
 
+        /*
+         * §85's consent, and it is only ever written when the payload said yes —
+         * never on the strength of having registered. `Consent::set(false, …)` is not
+         * called for a no, because the absence of the meta *is* the no and writing a
+         * withdrawal event for somebody who never opted in would fill the audit trail
+         * with non-events.
+         */
+        if (($input['marketing_consent'] ?? false) === true) {
+            $this->consent?->set((int) $userId, true, 'registration');
+        }
+
         return $this->sessionPayload($user, $this->session->issue($user));
+    }
+
+    /**
+     * The shopper's own marketing consent — roadmap §85.
+     *
+     * **This is the only door that sets the flag after registration, and it is the
+     * customer's own.** No staff route can: a shop that could tick this box on
+     * somebody's behalf has no consent record worth anything, which is why
+     * `Customers\CustomerInput` was deliberately left alone. Unsubscribing from an
+     * email link is the other half and needs no session at all —
+     * `POST /marketing/unsubscribe`.
+     *
+     * Idempotent, and reports whether anything changed rather than pretending every
+     * call was a decision.
+     *
+     * @return array<string, mixed>
+     */
+    public function setMarketingConsent(WP_REST_Request $request, bool $consented): array
+    {
+        $user = $this->session->require($request);
+
+        if ($this->consent === null) {
+            throw ApiException::internal('Marketing consent is not available on this install.');
+        }
+
+        $changed = $this->consent->set($user->ID, $consented, 'account');
+
+        return [
+            'marketing_consent' => $consented,
+            'changed' => $changed,
+        ];
     }
 
     /**

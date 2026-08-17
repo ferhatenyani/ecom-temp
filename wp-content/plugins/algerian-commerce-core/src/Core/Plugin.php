@@ -128,6 +128,16 @@ use AlgerianCommerce\Shipping\ShippingController;
 use AlgerianCommerce\Shipping\ShippingRuleRepository;
 use AlgerianCommerce\Shipping\ShippingService;
 use AlgerianCommerce\Shipping\ShippingWebhookController;
+use AlgerianCommerce\Campaigns\AudienceResolver;
+use AlgerianCommerce\Campaigns\CampaignController;
+use AlgerianCommerce\Campaigns\CampaignRepository;
+use AlgerianCommerce\Campaigns\CampaignService;
+use AlgerianCommerce\Campaigns\Consent;
+use AlgerianCommerce\Campaigns\EmailTemplates;
+use AlgerianCommerce\Campaigns\RecipientRepository;
+use AlgerianCommerce\Campaigns\SegmentRepository;
+use AlgerianCommerce\Campaigns\SegmentService;
+use AlgerianCommerce\CLI\SendCampaignsCommand;
 use AlgerianCommerce\Tracking\TrackingController;
 use AlgerianCommerce\Tracking\TrackingLink;
 use AlgerianCommerce\Tracking\TrackingService;
@@ -264,6 +274,14 @@ final class Plugin
     private ?ExportService $exportService = null;
     private ?TrackingLink $trackingLink = null;
     private ?TrackingService $trackingService = null;
+    private ?EmailTemplates $emailTemplates = null;
+    private ?CampaignRepository $campaignRepository = null;
+    private ?RecipientRepository $recipientRepository = null;
+    private ?SegmentRepository $segmentRepository = null;
+    private ?AudienceResolver $audienceResolver = null;
+    private ?Consent $consent = null;
+    private ?CampaignService $campaignService = null;
+    private ?SegmentService $segmentService = null;
     private bool $booted = false;
 
     private function __construct()
@@ -311,6 +329,15 @@ final class Plugin
          * this. See ContentTypes.
          */
         $this->contentTypes()->register();
+        /*
+         * Roadmap §85. The same argument as `contentTypes()`: a post type has to
+         * exist on every request or WP_Query returns nothing and the editor screens
+         * are absent — and this one also hooks `wp_insert_post_data`, which is where
+         * a template's HTML is run through the email-safe allowlist. Registered
+         * here, not lazily, because a sanitiser nobody attached sanitises nothing
+         * and fails identically to one that is wrong.
+         */
+        $this->emailTemplates()->register();
         $this->registerShipmentPolling();
         $this->registerPaymentPolling();
         $this->registerMarketingDrain();
@@ -472,6 +499,13 @@ final class Plugin
             'algerian-commerce send-notifications',
             new SendNotificationsCommand($this->notificationService())
         );
+        // Roadmap §85. A separate command from send-notifications on purpose: two
+        // queues, two drains, so a 5,000-recipient newsletter cannot delay an order
+        // confirmation behind it.
+        WP_CLI::add_command(
+            'algerian-commerce send-campaigns',
+            new SendCampaignsCommand($this->campaignService())
+        );
         WP_CLI::add_command('algerian-commerce shipping-check', new ShippingCheckCommand(
             $this->shippingProviders(),
             $this->geoRepository(),
@@ -532,6 +566,7 @@ final class Plugin
             new CmsController($this->logger(), $this->cmsService()),
             new MediaController($this->logger(), $this->mediaService()),
             new MarketingController($this->logger(), $this->marketingService()),
+            new CampaignController($this->logger(), $this->campaignService(), $this->segmentService()),
             new AnalyticsController($this->logger(), $this->analyticsService()),
             new ImportExportController($this->logger(), $this->importService(), $this->exportService()),
             new SettingsController($this->logger(), $this->settingsService()),
@@ -705,6 +740,96 @@ final class Plugin
         return $this->contentTypes ??= new ContentTypes();
     }
 
+    /**
+     * Email marketing campaigns — roadmap §85.
+     *
+     * `ac_email_template` is a post type rather than a table, on §61's instruction
+     * that "WordPress stores content": revisions come free, the editor screens are
+     * WordPress's own, and the media library is already there for images.
+     */
+    public function emailTemplates(): EmailTemplates
+    {
+        return $this->emailTemplates ??= new EmailTemplates();
+    }
+
+    public function campaignRepository(): CampaignRepository
+    {
+        global $wpdb;
+
+        return $this->campaignRepository ??= new CampaignRepository($wpdb);
+    }
+
+    public function recipientRepository(): RecipientRepository
+    {
+        global $wpdb;
+
+        return $this->recipientRepository ??= new RecipientRepository($wpdb);
+    }
+
+    public function segmentRepository(): SegmentRepository
+    {
+        global $wpdb;
+
+        return $this->segmentRepository ??= new SegmentRepository($wpdb);
+    }
+
+    /**
+     * The second file in this plugin that runs aggregate SQL over the order tables,
+     * and the deviation is named in `AudienceResolver`'s own docblock rather than
+     * smuggled: §85's criteria are per-customer aggregates, WooCommerce publishes no
+     * API for any of them, and the rollup tables that would answer them were measured
+     * on 2026-08-17 holding 8 rows against 15 customers and 302 orders. The same four
+     * rules that bound `AnalyticsRepository` bound it.
+     */
+    public function audienceResolver(): AudienceResolver
+    {
+        global $wpdb;
+
+        return $this->audienceResolver ??= new AudienceResolver($wpdb);
+    }
+
+    /**
+     * Marketing consent — §85's legal and practical core.
+     *
+     * Constructed with the audit logger only. **No staff route can set this flag**,
+     * which is why nothing in `Customers/` takes it: a shop that could tick the box
+     * on somebody's behalf has no consent record worth anything.
+     */
+    public function consent(): Consent
+    {
+        return $this->consent ??= new Consent($this->auditLogger());
+    }
+
+    /**
+     * Takes the mail transport, so a send refuses *before* writing five thousand
+     * recipient rows — `PasswordResetService`'s rule applied at scale — and the
+     * settings repository, because an unsubscribe link should point at the storefront
+     * when §71 knows where it is.
+     */
+    public function campaignService(): CampaignService
+    {
+        return $this->campaignService ??= new CampaignService(
+            $this->campaignRepository(),
+            $this->recipientRepository(),
+            $this->segmentRepository(),
+            $this->audienceResolver(),
+            $this->consent(),
+            new SettingsRepository(),
+            $this->mailTransport(),
+            $this->auditLogger(),
+            $this->logger()
+        );
+    }
+
+    public function segmentService(): SegmentService
+    {
+        return $this->segmentService ??= new SegmentService(
+            $this->segmentRepository(),
+            $this->audienceResolver(),
+            $this->auditLogger()
+        );
+    }
+
     public function cmsRepository(): CmsRepository
     {
         return $this->cmsRepository ??= new CmsRepository();
@@ -806,7 +931,10 @@ final class Plugin
             $this->rateLimiter(),
             // Roadmap §84's first door: the `shipment` block on
             // GET /account/orders/{id}, added after the ownership check.
-            $this->trackingService()
+            $this->trackingService(),
+            // Roadmap §85: the consent flag at registration, and the shopper's own
+            // POST /account/marketing-consent. No staff route can set it.
+            $this->consent()
         );
     }
 

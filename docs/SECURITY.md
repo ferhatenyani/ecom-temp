@@ -327,6 +327,12 @@ the real credential is not a browser at all.
 Apply to authentication, password reset, checkout, order creation, COD confirmation, search, order
 tracking, and import endpoints. Limit per identity and per IP, and log rejections.
 
+**`POST /marketing/unsubscribe` is deliberately not rate-limited beyond the namespace-wide read and write
+counters**, and that is a considered exception rather than an omission. §85 makes the link mandatory and
+one-click, so the failure mode of throttling it is a customer who cannot unsubscribe — which is precisely
+how a sending domain gets blocklisted. The route discloses nothing (a forged token answers identically to a
+real one) and its worst abuse is un-subscribing strangers from newsletters, which needs the site salt.
+
 **An unauthenticated route needs its own group, and the guard does not cover it.** `RateLimitGuard` hooks
 `application_password_failed_authentication`, which is WordPress's admin path — a route whose credential is
 a token this project defined goes nowhere near it, so the *service* must count for itself. §59c found this
@@ -543,6 +549,118 @@ rather than by moving it.
   raw, only on routes that opt in, and the `Content-Disposition` filename is generated rather than taken
   from input — a filename from input is header injection and path traversal looking for somewhere to happen.
   Errors always come back in the envelope, so a client never saves an error message as `products.csv`.
+
+## Email marketing campaigns
+
+**This section is the rule**, as "Webhooks" and "File uploads" are for theirs. It was settled by §85.
+
+### Consent is a structural property, not a field somebody remembers
+
+**A customer who bought something consented to an order confirmation. They did not consent to a
+newsletter.** That distinction is the whole difference between the transactional queue and this, and four
+things make it hold:
+
+- **Default false.** `Campaigns\Consent` stores it as user meta and its *absence* is a no, so a customer
+  who registered before the feature existed is not silently opted in. Withdrawal **deletes** the meta
+  rather than writing `'0'`, because a stored no invites a later query written `!= '0'`, which reads every
+  customer who never answered as a yes.
+- **Only the customer sets it.** Registration, or `POST /account/marketing-consent`. **No staff route
+  can** — `Customers\CustomerInput` deliberately does not accept it, and `CustomerPresenter` reports it
+  read-only. A flag staff could tick is not a consent record.
+- **The filter lives in the resolver, not the caller.** `Campaigns\AudienceResolver::candidates()` asks
+  WordPress for users holding the `customer` role *and* the consent meta, and **every** path goes through
+  it — including an explicit list of ids an admin typed, which is the path most likely to be treated as an
+  override. There is no argument that turns it off. Same reason `AccountService::order()` checks ownership
+  in the service layer: a check living only in the admin app is one the second client removes.
+- **Consent is re-checked at send time**, not only when the audience was frozen. A customer who
+  unsubscribes after the resolve — quite possibly from the first batch of the same campaign — must not be
+  mailed by the second.
+
+**Transactional mail is not gated on this flag.** An unsubscribed customer still receives their order
+confirmation, and nothing in `Notifications/` reads `Consent`. A shop that stopped sending those would have
+broken something worse than it fixed.
+
+**An unsubscribe link in every campaign email, mandatory, one click, no login.** Requiring an account to
+unsubscribe is how a sending domain ends up on a blocklist. The route is public, the token is a signed
+`{customer id}.{128-bit HMAC}`, and it is idempotent. Two consequences worth stating:
+
+- **A forged token answers identically to a real one.** The route is unauthenticated, so a 404 on a bad
+  token would answer "is this a customer id" for anybody who asked, and a legitimate holder of a link
+  learns nothing from the difference.
+- **The token keys on the customer, not on the `ac_campaign_recipients` row**, because those rows are
+  purged. A token bound to a row would stop working exactly when somebody finally clicked it.
+
+**§54's rule applies to law as much as to APIs: do not write the consent rule from memory.** Algeria's Law
+18-07 on the protection of natural persons in the processing of personal data governs this. The
+implementer reads the current text, or has the client confirm with counsel, before deciding what an opt-in
+must look like and how long a recipient record may be kept. Nothing here is a legal opinion; the
+engineering requirements above are the floor.
+
+### A template is content, and content authored by a user is rendered as data
+
+**Placeholders, never code.** `TemplateRenderer` is pure and does one thing: an allowlist of token names
+replaced by values. No `eval`, no `do_shortcode()`, no `do_blocks()`, no callable in a token map —
+**rendering a user-authored template as code is remote code execution granted to whoever holds
+`ac_manage_marketing`.** An unknown token renders empty and is *reported*, per §61's malformed-section
+precedent.
+
+**`wp_kses` runs on save, not on send.** A template is stored and re-rendered, so a stored XSS fires in the
+admin's own preview — with whatever session the admin app holds — long before it reaches an inbox.
+Sanitising on the way *out* would leave the hostile markup in the database, where the next reader might not
+sanitise at all. The hook is `wp_insert_post_data`, so it covers the dashboard editor, WP-CLI and anything
+that later gains a write endpoint. The allowlist is `Campaigns\EmailHtml` — no `<script>`, no `<iframe>`,
+no `<form>`, no `on*` attribute, no `javascript:` URL — and it is email-safe rather than
+`wp_kses_post()`'s, which is aimed at a theme rendering in a browser.
+
+**Merge values are escaped for the HTML part and not for the text part.** A customer's name arrived from a
+registration form. `htmlspecialchars` with `ENT_QUOTES` covers the attribute position, which is the case
+`ENT_COMPAT` gets wrong: a value of `x' onclick='…` breaks out of `href="{{unsubscribe_url}}"`.
+
+**A rendered subject is stripped of CR, LF and tab.** `wp_mail()` writes it into a `Subject:` header, and a
+newline in a merge value there could add a `Bcc:`.
+
+### PII, and the one place this project cannot avoid it
+
+`Marketing\UserData` (§62b) hashes PII on the way in, so nothing en route to an ad network holds a
+customer's address. **It cannot work that way here** — an SMTP server needs a real address, and
+`ac_campaign_recipients` outlives the request. So:
+
+- The table holds real addresses. It is covered by §66's backup rules and by `backups/.gitignore`.
+- **Rows are purged 30 days after a campaign completes**, keeping the aggregate counts on `ac_campaigns`
+  and dropping the addresses. The counts are columns rather than a `COUNT(*)` precisely so this is
+  possible: afterwards a shop can say a campaign reached 4,812 people and can no longer say who they were.
+- **No address reaches a log**, on success or failure. `EmailChannel` already declines to log a recipient,
+  with the reason, and the campaign drain inherits that discipline at scale.
+- **Every send is an audit event carrying the recipient *count*, never the list.** An audit row is
+  append-only by design, so a trail carrying five thousand addresses would reintroduce exactly the PII the
+  purge exists to remove, in the one table that cannot drop them. A *test* send does record the address,
+  because that is one address an operator typed rather than a customer's.
+
+### Two capabilities, and the second one is on the send
+
+`ac_manage_marketing` covers drafting, templates and segments — **no new capability**, matching §61's media
+precedent and §63's analytics one. **Sending, reading the recipient list and counting a segment
+additionally require `ac_manage_customers`**: §63's rule that reporting may not disclose in aggregate what
+the caller cannot read in detail, applied to a count — and to the stronger fact that a campaign *reaches*
+every customer record in the shop. A Marketing Manager holds the first and not the second, so this is a
+live restriction rather than a theoretical one.
+
+### The send path
+
+**Nothing is sent on a request path.** `POST /campaigns/{id}/send` resolves, freezes and returns; the drain
+is a CLI command. §62b, §63 and §29 all settled this, and it is not close at five thousand recipients.
+
+**A send is claimed with one `UPDATE … WHERE status = 'draft'`**, so a second request changes no rows and is
+told so — the write-whose-failure-is-the-answer discipline of `WebhookEventRepository` and
+`NotificationRepository`, expressed as an update because the row already exists. `UNIQUE (campaign_id,
+customer_id)` on the recipient table is the second guarantee: resolving the same audience twice inserts
+nothing.
+
+**A send refuses before it resolves** when the shop has no mail transport (503), and refuses rather than
+marking a campaign `sent` when the audience matches nobody (409) — `PasswordResetService`'s rule at scale.
+
+**An audience is bounded** (`AudienceResolver::MAX_AUDIENCE`), because the freeze happens on a request
+path. The trigger for moving the resolve behind the drain is named there.
 
 ## Customer data sent to third parties
 

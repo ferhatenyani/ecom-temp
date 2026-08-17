@@ -142,6 +142,27 @@ final class AccountController extends AbstractController
             ],
         ]);
 
+        /*
+         * Roadmap §85. The **only** door that changes marketing consent after
+         * registration, and it is the customer's own — no staff route can, because a
+         * shop that could tick this box on somebody's behalf has no consent record
+         * worth anything. The other half is `POST /marketing/unsubscribe`, which
+         * needs no session because it arrives from a link in an email.
+         */
+        register_rest_route($this->restNamespace(), '/account/marketing-consent', [
+            'methods' => 'POST',
+            'callback' => $this->handle([$this, 'marketingConsent']),
+            'permission_callback' => $guard,
+            'args' => $this->tokenArg() + [
+                'consent' => [
+                    'type' => 'boolean',
+                    'required' => true,
+                    'validate_callback' => 'rest_validate_request_arg',
+                    'description' => 'true to opt in to marketing email, false to opt out.',
+                ],
+            ],
+        ]);
+
         register_rest_route($this->restNamespace(), '/account/orders', [
             'methods' => 'GET',
             'callback' => $this->handle([$this, 'orders']),
@@ -175,7 +196,18 @@ final class AccountController extends AbstractController
             'password' => $input->password,
             'first_name' => $input->firstName,
             'last_name' => $input->lastName,
+            // §85, default false. `AccountInput` refuses anything but a real boolean
+            // or the strings a JSON client sends for one, so "false" is a no.
+            'marketing_consent' => $input->marketingConsent,
         ]), 201);
+    }
+
+    public function marketingConsent(WP_REST_Request $request): WP_REST_Response
+    {
+        return Response::success($this->service->setMarketingConsent(
+            $request,
+            (bool) $request->get_param('consent')
+        ));
     }
 
     public function login(WP_REST_Request $request): WP_REST_Response
