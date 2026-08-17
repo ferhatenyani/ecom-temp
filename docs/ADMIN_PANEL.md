@@ -457,6 +457,20 @@ customer get their confirmation?" without `wp eval`.
 | GET | `/notifications/{id}` | `ac_manage_customers` |
 | POST | `/notifications/{id}/retry` | `ac_manage_customers` |
 
+> **Built.** `src/Notifications/` — `NotificationController` and
+> `NotificationPresenter`, three methods on `NotificationService`, three on
+> `NotificationRepository`. No migration, no table, no new capability.
+> `docs/API.md` → "Notifications" is the contract; `tests/Api/notifications.php` grew 35 assertions.
+>
+> **One thing this section could not have anticipated, and it is a MySQL fact.** The retry is a single
+> conditional `UPDATE … WHERE id = %d AND status <> 'sent'`, so that a drain sending the row between a
+> read and a write cannot be raced — §85's claim, at one row's scale. But MySQL reports rows it
+> *changed*, not rows it *matched*: measured 2026-08-17, the statement affected **zero** rows against a
+> row that was already `pending` with zero attempts and no error, so retrying an already-queued
+> notification answered **409 "already sent"** about something that had never been sent. Zero affected
+> rows is resolved by re-reading; the guarantee is untouched, because a `sent` row is still never
+> written.
+
 ### The capability is `ac_manage_customers`, and no new one is invented
 
 A notification row holds a customer's email address and the frozen message body, which on an order

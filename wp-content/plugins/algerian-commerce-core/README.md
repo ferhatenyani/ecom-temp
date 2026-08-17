@@ -3754,6 +3754,77 @@ by value, because publishing is what makes a page public. A **category slug** is
 word of the content, and the homepage records its section *types* and their count. The suite asserts both
 halves — that the types are there, and that a headline is not.
 
+## The notification queue, read and retried (§90)
+
+`src/Notifications/` gained `NotificationController` and `NotificationPresenter`, three methods on
+`NotificationService` and three on `NotificationRepository`. Three routes, no migration, no table and
+**no new capability**. `docs/ADMIN_PANEL.md` §90 is the design; `docs/API.md` → "Notifications" is the
+contract; `tests/Api/notifications.php` grew 35 assertions on top of §59d's.
+
+§59d deliberately built no routes — *"§29 asks for an abstraction, not an endpoint"* — which was right
+for sending and left an operator with no way to answer "did the customer get their confirmation?"
+without `wp eval`. This is the read surface and nothing more.
+
+### `ac_manage_customers`, and why the queue is not its own capability
+
+A row holds a customer's address and, on the single read, the frozen body of their order confirmation —
+their name and what they bought. §63's rule decides it: **reporting may not disclose in aggregate what
+the caller cannot already read in detail**, and the capability that already reads a customer's record is
+the honest gate. §61's media gap set the precedent for naming a gap rather than minting a capability to
+close one; here there is no gap, because Support Agent — the role that answers "where is my order?" —
+already holds it. The suite runs its positive path as Support Agent rather than as an administrator, and
+uses Product Manager (ten other management capabilities, not this one) as the negative.
+
+The three new service methods assert that capability and `notify()` and `drain()` still assert nothing,
+which is deliberate: a queue row is written inside an order save fired by a webhook, by the poller, by
+wp-admin, and the drain is a CLI command. Asserting there would refuse every one of them — CLAUDE.md
+records the same shape for `OrderStockSubscriber`. What §90 adds is a door, and a door needs a lock.
+
+### The list omits the message, and the query is where that is enforced
+
+§90 says the list omits the body so a support agent scanning a queue does not pull five hundred
+customers' order contents into one response. `NotificationRepository::search()` therefore does not
+`SELECT payload` at all — the rows never exist in the process — and `NotificationPresenter` publishes an
+exact field list beside it. `NotificationPresenterTest` asserts that list **by key and by value** against
+a row carrying a real payload, because the key half cannot catch a rename and the value half cannot catch
+a field that happens to be empty in a fixture. §84's rule, one presenter over.
+
+The single read's `message` block is read **out of** the payload by allowlist rather than being the
+payload with a few keys removed, so a key some future channel adds is not published by accident. A
+payload that will not decode reports `readable: false`: that is the row `drain()` marks permanently
+failed over, and an operator looking at it needs to see what the drain saw.
+
+`gmdate()` rather than `mysql_to_rfc3339()`, which is what keeps the presenter pure enough to test with
+no WordPress at all — and is the more exact answer, since every writer here stores
+`current_time('mysql', true)`.
+
+### Retry never sends, and the refusal is the `UPDATE`'s own `WHERE`
+
+`retry` puts the row back to `pending`, clears `attempts` and `last_error`, and answers **202** naming
+`wp algerian-commerce send-notifications`. 200 would say the work was done; the first thing an operator
+would do is refresh and find the status still `pending`. The suite counts `pre_wp_mail` firings across
+the whole section and asserts **zero**, so "nothing was sent" is a measurement rather than an inference
+from a status column.
+
+A `sent` row is a 409 naming `sent_at`. It is a record of something that left the building, and
+`Notification` freezes the message at queue time on purpose — re-queueing would deliver a body that was
+true weeks ago. The check is the `WHERE` rather than a read above it, because a drain could send the row
+between a read and a write.
+
+**And that is where the one bug was.** MySQL reports rows it *changed*, not rows it *matched* — measured
+2026-08-17: `UPDATE … SET status='pending', attempts=0, last_error=NULL WHERE id=%d AND status <> 'sent'`
+affected **zero** rows against a row that was already pending with zero attempts and no error, and one
+row when a single value differed. So retrying an already-queued notification answered *409 "already
+sent"* about something that had never been sent. Zero affected rows is ambiguous and is now resolved by
+re-reading; the guarantee is unchanged, because the `WHERE` is still what stops a sent row being written.
+`CLIENT_FOUND_ROWS` would fix the ambiguity at the source and is a connection flag WordPress owns, not a
+per-statement one.
+
+`dedupe_key` is the filter the section exists for: it is `event:subject_id` by construction, so
+`?dedupe_key=order.placed:1234` is the whole question in one request. The audit row names the channel,
+the event and the dedupe key and **never the recipient** — §71's rule, and the suite asserts the address
+is absent from the trail.
+
 ## Configuration
 
 Secrets come from environment variables only — never the options table, never code. Feature flags
