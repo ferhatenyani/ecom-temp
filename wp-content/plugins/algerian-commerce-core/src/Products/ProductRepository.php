@@ -360,6 +360,10 @@ final class ProductRepository
             ? new WC_Product_Variable()
             : new WC_Product_Simple();
 
+        // 0: a product being created cannot name itself in a bundle, because
+        // the caller does not know its id yet. See assertReferences().
+        $this->assertReferences($input, 0);
+
         $this->apply($product, $input);
         $product->save();
         $this->applySeo($product, $input);
@@ -370,6 +374,8 @@ final class ProductRepository
 
     public function update(WC_Product $product, ProductInput $input): WC_Product
     {
+        $this->assertReferences($input, $product->get_id());
+
         $this->apply($product, $input);
         $product->save();
         $this->applySeo($product, $input);
@@ -385,11 +391,53 @@ final class ProductRepository
     }
 
     /**
+     * Every reference a write names, checked **before** the product is written.
+     *
+     * `apply()` already checks `image_id` and `gallery_image_ids`, because
+     * those are set on the object before `save()`. `seo.image_id` and a
+     * bundle's component ids were not: both are meta, so both are written after
+     * the save — and both *validated* after it too, which made a refusal into
+     * a write.
+     *
+     * Measured on 2026-08-18: `POST /products` naming an `seo.image_id` that is
+     * not an attachment answered **400 and created the product**. The panel
+     * screen this breaks is the obvious one — a form reports the error, the
+     * person fixes it and resubmits, and the second attempt is a 409 on a
+     * duplicate SKU with nothing to explain where the first product came from.
+     *
+     * This is the same defect §89 found three times in `src/CMS/`
+     * (`saveMenu()`, `createFaq()`, `applyPageSeo()`), inherited from here —
+     * the CMS SEO writer was modelled on `applySeo()` below, docblock and all.
+     * The rule those three settled: **resolve every reference before the first
+     * write.**
+     *
+     * @param int $productId 0 on a create, where nothing can self-reference yet
+     */
+    private function assertReferences(ProductInput $input, int $productId): void
+    {
+        $seo = $input->get('seo');
+
+        if ($seo instanceof SeoInput && $seo->has('image_id')) {
+            $this->assertImageAttachment((int) $seo->get('image_id'), 'seo.image_id');
+        }
+
+        $set = $input->get('options');
+
+        if ($set instanceof OptionSet) {
+            $this->optionSets->assertReferences($set, $productId);
+        }
+    }
+
+    /**
      * SEO overrides, written **after** the save — roadmap §62.
      *
      * After, and not inside `apply()`, because on a create there is no post id
      * to attach meta to until WooCommerce has written the row. The same call
      * then serves both paths rather than the create silently dropping its SEO.
+     *
+     * The attachment it names is checked before the save, by
+     * `assertReferences()` — checking it here is what made a refused create
+     * leave a product behind.
      */
     private function applySeo(WC_Product $product, ProductInput $input): void
     {
@@ -397,10 +445,6 @@ final class ProductRepository
 
         if (!$seo instanceof SeoInput || $seo->isEmpty()) {
             return;
-        }
-
-        if ($seo->has('image_id')) {
-            $this->assertImageAttachment((int) $seo->get('image_id'), 'seo.image_id');
         }
 
         (new SeoRepository())->save($product->get_id(), $seo);
@@ -412,11 +456,11 @@ final class ProductRepository
      * After the save, for the reason `applySeo()` gives: on a create there is
      * no post id to attach meta to until WooCommerce has written the row.
      *
-     * The references are checked *here* rather than in `OptionSet`, because
-     * "is 412 an image" and "is 88 a product that is not this one" are database
-     * questions and `OptionSet` is pure. A bundle naming a product that does
-     * not exist would otherwise be stored happily and only fail at the moment
-     * somebody tried to buy it.
+     * The references are checked in `assertReferences()`, before the save,
+     * rather than in `OptionSet` — because "is 412 an image" and "is 88 a
+     * product that is not this one" are database questions and `OptionSet` is
+     * pure. A bundle naming a product that does not exist would otherwise be
+     * stored happily and only fail at the moment somebody tried to buy it.
      */
     private function applyOptions(WC_Product $product, ProductInput $input): void
     {
@@ -430,7 +474,6 @@ final class ProductRepository
             return;
         }
 
-        $this->optionSets->assertReferences($set, $product->get_id());
         $this->optionSets->save($product->get_id(), $set);
     }
 

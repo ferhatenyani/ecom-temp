@@ -266,6 +266,98 @@ ac_check(
     400
 );
 
+echo PHP_EOL, "── a refused create leaves nothing behind ──", PHP_EOL;
+
+/*
+ * **The status is not the assertion; the absence of the product is.**
+ *
+ * `seo.image_id` and a bundle's component ids are meta, so they are written
+ * after `$product->save()` — and they used to be *validated* after it too,
+ * which turned a refusal into a write. Measured 2026-08-18: this exact request
+ * answered 400 **and created the product**. Nothing errored, and the checks in
+ * "bad input" above all passed, because every one of them asserts a status
+ * code.
+ *
+ * What a person meets is the second attempt: they fix the field, resubmit, and
+ * get a 409 on a duplicate SKU with nothing to say where the first product came
+ * from. `docs/ADMIN_PANEL.md` Part V has a product form with an SEO image
+ * picker, so this is the panel's first screen.
+ *
+ * §89 found the same defect three times in `src/CMS/` — inherited from here,
+ * because the CMS SEO writer was modelled on `ProductRepository::applySeo()`.
+ * The rule: resolve every reference before the first write.
+ */
+$ORPHAN = 'ac-test-orphan-1';
+ac_purge_sku($ORPHAN);
+
+ac_check(
+    'a create naming an seo.image_id that is not an attachment is refused',
+    ac_req('POST', '/products', [
+        'name' => 'Orphan probe',
+        'sku' => $ORPHAN,
+        'regular_price' => '100',
+        // The product created two lines above is emphatically not an image.
+        'seo' => ['image_id' => $productId],
+    ]),
+    400,
+    static fn ($d): bool|string => isset($d['error']['details']['fields']['seo.image_id'])
+        ?: 'the field was not named: ' . wp_json_encode($d['error']['details'] ?? [])
+);
+
+ac_assert(
+    'and no product was created by it',
+    wc_get_product_id_by_sku($ORPHAN) === 0
+        ?: 'a refused create left product ' . wc_get_product_id_by_sku($ORPHAN) . ' behind'
+);
+
+ac_check(
+    'a create whose option choice names a bad image is refused',
+    ac_req('POST', '/products', [
+        'name' => 'Orphan probe 2',
+        'sku' => $ORPHAN,
+        'regular_price' => '100',
+        'options' => ['groups' => [[
+            'key' => 'wrap',
+            'label' => 'Emballage',
+            'type' => 'select',
+            'choices' => [['key' => 'gold', 'label' => 'Or', 'image_id' => $productId]],
+        ]]],
+    ]),
+    400
+);
+
+ac_assert(
+    'and that one left nothing either',
+    wc_get_product_id_by_sku($ORPHAN) === 0
+        ?: 'a refused create left product ' . wc_get_product_id_by_sku($ORPHAN) . ' behind'
+);
+
+/*
+ * The positive control, and it is the half that matters: a fix that refused
+ * every `seo` block, or stopped writing SEO at all, would pass both assertions
+ * above. So the same write with a real attachment must succeed **and** store
+ * what it was given.
+ */
+$probeImage = get_posts(['post_type' => 'attachment', 'post_mime_type' => 'image', 'numberposts' => 1]);
+$probeImageId = $probeImage === [] ? 0 : (int) $probeImage[0]->ID;
+
+ac_assert('there is an image to control against', $probeImageId > 0 ?: 'no image attachment on this install');
+
+ac_check(
+    'while the same write with a real attachment is created, SEO and all',
+    ac_req('POST', '/products', [
+        'name' => 'Orphan probe 3',
+        'sku' => $ORPHAN,
+        'regular_price' => '100',
+        'seo' => ['image_id' => $probeImageId, 'title' => 'Titre SEO'],
+    ]),
+    201,
+    static fn ($d): bool|string => ($d['data']['seo']['title'] ?? '') === 'Titre SEO'
+        ?: 'the SEO block was not stored: ' . wp_json_encode($d['data']['seo'] ?? [])
+);
+
+ac_purge_sku($ORPHAN);
+
 echo PHP_EOL, "── unauthenticated and unauthorized ──", PHP_EOL;
 
 wp_set_current_user(0);
