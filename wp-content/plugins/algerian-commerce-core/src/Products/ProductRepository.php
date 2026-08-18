@@ -12,6 +12,7 @@ use WC_Product_Attribute;
 use WC_Product_Simple;
 use WC_Product_Variable;
 use WC_Product_Variation;
+use WP_Query;
 
 /**
  * The WooCommerce adapter for products.
@@ -25,6 +26,24 @@ use WC_Product_Variation;
  */
 final class ProductRepository
 {
+    /**
+     * `orderby` value → the column that actually sorts it.
+     *
+     * `date`, `title` and `menu_order` are absent because WooCommerce honours
+     * those three itself; every other member of `ProductInput::ORDERBY` is here
+     * because it does not. See `orderingClause()` for the measurement.
+     *
+     * The values are column names interpolated into SQL, so this list — and not
+     * the request — is the only thing that can name a column.
+     */
+    private const ORDERBY_COLUMN = [
+        'id' => 'ID',
+        'price' => 'min_price',
+        'sku' => 'sku',
+        'popularity' => 'total_sales',
+        'rating' => 'average_rating',
+    ];
+
     /**
      * Shared, not constructed on demand — roadmap §83.
      *
@@ -112,17 +131,32 @@ final class ProductRepository
      * The same measurement found `attribute` + `attribute_term` ignored in the
      * same way, which is why attributes go through `tax_query` — that one works.
      *
+     * **`orderby` is ignored in the same way, for five of its eight values**, and
+     * `ORDERBY_COLUMN` below is that repair.
+     *
      * @param array<string, mixed> $args
      */
     private function query(array $args, ProductFilters $filters): mixed
     {
         $metaQuery = $this->metaQuery($filters);
+        $ordering = $this->orderingClause($args);
 
-        if ($metaQuery === []) {
+        if ($metaQuery === [] && $ordering === null) {
             return wc_get_products($args);
         }
 
-        $attach = static function (array $wpQueryArgs) use ($metaQuery): array {
+        $attach = static function (array $wpQueryArgs) use ($metaQuery, $ordering): array {
+            // A marker WP_Query carries through untouched, so `posts_clauses` —
+            // which fires for *every* query while it is attached — can tell this
+            // one from any other that happens to run inside the same call.
+            if ($ordering !== null) {
+                $wpQueryArgs['ac_ordering'] = $ordering['token'];
+            }
+
+            if ($metaQuery === []) {
+                return $wpQueryArgs;
+            }
+
             $existing = isset($wpQueryArgs['meta_query']) && is_array($wpQueryArgs['meta_query'])
                 ? $wpQueryArgs['meta_query']
                 : [];
@@ -148,11 +182,100 @@ final class ProductRepository
 
         add_filter('woocommerce_product_data_store_cpt_get_products_query', $attach);
 
+        if ($ordering !== null) {
+            add_filter('posts_clauses', $ordering['filter'], 10, 2);
+        }
+
         try {
             return wc_get_products($args);
         } finally {
             remove_filter('woocommerce_product_data_store_cpt_get_products_query', $attach);
+
+            if ($ordering !== null) {
+                remove_filter('posts_clauses', $ordering['filter'], 10);
+            }
         }
+    }
+
+    /**
+     * The `orderby` values WooCommerce's product query accepts and does not honour.
+     *
+     * `ProductInput::ORDERBY` publishes eight. Measured 2026-08-18 against the
+     * live router, comparing the full 28-row id sequence of each against
+     * `orderby=date`: **`id`, `price`, `sku`, `popularity` and `rating` returned
+     * byte-identical order to `date`, in both directions.** Only `date`, `title`
+     * and `menu_order` sorted at all. This is the same failure the docblock above
+     * records for `meta_query` and for `attribute` — `WC_Product_Data_Store_CPT`
+     * builds WP_Query args from the vocabulary it recognises and drops the rest,
+     * so the sort does not fail, it simply does not sort. A price sort that
+     * silently returns date order is worse than no price sort, because nothing on
+     * screen says the column is a lie.
+     *
+     * The join is `wc_product_meta_lookup`, WooCommerce's own denormalised table,
+     * rather than `postmeta`. Three reasons, each measured on this install:
+     *
+     * - **One row per product.** `_price` is multi-valued on a variable product —
+     *   product 12 carries `17500` and `18500` — so a postmeta join multiplies
+     *   rows and makes both the order and `found_posts` ambiguous. The lookup
+     *   table carries `min_price`/`max_price` already resolved.
+     * - **No silent omission.** One product (`AC-SEO-NOPRICE`) has no `_price` row
+     *   at all, and `meta_key` ordering INNER JOINs, so ordering by price through
+     *   postmeta would drop it from the list entirely — 27 rows where the
+     *   unfiltered list has 28. Every top-level product has a lookup row; measured,
+     *   zero are missing.
+     * - **WooCommerce maintains it.** It is written on every product save, so
+     *   there is no second copy of the truth for this repository to keep in step.
+     *
+     * A product with no price is `min_price = 0` in that table rather than NULL,
+     * so it sorts as free. That is WooCommerce's own representation and what the
+     * storefront shows; inventing a NULL here would make the panel disagree with
+     * the shop.
+     *
+     * The tie-break on `ID` is not decoration: nine of the fixtures share a
+     * `post_date` to the second, and without it the same query returns them in a
+     * different order run to run, which makes a paginated list drop and repeat
+     * rows between pages.
+     *
+     * @param array<string, mixed> $args
+     * @return array{token: string, filter: callable}|null
+     */
+    private function orderingClause(array $args): ?array
+    {
+        $orderby = (string) ($args['orderby'] ?? '');
+        $column = self::ORDERBY_COLUMN[$orderby] ?? null;
+
+        if ($column === null) {
+            return null;
+        }
+
+        $direction = strtoupper((string) ($args['order'] ?? '')) === 'ASC' ? 'ASC' : 'DESC';
+        $token = $orderby . ':' . $direction;
+
+        $filter = static function (array $clauses, WP_Query $query) use ($column, $direction, $token): array {
+            if ($query->get('ac_ordering') !== $token) {
+                return $clauses;
+            }
+
+            global $wpdb;
+
+            if ($column === 'ID') {
+                $clauses['orderby'] = "{$wpdb->posts}.ID {$direction}";
+
+                return $clauses;
+            }
+
+            $lookup = $wpdb->prefix . 'wc_product_meta_lookup';
+
+            // LEFT JOIN, so a product the lookup table has not caught up with is
+            // ordered last rather than dropped. `$column` is never user input —
+            // it comes from ORDERBY_COLUMN's values and nowhere else.
+            $clauses['join'] .= " LEFT JOIN {$lookup} AS ac_ordering ON ac_ordering.product_id = {$wpdb->posts}.ID";
+            $clauses['orderby'] = "ac_ordering.{$column} IS NULL, ac_ordering.{$column} {$direction}, {$wpdb->posts}.ID DESC";
+
+            return $clauses;
+        };
+
+        return ['token' => $token, 'filter' => $filter];
     }
 
     /**

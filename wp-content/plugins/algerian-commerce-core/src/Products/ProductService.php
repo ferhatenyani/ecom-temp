@@ -144,7 +144,31 @@ final class ProductService
             ],
         ]);
 
-        return $updated;
+        /*
+         * Re-read, because the saved object is not always what was stored.
+         *
+         * Measured 2026-08-18: `PATCH /products/{id}` with an `attributes` list
+         * that drops a variable product's variation attribute answered **500,
+         * `Call to a member function is_taxonomy() on null`**, from
+         * `ProductPresenter::attributes()`. `WC_Product_Variable::save()` sets
+         * the dropped key to `null` in the in-memory attribute array rather than
+         * unsetting it — variations are re-synced against those keys — so the
+         * object handed back carries `['finition' => null, 'pa_couleur' => …]`
+         * while a fresh read carries only the second. The presenter iterated the
+         * first and fataled on the null.
+         *
+         * Skipping nulls in the presenter would have silenced this one symptom
+         * and left the cause: the write response would still be a partly stale
+         * object, and `docs/API.md`'s whole "a read body can be written back"
+         * contract rests on the response being what a subsequent GET returns.
+         * A panel that PATCHes the whole object and reseeds its form from the
+         * response — which is what Part V's product form does — would otherwise
+         * be editing a product that no longer matches the shop.
+         *
+         * `wc_get_product()` reads WooCommerce's own object cache here, so this
+         * is not a second round trip to the database in the common case.
+         */
+        return $this->requireProduct($id);
     }
 
     public function delete(int $id, bool $force): void
