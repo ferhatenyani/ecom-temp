@@ -479,6 +479,41 @@ ac_check('the audit records the variation\'s own sku, not its parent\'s', ac_req
         return 'no product.variation_deleted row for this variation';
     });
 
+echo PHP_EOL, "── replacing a variable product's attributes ──", PHP_EOL;
+
+/*
+ * **This answered 500 before the repair**, and it is the ordinary path: Part V's
+ * product form GETs the whole object and PATCHes the whole object back, so
+ * editing anything on a variable product resends `attributes`.
+ *
+ * `WC_Product_Variable::save()` sets a *dropped* variation attribute's key to
+ * `null` in the in-memory array rather than unsetting it — the variations are
+ * re-synced against those keys — so the object the write returns carries
+ * `['size' => null, 'pa_… ' => WC_Product_Attribute]` while a fresh read carries
+ * only the second. `ProductPresenter::attributes()` called `is_taxonomy()` on
+ * the null and fataled. Measured 2026-08-18 on products 12 and 21.
+ *
+ * The assertion is deliberately on the *body*, not on the status: returning 200
+ * with a stale object would pass a status check, and the stale object is the
+ * actual defect — `docs/API.md` promises a read body can be written back, which
+ * is only true if a write body reads back the same.
+ */
+$replaced = ac_check('replacing a variable product\'s attributes is not a 500', ac_req('PATCH',
+    "/products/{$varParentId}",
+    ['attributes' => [['name' => 'Matter', 'options' => ['Wool'], 'variation' => false]]]), 200);
+
+ac_assert('the write response is what was stored', (function () use ($varParentId, $replaced) {
+    [$status, $fresh] = ac_req('GET', "/products/{$varParentId}");
+
+    if ($status !== 200) {
+        return "a fresh read answered {$status}";
+    }
+
+    return ($replaced['data']['attributes'] ?? null) === ($fresh['data']['attributes'] ?? false)
+        ?: 'the PATCH returned ' . wp_json_encode($replaced['data']['attributes'] ?? null)
+            . ' and a GET returned ' . wp_json_encode($fresh['data']['attributes'] ?? null);
+})());
+
 wp_delete_post($varParentId, true);
 
 echo PHP_EOL, "── duplicate ──", PHP_EOL;
@@ -742,6 +777,30 @@ function ac82_total(array $query): int
     return $status === 200 ? (int) ($data['meta']['total'] ?? -1) : -$status;
 }
 
+/**
+ * The fixture's SKUs in the order a listing returned them.
+ *
+ * An ordering assertion has to compare a *sequence*, which is why this exists
+ * beside `ac82_total()`. Asserting a status code, or a count, is exactly what
+ * let five of the eight `orderby` values ship without sorting: they answered 200
+ * with all six rows, in date order, and every test that looked at them passed.
+ */
+function ac82_order(string $orderby, string $order): array
+{
+    [$status, $data] = ac_req('GET', '/products', null, [
+        'search' => AC82,
+        'per_page' => 50,
+        'orderby' => $orderby,
+        'order' => $order,
+    ]);
+
+    if ($status !== 200) {
+        return ["HTTP {$status}"];
+    }
+
+    return array_column($data['data'], 'sku');
+}
+
 /** One attribute facet group as `slug => count`. */
 function ac82_attribute_counts(array $data, string $taxonomy): array
 {
@@ -851,6 +910,46 @@ ac_assert('category stays repeatable', ac82_total(['category' => $CAT . ',' . $C
 
 ac_assert('tag is two', ac82_total(['tag' => (string) $TAG]) === 2
     ?: 'got ' . ac82_total(['tag' => (string) $TAG]));
+
+echo PHP_EOL, "── every published orderby actually sorts ──", PHP_EOL;
+
+/*
+ * `ProductInput::ORDERBY` publishes eight values. Measured 2026-08-18, before
+ * the repair: `id`, `price`, `sku`, `popularity` and `rating` each returned the
+ * full 28-row catalogue in **byte-identical order to `date`**, in both
+ * directions — accepted with a 200 and silently unsorted, because
+ * `WC_Product_Data_Store_CPT` drops the `orderby` vocabulary it does not
+ * recognise. See `ProductRepository::orderingClause()`.
+ *
+ * The fixture's effective prices are deliberately distinct — 100, 190 (sale),
+ * 300, 400, 500, 590 — so price order and SKU order are different sequences and
+ * a fallback to either cannot pass as the other.
+ */
+$byPrice = ['AC-F82-1', 'AC-F82-2', 'AC-F82-3', 'AC-F82-4', 'AC-F82-5', 'AC-F82-6'];
+
+ac_assert('price ascending is price order', ac82_order('price', 'asc') === $byPrice
+    ?: 'got ' . wp_json_encode(ac82_order('price', 'asc')));
+
+ac_assert('price descending is the reverse', ac82_order('price', 'desc') === array_reverse($byPrice)
+    ?: 'got ' . wp_json_encode(ac82_order('price', 'desc')));
+
+ac_assert('sku ascending is SKU order', ac82_order('sku', 'asc') === $byPrice
+    ?: 'got ' . wp_json_encode(ac82_order('sku', 'asc')));
+
+// The control that makes the three above mean something. If `orderby` were still
+// being dropped, every one of them would return this sequence instead — so an
+// assertion that price order *differs* from date order is the one that fails when
+// the repair is reverted.
+$byDate = ac82_order('date', 'desc');
+
+ac_assert('date order is not price order', $byDate !== $byPrice
+    ?: 'date and price returned the same sequence — orderby is being ignored again');
+
+ac_assert('ascending and descending differ', ac82_order('price', 'asc') !== ac82_order('price', 'desc')
+    ?: 'order=asc and order=desc returned the same sequence');
+
+ac_assert('every row survives being sorted', count(ac82_order('price', 'asc')) === 6
+    ?: 'sorting by price returned ' . count(ac82_order('price', 'asc')) . ' of 6 rows');
 
 echo PHP_EOL, "── two filters compose ──", PHP_EOL;
 

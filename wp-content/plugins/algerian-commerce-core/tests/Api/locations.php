@@ -145,10 +145,20 @@ function ac_drop_fixtures(array $slugs, string $provider): int
 
 // The two wilayas the fixtures hang off. Real codes and real names, so the
 // upsert cannot drift the shipped data.
+//
+// `name_ar` is part of "real names" and omitting it was not harmless: the upsert
+// writes `name_ar = VALUES(name_ar)`, and `GeoDataset::wilayas()` fills a missing
+// one with `''`. Running this suite therefore blanked the Arabic name of Algiers
+// and Oran — the country's two busiest wilayas, and the only two rows the
+// fixtures touch — leaving every Arabic reader of the admin panel a blank exactly
+// where a place was most likely to exist. Measured 2026-08-18: 2 of 69 rows empty,
+// both with an `updated_at` from the last suite run while the other 67 still
+// carried the importer's own timestamp. The values below are `data/algeria/
+// wilayas.json`'s, so a re-run now rewrites what the importer already wrote.
 $WILAYAS = [
     'wilayas' => [
-        ['code' => '16', 'name' => 'Algiers'],
-        ['code' => '31', 'name' => 'Oran'],
+        ['code' => '16', 'name' => 'Algiers', 'name_ar' => 'الجزائر'],
+        ['code' => '31', 'name' => 'Oran', 'name_ar' => 'وهران'],
     ],
 ];
 
@@ -532,6 +542,28 @@ ac_check('the canonical table is back to its shipped state', ac_req('GET', '/loc
 
     return ($d['data']['provider_destinations'] ?? -1) === 0
         ?: 'left ' . $d['data']['provider_destinations'] . ' fixture destinations behind';
+});
+
+// Counting rows is not enough, and this is the assertion whose absence let the
+// bug live: the suite upserts wilayas 16 and 31, and an upsert that carried no
+// `name_ar` blanked theirs while leaving the row count identical. A field this
+// suite writes is a field this suite has to check it did not damage.
+ac_check('every wilaya still carries its Arabic name', ac_req('GET', '/locations/wilayas', ['per_page' => 100]), 200, function ($d) {
+    $blank = [];
+
+    foreach ($d['data'] as $row) {
+        if (($row['name_ar'] ?? '') === '') {
+            $blank[] = $row['code'] . ' ' . $row['name'];
+        }
+    }
+
+    if ($blank !== []) {
+        return 'blank name_ar on ' . wp_json_encode($blank);
+    }
+
+    // The positive control: an assertion that cannot fail is not an assertion.
+    // If the field ever stops being published, the loop above passes vacuously.
+    return count($d['data']) === 69 ?: 'read ' . count($d['data']) . ' wilayas, expected 69';
 });
 
 echo PHP_EOL;
