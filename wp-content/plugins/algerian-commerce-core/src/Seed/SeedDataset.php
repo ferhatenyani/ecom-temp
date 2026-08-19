@@ -50,7 +50,9 @@ final class SeedDataset
     /** Product keys the seeder owns; everything else is handed to ProductInput. */
     private const PRODUCT_SEED_KEYS = ['categories', 'variations', 'low_stock_amount'];
 
-    private const CUSTOMER_KEYS = ['email', 'first_name', 'last_name', 'phone', 'billing'];
+    private const CUSTOMER_KEYS = [
+        'email', 'first_name', 'last_name', 'phone', 'billing', 'marketing_consent',
+    ];
 
     private const ORDER_KEYS = [
         'ref', 'customer', 'status', 'final_status', 'payment_method',
@@ -529,6 +531,19 @@ final class SeedDataset
                 'last_name' => self::text($entry['last_name']),
                 'phone' => self::text($entry['phone'] ?? null),
                 'billing' => $billing,
+                /*
+                 * Roadmap §85's flag, seedable **and defaulting to false**, which is
+                 * the same default the registration route has. A fixture file is one
+                 * of the two places a pre-ticked consent box gets into a system by
+                 * accident — the other is a form — so the absence of the key is a no
+                 * here exactly as it is everywhere else.
+                 *
+                 * It is seedable at all because the affirmative state was otherwise
+                 * unobservable: every customer in the development shop read false, so
+                 * a screen rendering "consent given" had no data that could reach it
+                 * and no test that had ever seen it.
+                 */
+                'marketing_consent' => ($entry['marketing_consent'] ?? false) === true,
             ];
         }
 

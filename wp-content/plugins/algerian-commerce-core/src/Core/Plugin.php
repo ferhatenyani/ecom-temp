@@ -1484,6 +1484,7 @@ final class Plugin
             $this->variationService(),
             $this->inventoryService(),
             $this->customerService(),
+            $this->consent(),
             $this->couponService(),
             $this->orderService(),
             $this->notificationRepository(),

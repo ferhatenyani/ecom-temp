@@ -117,6 +117,27 @@ $real = array_filter(
 ac_assert('every seeded shopper is on a reserved domain', $real === []
     ? true : 'real addresses: ' . implode(', ', $real));
 
+/*
+ * §85's flag is seedable, and the fixture uses it exactly once.
+ *
+ * The reason it is seedable at all: every customer in the development shop read
+ * `marketing_consent: false`, so the affirmative branch of any screen showing it
+ * had no data that could reach it and no test that had ever seen it rendered.
+ *
+ * The reason the count is asserted rather than just the presence: a fixture file
+ * is one of the two places a pre-ticked consent box gets into a system by accident
+ * — the other is a form — and "most customers consented" is a seed that quietly
+ * teaches a shop the wrong default.
+ */
+$consenting = array_values(array_filter(
+    $customers['rows'],
+    static fn (array $row): bool => $row['marketing_consent'] === true
+));
+
+ac_assert('exactly one seeded shopper consents to marketing', count($consenting) === 1
+    ? true : count($consenting) . ' of ' . count($customers['rows']) . ' consent');
+ac_assert('...and the rest default to no', count($customers['rows']) > 1 ? true : 'only one shopper to compare');
+
 // ---------------------------------------------------------------- dry run ---
 echo PHP_EOL, "── dry run ──", PHP_EOL;
 
@@ -136,6 +157,29 @@ $result = $seeder->seed();
 
 ac_assert('the seed run reports no errors', $result['errors'] === []
     ? true : implode(' | ', array_slice($result['errors'], 0, 3)));
+
+// The seeded consent actually landed — and only on the row that asked for it.
+// The negative half is the load-bearing one: a seeder that consented everybody
+// would satisfy the positive check on its own.
+$consentedIds = array_map(
+    static fn (array $row): int => (int) email_exists($row['email']),
+    $customers['rows']
+);
+$actuallyConsenting = array_values(array_filter(
+    $consentedIds,
+    static fn (int $id): bool => $id > 0 && \AlgerianCommerce\Campaigns\Consent::has($id)
+));
+
+ac_assert('the seeded consent reached exactly one shopper', count($actuallyConsenting) === 1
+    ? true : count($actuallyConsenting) . ' shoppers ended up consenting');
+ac_assert('...and it carries a date and a source', (function () use ($actuallyConsenting): bool|string {
+    $id = $actuallyConsenting[0] ?? 0;
+
+    return $id > 0
+        && \AlgerianCommerce\Campaigns\Consent::changedAt($id) !== null
+        && \AlgerianCommerce\Campaigns\Consent::source($id) === 'registration'
+        ? true : 'a seeded consent with no record is not a consent record';
+})());
 
 foreach ([
     'categories' => count($catalogue['categories']),

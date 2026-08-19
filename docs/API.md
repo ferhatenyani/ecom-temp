@@ -471,6 +471,26 @@ COD is order metadata and audit events, never a status. A COD outcome does not m
 `roles`, `capabilities` and `user_pass` are refused **by name** — this is the one write a non-staff caller
 can make to a WordPress user, so the refusal is explicit rather than incidental.
 
+**`marketing_consent` is refused by name too**, and it is the only one of them a client reaches without
+typing it: the field *is* emitted on read, so a GET → edit → PATCH arrives there. It used to answer
+`"Unknown field."`, the same message a misspelling gets, which reads as "no such field" when the truth is
+"it exists and it is not yours". Refused rather than silently dropped, unlike `role`: a shop that thinks
+it ticked a consent box has no consent record.
+
+Two read-only fields sit beside the flag, both `null` on a customer who has never decided:
+
+| Field | Meaning |
+|---|---|
+| `marketing_consent_at` | ISO 8601, when they last decided — **present on a withdrawal as well as a grant** |
+| `marketing_consent_source` | `registration`, `account`, `unsubscribe_link`, or `null` if it predates the record |
+
+A bare boolean cannot distinguish *declined* from *never asked*, and an admin screen showing one is
+answering a question it has not been given the data for. The date carries a UTC offset even though the
+meta behind it does not: `notes[].created_at` and `movements[].created_at` both hand a client a naive
+instant that `new Date()` shifts silently, and a consent date off by an hour is a date in the wrong day.
+
+Staff set none of this. `POST /account/marketing-consent` is the customer's own route.
+
 ## Shopper accounts (storefront)
 
 | Method | Route | Guard |
@@ -668,11 +688,56 @@ not build UI that requires it.
 | Method | Route | Guard |
 |---|---|---|
 | GET, POST | `/coupons` | `ac_manage_coupons` |
+| GET | `/coupons/eligible-products` | `ac_manage_coupons` |
+| GET | `/coupons/eligible-categories` | `ac_manage_coupons` |
 | GET, PATCH, DELETE | `/coupons/{id}` | `ac_manage_coupons` |
 
 Types: `percent`, `fixed_cart`, `fixed_product`. Codes are lowercased on save.
 `maximum_discount` is **refused by name** — WooCommerce has no such field, and `maximum_amount` caps the
 *cart*, not the discount.
+
+### Restrictions are ids, and they are checked
+
+`product_ids`, `excluded_product_ids`, `product_categories` and `excluded_product_categories` are arrays
+of ids. **An id that names nothing is a 400**, per field, with the offending ids in the message.
+WooCommerce stores these without checking them, so before this they went straight to the database:
+`{"product_ids": [999999]}` answered 200, and the coupon then applied to nothing while looking, in every
+response, exactly like a coupon that worked.
+
+Reads stay tolerant. A single coupon — `GET`, `POST` and `PATCH`, never the list — carries a
+`restrictions` block with the same ids resolved to names:
+
+```json
+"restrictions": {
+  "product_categories": [{ "id": 16, "name": "Tapis et Textiles", "slug": "tapis", "missing": false }],
+  "product_ids": [{ "id": 8842, "name": null, "missing": true }]
+}
+```
+
+**`missing: true` is emitted, never filtered out.** A product deleted after the coupon was written leaves
+a real, stale id — validating a write cannot make a read total — and a client that dropped the row would
+silently delete the restriction the next time it saved. The key is present on every row, including the
+good ones, because a key that appears only in the failure case is one clients forget to check.
+
+`restrictions` is dropped on write, like every other read-only field, so the whole GET body PATCHes back.
+
+### The two picker sources
+
+`/coupons/eligible-products` and `/coupons/eligible-categories` exist because a restriction picker could
+not otherwise be built. Turning `[16]` into *Tapis et Textiles* needs `/products` and
+`/product-categories`, and both are `ac_manage_products` — **which Marketing Manager does not hold**,
+though it holds `ac_manage_coupons`. One of the three roles that can manage coupons, and the role whose
+job coupons are, could not see what a coupon applied to.
+
+These are not `/products` behind a second capability. A product row is `id`, `name`, `sku` and `status`
+and nothing else: no price, no stock, no cost, no attributes, no facets, no write. That is strictly less
+than the catalogue discloses, which is the point — widening `ac_manage_products` would have handed this
+role the catalogue in order to give it a label.
+
+Both take `page`, `per_page` (capped at 100) and `search`, plus `include=12,16` to resolve a known set of
+ids in one request. Products search by **name or SKU** — WordPress's own search reads the title and the
+content, so a shop that knows a product by its SKU would otherwise get an empty picker. Categories are
+listed with `hide_empty=false`: a shop creates the category, then the coupon, then the products.
 
 ## Shipping
 

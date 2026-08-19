@@ -60,6 +60,7 @@
       "first_name": "Lila",
       "last_name": "Ouali",
       "phone": "0698001122",
+      "marketing_consent": true,
       "billing": {
         "address_1": "Lotissement Tazmalt, lot 27",
         "city": "Akbou",

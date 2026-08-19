@@ -55,6 +55,36 @@ final class CouponService
         return $this->requireCoupon($id);
     }
 
+    /**
+     * Products this shop's coupons may be restricted to.
+     *
+     * **`ac_manage_coupons`, not `ac_manage_products`** — and asserted here as well
+     * as on the route, like every other method on this class, so a CLI command
+     * cannot reach it without the same check. The reasoning is in
+     * `CouponController::registerRoutes()`: without this, the one role whose job is
+     * coupons could not see what a coupon applied to.
+     *
+     * @param array{page: int, per_page: int, search: string, include: list<int>} $criteria
+     * @return array{items: list<array<string, mixed>>, total: int}
+     */
+    public function eligibleProducts(array $criteria): array
+    {
+        Permissions::assert(Capabilities::MANAGE_COUPONS);
+
+        return $this->repository->eligibleProducts($criteria);
+    }
+
+    /**
+     * @param array{page: int, per_page: int, search: string, include: list<int>} $criteria
+     * @return array{items: list<array<string, mixed>>, total: int}
+     */
+    public function eligibleCategories(array $criteria): array
+    {
+        Permissions::assert(Capabilities::MANAGE_COUPONS);
+
+        return $this->repository->eligibleCategories($criteria);
+    }
+
     /** @param array<string, mixed> $payload */
     public function create(array $payload): WC_Coupon
     {
@@ -63,6 +93,7 @@ final class CouponService
         $input = CouponInput::fromPayload($payload, true);
 
         $this->guardCode((string) $input->get('code'));
+        $this->guardRestrictions($input);
 
         $coupon = $this->repository->create($input);
 
@@ -103,6 +134,8 @@ final class CouponService
                 'fields' => ['amount' => 'A percentage discount cannot exceed 100.'],
             ]);
         }
+
+        $this->guardRestrictions($input);
 
         $updated = $this->repository->update($coupon, $input);
 
@@ -150,6 +183,68 @@ final class CouponService
         if ($code !== '' && $this->repository->codeExists($code, $ignoreId)) {
             throw ApiException::conflict('That coupon code is already in use.', ['code' => $code]);
         }
+    }
+
+    /**
+     * A restriction must name something that exists.
+     *
+     * **This was the quietest failure in the endpoint.** WooCommerce stores
+     * `product_ids` without checking them, so every id this API was handed went
+     * straight to the database: `{"product_ids": [999999]}` answered 200, and so
+     * did a *customer* id in the same field. The coupon then applied to nothing and
+     * looked, in every response and every screen, exactly like a coupon that was
+     * working. A discount that silently never fires is worse than one that fails
+     * loudly, because nobody goes looking for it.
+     *
+     * Refused as a field error rather than a conflict, and the message names the
+     * ids so the caller can tell which of five they got wrong — `details.fields`
+     * is the list a client renders beside its inputs.
+     *
+     * **Only on the way in.** Reads stay tolerant: a product deleted after the
+     * coupon was written leaves a real, stale id that `CouponRestrictions` reports
+     * as `missing` rather than hides. Validating a write cannot make a read total,
+     * and pretending otherwise would mean a coupon becoming unreadable because
+     * something it points at was trashed.
+     */
+    private function guardRestrictions(CouponInput $input): void
+    {
+        $errors = [];
+
+        foreach (CouponRestrictions::PRODUCT_FIELDS as $field) {
+            if (!$input->has($field)) {
+                continue;
+            }
+
+            $missing = $this->repository->missingProducts((array) $input->get($field));
+
+            if ($missing !== []) {
+                $errors[$field] = 'No product with ' . self::plural($missing) . '.';
+            }
+        }
+
+        foreach (CouponRestrictions::CATEGORY_FIELDS as $field) {
+            if (!$input->has($field)) {
+                continue;
+            }
+
+            $missing = $this->repository->missingCategories((array) $input->get($field));
+
+            if ($missing !== []) {
+                $errors[$field] = 'No product category with ' . self::plural($missing) . '.';
+            }
+        }
+
+        if ($errors !== []) {
+            throw ApiException::invalidRequest('The coupon is invalid.', ['fields' => $errors]);
+        }
+    }
+
+    /** @param list<int> $ids */
+    private static function plural(array $ids): string
+    {
+        return count($ids) === 1
+            ? 'id ' . $ids[0]
+            : 'ids ' . implode(', ', $ids);
     }
 
     private function requireCoupon(int $id): WC_Coupon

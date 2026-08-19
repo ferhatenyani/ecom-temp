@@ -44,6 +44,20 @@ final class CustomerPresenter
              * unsubscribe link in every campaign.
              */
             'marketing_consent' => \AlgerianCommerce\Campaigns\Consent::has($customer->get_id()),
+            /*
+             * The flag on its own was not enough to build a screen from. An admin
+             * panel showing a bare "Non" cannot distinguish a customer who declined
+             * from one who was never asked, and both the date and the source were
+             * already being stored — the first since this module was written, the
+             * second added beside it — and simply never presented. So the panel had
+             * a boolean it could not explain and a spec asking it to explain one.
+             *
+             * Both are null together on a customer who has never decided, which is
+             * 15 of the 16 in the development shop. A client renders the pair, not
+             * the flag: "Non, retiré le 3 mars" and "Non" are different answers.
+             */
+            'marketing_consent_at' => \AlgerianCommerce\Campaigns\Consent::changedAt($customer->get_id()),
+            'marketing_consent_source' => \AlgerianCommerce\Campaigns\Consent::source($customer->get_id()),
             'billing' => self::billing($customer),
             'shipping' => self::shipping($customer),
             'date_created' => self::date($customer->get_date_created()),

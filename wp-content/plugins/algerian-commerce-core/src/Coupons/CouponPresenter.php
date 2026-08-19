@@ -18,13 +18,24 @@ use WC_Coupon;
  * coupon may be used against — and there is deliberately no `maximum_discount`
  * beside it. See `CouponInput` for why: WooCommerce has no discount cap, and a
  * field that looked like one would be read as one.
+ *
+ * The four restriction fields stay as id arrays, because that is what the write
+ * shape takes and the read shape mirrors the write shape. `restrictions` is added
+ * *beside* them on the detail routes with the same ids resolved to names — see
+ * `CouponRestrictions` — so a client never has to choose between a body it can
+ * PATCH back and a body it can render.
  */
 final class CouponPresenter
 {
-    /** @return array<string, mixed> */
-    public static function toArray(WC_Coupon $coupon): array
+    /**
+     * @param array<string, list<array<string, mixed>>>|null $restrictions the id
+     *        arrays resolved to names, omitted from list rows where resolving one
+     *        coupon's worth per row would populate a column no list shows
+     * @return array<string, mixed>
+     */
+    public static function toArray(WC_Coupon $coupon, ?array $restrictions = null): array
     {
-        return [
+        $payload = [
             'id' => $coupon->get_id(),
             'code' => $coupon->get_code(),
             'status' => get_post_status($coupon->get_id()) ?: 'publish',
@@ -60,6 +71,12 @@ final class CouponPresenter
             'date_created' => self::date($coupon->get_date_created()),
             'date_modified' => self::date($coupon->get_date_modified()),
         ];
+
+        if ($restrictions !== null) {
+            $payload['restrictions'] = $restrictions;
+        }
+
+        return $payload;
     }
 
     /** @param array<int, mixed> $ids @return list<int> */

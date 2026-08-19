@@ -145,6 +145,87 @@ final class CouponInputTest extends TestCase
         CouponInput::fromPayload(['code' => 'X', 'amount' => '-5'], true);
     }
 
+    /**
+     * A negative *threshold* is refused too, and it was not.
+     *
+     * The clearing arm read `<= 0.0`, which swallowed every negative before the
+     * "Must not be negative." check could see it — so `{"minimum_amount": "-1"}`
+     * answered 200 and erased a real minimum spend. Measured against the live shop
+     * while building the admin panel: a threshold of `100.00` came back `null` with
+     * nothing anywhere reporting a change. The two money fields disagreed about
+     * what a minus sign meant, and only `amount` was right.
+     *
+     * @return array<string, array{0: string}>
+     */
+    public static function thresholdFieldProvider(): array
+    {
+        return ['minimum_amount' => ['minimum_amount'], 'maximum_amount' => ['maximum_amount']];
+    }
+
+    #[DataProvider('thresholdFieldProvider')]
+    public function testANegativeThresholdIsRefusedRatherThanClearing(string $field): void
+    {
+        try {
+            CouponInput::fromPayload([$field => '-1'], false);
+            self::fail('a negative threshold was accepted');
+        } catch (ApiException $e) {
+            $fields = $e->details()['fields'] ?? [];
+
+            self::assertSame(
+                'Must not be negative.',
+                $fields[$field] ?? null,
+                'a typo must not be a destructive write'
+            );
+        }
+    }
+
+    /**
+     * Clearing stays expressible three ways — the positive control for the test
+     * above, without which "negative is refused" could be satisfied by refusing
+     * every falsy value and taking a shop's only way to remove a minimum spend.
+     *
+     * @return array<string, array{0: mixed}>
+     */
+    public static function clearingValueProvider(): array
+    {
+        return ['null' => [null], 'empty string' => [''], 'zero' => ['0'], 'numeric zero' => [0]];
+    }
+
+    #[DataProvider('clearingValueProvider')]
+    public function testAThresholdStillClears(mixed $value): void
+    {
+        $input = CouponInput::fromPayload(['minimum_amount' => $value], false);
+
+        self::assertTrue($input->has('minimum_amount'));
+        self::assertSame('', $input->get('minimum_amount'));
+    }
+
+    /**
+     * An amount of zero is a real coupon and must survive. The `livraison` fixture
+     * is exactly this: `amount: "0.00"` with `free_shipping: true`, a coupon whose
+     * discount is genuinely nothing. The zero-clears rule is for thresholds only.
+     */
+    public function testAnAmountOfZeroIsKept(): void
+    {
+        self::assertSame('0', CouponInput::fromPayload(['amount' => '0'], false)->get('amount'));
+    }
+
+    /**
+     * `restrictions` is the resolved rendering of the four id arrays and is emitted
+     * on every detail route, so it has to drop on the way back in — the round-trip
+     * property `tests/Api/coupons.php` asserts, which failed the day it was added.
+     */
+    public function testResolvedRestrictionsDropOnWrite(): void
+    {
+        $input = CouponInput::fromPayload([
+            'restrictions' => ['product_categories' => [['id' => 16, 'name' => 'Tapis']]],
+            'product_categories' => [16],
+        ], false);
+
+        self::assertFalse($input->has('restrictions'));
+        self::assertSame([16], $input->get('product_categories'));
+    }
+
     /** @return array<string, array{0: mixed}> */
     public static function badExpiryProvider(): array
     {

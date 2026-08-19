@@ -6,6 +6,7 @@ namespace AlgerianCommerce\Seed;
 
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Account\AccountSession;
+use AlgerianCommerce\Campaigns\Consent;
 use AlgerianCommerce\Core\Logger;
 use AlgerianCommerce\Coupons\CouponService;
 use AlgerianCommerce\Customers\CustomerService;
@@ -59,6 +60,7 @@ final class Seeder
         private readonly VariationService $variations,
         private readonly InventoryService $inventory,
         private readonly CustomerService $customers,
+        private readonly Consent $consent,
         private readonly CouponService $coupons,
         private readonly OrderService $orders,
         private readonly NotificationRepository $notifications,
@@ -420,6 +422,21 @@ final class Seeder
             } catch (ApiException | Throwable $e) {
                 $result['errors'][] = "customer {$row['email']}: " . $e->getMessage();
                 continue;
+            }
+
+            /*
+             * Through `Consent`, not through `CustomerService`, because there is no
+             * path through `CustomerService` and there must not be — the flag is
+             * refused by name there. The seeder stands in for the shopper's own act
+             * at registration, so it records `registration` as the source and leaves
+             * a real audit row, which is what makes the seeded state indistinguishable
+             * from one a person produced.
+             *
+             * Only ever called for a true: an unconsented seed row must not write a
+             * withdrawal date onto a customer who never decided anything.
+             */
+            if ($row['marketing_consent'] === true) {
+                $this->consent->set($userId, true, 'registration');
             }
 
             $ids[$row['email']] = $userId;
