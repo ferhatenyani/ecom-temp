@@ -66,6 +66,49 @@ final class CustomerInputTest extends TestCase
     }
 
     /**
+     * The consent flag is the one refused field a client reaches by accident.
+     *
+     * Everything else in `REFUSED` appears in no response, so it is only ever typed
+     * on purpose. `marketing_consent` **is** emitted, so a client that GETs a
+     * customer, edits a name and PATCHes the object back arrives at it — and it was
+     * answering "Unknown field.", which is what a misspelling gets. A panel
+     * developer reading that concluded the field did not exist; it exists and
+     * belongs to somebody else.
+     *
+     * Refused rather than dropped, unlike `role`, and the difference is the point:
+     * a silently ignored consent write leaves a shop believing it recorded consent
+     * it does not have.
+     */
+    public function testMarketingConsentIsRefusedByNameAndSaysWhose(): void
+    {
+        $errors = $this->fieldErrors(['marketing_consent' => true]);
+
+        self::assertArrayHasKey('marketing_consent', $errors);
+        self::assertNotSame('Unknown field.', $errors['marketing_consent']);
+        self::assertStringContainsString(
+            '/account/marketing-consent',
+            $errors['marketing_consent'],
+            'the refusal names the route that can set it'
+        );
+    }
+
+    /**
+     * The date and the source are derived from the decision, not decisions
+     * themselves, so they drop the way `role` drops — a client PATCHing back a body
+     * it read must not have to strip them.
+     */
+    public function testTheConsentRecordDropsRatherThanRefusing(): void
+    {
+        $input = CustomerInput::fromPayload([
+            'marketing_consent_at' => '2026-03-03T09:00:00+00:00',
+            'marketing_consent_source' => 'account',
+            'first_name' => 'Lila',
+        ]);
+
+        self::assertSame(['first_name' => 'Lila'], $input->fields);
+    }
+
+    /**
      * `role` is emitted by the presenter, so it is dropped rather than refused
      * — and dropping is what makes it safe. A dropped field is never applied.
      */

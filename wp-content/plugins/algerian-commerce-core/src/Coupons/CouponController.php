@@ -52,6 +52,40 @@ final class CouponController extends AbstractController
             ],
         ]);
 
+        /*
+         * The two picker sources — roadmap step 33, added when the admin panel
+         * tried to build a restriction picker and could not.
+         *
+         * A coupon's restrictions are ids. Turning them into a chooser needs a list
+         * of products and a list of categories, and both of those live behind
+         * `ac_manage_products` — which **Marketing Manager does not hold**, though
+         * it holds `ac_manage_coupons`. The result was a coupon form that worked
+         * for Admin and Manager and showed a 403 to the role whose job coupons are.
+         *
+         * These are not `/products` behind a second capability. They carry id, name
+         * and SKU and nothing else: no price, no stock, no cost, no attributes, no
+         * facets, no write. That is the smallest thing a picker can be built from,
+         * and it is strictly less than `/products` discloses — which matters,
+         * because widening `ac_manage_products` to cover reads would have handed
+         * this role the catalogue in order to give it a label.
+         *
+         * Registered before `/coupons/(?P<id>\d+)` for readability only; `\d+`
+         * cannot match `eligible-products`, so no ordering here is load-bearing.
+         */
+        register_rest_route($this->restNamespace(), '/coupons/eligible-products', [
+            'methods' => 'GET',
+            'callback' => $this->handle([$this, 'eligibleProducts']),
+            'permission_callback' => $guard,
+            'args' => $this->pickerArgs(),
+        ]);
+
+        register_rest_route($this->restNamespace(), '/coupons/eligible-categories', [
+            'methods' => 'GET',
+            'callback' => $this->handle([$this, 'eligibleCategories']),
+            'permission_callback' => $guard,
+            'args' => $this->pickerArgs(),
+        ]);
+
         register_rest_route($this->restNamespace(), '/coupons/(?P<id>\d+)', [
             [
                 'methods' => 'GET',
@@ -104,24 +138,106 @@ final class CouponController extends AbstractController
 
     public function show(WP_REST_Request $request): WP_REST_Response
     {
-        return Response::success(
-            CouponPresenter::toArray($this->service->get((int) $request->get_param('id')))
-        );
+        return Response::success($this->detail($this->service->get((int) $request->get_param('id'))));
     }
 
     public function create(WP_REST_Request $request): WP_REST_Response
     {
-        return Response::success(
-            CouponPresenter::toArray($this->service->create($this->body($request))),
-            201
-        );
+        return Response::success($this->detail($this->service->create($this->body($request))), 201);
     }
 
     public function update(WP_REST_Request $request): WP_REST_Response
     {
-        return Response::success(CouponPresenter::toArray(
+        return Response::success($this->detail(
             $this->service->update((int) $request->get_param('id'), $this->body($request))
         ));
+    }
+
+    /**
+     * Products a coupon may be restricted to — id, name, SKU, status.
+     *
+     * `search` matches the name or the SKU, because a shop looks a product up by
+     * whichever it has to hand, and `include` resolves a known set of ids in one
+     * request rather than one request per id.
+     */
+    public function eligibleProducts(WP_REST_Request $request): WP_REST_Response
+    {
+        $page = (int) $request->get_param('page');
+        $perPage = (int) $request->get_param('per_page');
+
+        $result = $this->service->eligibleProducts([
+            'page' => $page,
+            'per_page' => $perPage,
+            'search' => (string) $request->get_param('search'),
+            'include' => self::idList($request->get_param('include')),
+        ]);
+
+        return Response::success(
+            $result['items'],
+            200,
+            Response::paginationMeta($result['total'], $page, $perPage)
+        );
+    }
+
+    /** Categories a coupon may be restricted to — id, name, slug, product count. */
+    public function eligibleCategories(WP_REST_Request $request): WP_REST_Response
+    {
+        $page = (int) $request->get_param('page');
+        $perPage = (int) $request->get_param('per_page');
+
+        $result = $this->service->eligibleCategories([
+            'page' => $page,
+            'per_page' => $perPage,
+            'search' => (string) $request->get_param('search'),
+            'include' => self::idList($request->get_param('include')),
+        ]);
+
+        return Response::success(
+            $result['items'],
+            200,
+            Response::paginationMeta($result['total'], $page, $perPage)
+        );
+    }
+
+    /**
+     * A coupon with its restrictions resolved.
+     *
+     * Every route that returns *one* coupon returns the names too, including the
+     * write routes: a form that saves and then re-renders from the response would
+     * otherwise lose every label it was showing a moment earlier.
+     *
+     * @return array<string, mixed>
+     */
+    private function detail(\WC_Coupon $coupon): array
+    {
+        return CouponPresenter::toArray($coupon, CouponRestrictions::resolve($coupon));
+    }
+
+    /**
+     * `?include=12,16` — a comma list, the form every other list parameter in this
+     * API takes. Non-numeric entries are dropped rather than refused: `include` is
+     * a narrowing convenience, and a client that sends a stray empty segment wants
+     * the ids it did send, not a 400.
+     *
+     * @return list<int>
+     */
+    private static function idList(mixed $raw): array
+    {
+        if (!is_scalar($raw) || (string) $raw === '') {
+            return [];
+        }
+
+        $ids = [];
+
+        foreach (explode(',', (string) $raw) as $part) {
+            $id = (int) trim($part);
+
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+        }
+
+        return array_values(array_unique($ids));
     }
 
     public function destroy(WP_REST_Request $request): WP_REST_Response
@@ -147,6 +263,32 @@ final class CouponController extends AbstractController
         $body = $request->get_json_params();
 
         return is_array($body) ? $body : [];
+    }
+
+    /**
+     * Shared by both picker routes. `include` is a string rather than an array so
+     * `?include=12,16` works from a query string without PHP's bracket syntax.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    private function pickerArgs(): array
+    {
+        return $this->paginationArgs(Response::MAX_PER_PAGE) + [
+            'search' => [
+                'type' => 'string',
+                'default' => '',
+                'maxLength' => 200,
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'sanitize_text_field',
+            ],
+            'include' => [
+                'type' => 'string',
+                'default' => '',
+                'pattern' => '^$|^[0-9]+(,[0-9]+)*$',
+                'validate_callback' => 'rest_validate_request_arg',
+                'sanitize_callback' => 'sanitize_text_field',
+            ],
+        ];
     }
 
     /** @return array<string, array<string, mixed>> */

@@ -186,6 +186,202 @@ ac_check('a duplicate code is a conflict', ac_req('POST', '/coupons', ['code' =>
 ac_check('a coupon may keep its own code', ac_req('PATCH', "/coupons/{$id}", ['code' => 'AC-TEST-COUPON']), 200);
 ac_check('it cannot take another coupon\'s code', ac_req('PATCH', "/coupons/{$id}", ['code' => 'AC-TEST-COUPON-2']), 409);
 
+echo PHP_EOL, "── restrictions: resolved on read, checked on write ──", PHP_EOL;
+
+/*
+ * A coupon's restrictions are ids, and until this step every id the API was handed
+ * went straight to the database. `{"product_ids": [999999]}` answered 200 and so
+ * did a *customer* id — the coupon then applied to nothing and looked, in every
+ * response, exactly like a coupon that worked.
+ */
+$realProduct = (int) (wc_get_products(['status' => 'publish', 'limit' => 1, 'return' => 'ids'])[0] ?? 0);
+$realCategory = 0;
+$catTerms = get_terms(['taxonomy' => 'product_cat', 'hide_empty' => false, 'number' => 1]);
+if (is_array($catTerms) && isset($catTerms[0]) && $catTerms[0] instanceof WP_Term) {
+    $realCategory = (int) $catTerms[0]->term_id;
+}
+
+ac_assert('a real product and a real category to restrict to', $realProduct > 0 && $realCategory > 0
+    ?: "product={$realProduct} category={$realCategory}");
+
+ac_check('a product id that exists is accepted', ac_req('PATCH', "/coupons/{$id}", [
+    'product_ids' => [$realProduct], 'product_categories' => [$realCategory],
+]), 200, static function (array $d) use ($realProduct, $realCategory): bool|string {
+    // The positive control for every refusal below. Without it, "bad ids are
+    // refused" is satisfied by an endpoint that refuses all of them.
+    $r = $d['data']['restrictions'] ?? [];
+    $product = $r['product_ids'][0] ?? [];
+    $category = $r['product_categories'][0] ?? [];
+
+    if (($product['id'] ?? 0) !== $realProduct || ($category['id'] ?? 0) !== $realCategory) {
+        return 'the ids did not come back';
+    }
+    if (($product['missing'] ?? true) !== false || ($category['missing'] ?? true) !== false) {
+        return 'a real id was reported missing';
+    }
+    if (!is_string($product['name'] ?? null) || ($product['name'] ?? '') === '') {
+        return 'the product resolved to no name';
+    }
+    if (!is_string($category['name'] ?? null) || ($category['name'] ?? '') === '') {
+        return 'the category resolved to no name';
+    }
+    // The whole reason the block exists: a Marketing Manager can read this
+    // without ever being able to reach /products.
+    return true;
+});
+
+ac_check('a product id that does not exist is refused', ac_req('PATCH', "/coupons/{$id}", [
+    'product_ids' => [999999999],
+]), 400, static function (array $d): bool|string {
+    $message = $d['error']['details']['fields']['product_ids'] ?? '';
+
+    return str_contains((string) $message, '999999999')
+        ? true
+        : 'the refusal should name the id: ' . var_export($message, true);
+});
+
+/*
+ * An id that exists as a *post* but not as a product. This is the sharper half of
+ * the check, and it replaces the obvious version: "a customer id is not a product"
+ * looked like a good test and is not one, because **user ids and post ids are
+ * separate sequences that collide**. Customer 24 in this shop is also product 24,
+ * and customer 13 is a variation — so that test passes or fails on an accident of
+ * seeding rather than on anything the endpoint does. A page id cannot be a
+ * product by construction.
+ */
+$pageId = (int) (get_posts(['post_type' => 'page', 'numberposts' => 1, 'fields' => 'ids'])[0] ?? 0);
+
+if ($pageId > 0) {
+    ac_check('an id that is a page, not a product, is refused', ac_req('PATCH', "/coupons/{$id}", [
+        'product_ids' => [$pageId],
+    ]), 400);
+}
+
+ac_check('a category id that does not exist is refused', ac_req('PATCH', "/coupons/{$id}", [
+    'excluded_product_categories' => [999999999],
+]), 400);
+
+ac_check('emptying a restriction is still allowed', ac_req('PATCH', "/coupons/{$id}", [
+    'product_ids' => [], 'product_categories' => [],
+]), 200, static fn (array $d): bool|string => ($d['data']['product_ids'] ?? null) === []
+    ? true : 'the list did not clear');
+
+/*
+ * Validation on write cannot make a read total. A product deleted after the
+ * coupon was written leaves a real, stale id, and the read has to survive it —
+ * dropping the row would make a form silently delete the restriction on save.
+ */
+$doomed = wp_insert_post(['post_type' => 'product', 'post_title' => 'AC coupon doomed product', 'post_status' => 'publish']);
+if (is_int($doomed) && $doomed > 0) {
+    ac_check('a restriction on a product that exists', ac_req('PATCH', "/coupons/{$id}", [
+        'product_ids' => [$doomed],
+    ]), 200);
+
+    wp_delete_post($doomed, true);
+
+    ac_check('...survives the product being deleted, as missing', ac_req('GET', "/coupons/{$id}"), 200,
+        static function (array $d) use ($doomed): bool|string {
+            $row = $d['data']['restrictions']['product_ids'][0] ?? [];
+
+            if (($row['id'] ?? 0) !== $doomed) {
+                return 'the stale id was dropped from the read';
+            }
+
+            // `?? ` is the wrong operator for a key whose expected value *is* null —
+            // it fires on null and hands back the default, so the assertion could
+            // never pass. array_key_exists is the one that distinguishes "absent"
+            // from "present and null", which is the whole distinction here.
+            return ($row['missing'] ?? false) === true
+                && array_key_exists('name', $row) && $row['name'] === null
+                ? true
+                : 'a deleted product should read as missing with no name, got ' . wp_json_encode($row);
+        });
+
+    ac_check('...and the stale id can be cleared', ac_req('PATCH', "/coupons/{$id}", ['product_ids' => []]), 200);
+}
+
+ac_check('the list does not carry resolved names', ac_req('GET', '/coupons', null, ['per_page' => 1]), 200,
+    static fn (array $d): bool|string => !array_key_exists('restrictions', $d['data'][0] ?? ['restrictions' => 1])
+        ? true : 'a list row resolved its restrictions');
+
+echo PHP_EOL, "── the picker sources ──", PHP_EOL;
+
+/*
+ * The routes this step exists for. `/products` and `/product-categories` are both
+ * `ac_manage_products`, which **Marketing Manager does not hold** — so the one
+ * role whose job is coupons could not see what a coupon applied to, and no client
+ * work could fix it.
+ */
+$marketing = ac_user('ac_coupon_marketing', 'ac_marketing_manager');
+
+ac_check('the product picker lists products', ac_req('GET', '/coupons/eligible-products'), 200,
+    static function (array $d): bool|string {
+        $row = $d['data'][0] ?? null;
+
+        if (!is_array($row)) {
+            return 'no products';
+        }
+
+        // Identity and a label. Nothing priced, nothing stocked — the capability
+        // this route sits behind is about coupons, not about the catalogue.
+        $leaked = array_diff(array_keys($row), ['id', 'name', 'sku', 'status']);
+
+        return $leaked === [] ? true : 'the picker leaked: ' . implode(', ', $leaked);
+    });
+
+ac_check('the category picker lists categories', ac_req('GET', '/coupons/eligible-categories'), 200,
+    static fn (array $d): bool|string => is_array($d['data'][0] ?? null) && isset($d['data'][0]['name'])
+        ? true : 'no categories');
+
+ac_check('the product picker searches by name', ac_req('GET', '/coupons/eligible-products', null,
+    ['search' => 'zzz-nothing-matches-this']), 200,
+    static fn (array $d): bool|string => ($d['data'] ?? []) === [] ? true : 'a nonsense search matched');
+
+if ($realProduct > 0) {
+    $sku = (string) get_post_meta($realProduct, '_sku', true);
+
+    if ($sku !== '') {
+        ac_check('...and by SKU, which a title search cannot', ac_req('GET', '/coupons/eligible-products', null,
+            ['search' => $sku]), 200,
+            static function (array $d) use ($realProduct): bool|string {
+                foreach ($d['data'] ?? [] as $row) {
+                    if (($row['id'] ?? 0) === $realProduct) {
+                        return true;
+                    }
+                }
+
+                return 'a shop that knows a product by its SKU got an empty picker';
+            });
+    }
+
+    ac_check('include resolves a known set in one request', ac_req('GET', '/coupons/eligible-products', null,
+        ['include' => (string) $realProduct]), 200,
+        static fn (array $d): bool|string => count($d['data'] ?? []) === 1
+            && ($d['data'][0]['id'] ?? 0) === $realProduct ? true : 'include did not narrow');
+}
+
+ac_check('per_page above the cap is refused here too', ac_req('GET', '/coupons/eligible-products', null,
+    ['per_page' => 101]), 400);
+ac_check('a malformed include is refused', ac_req('GET', '/coupons/eligible-products', null,
+    ['include' => '12,abc']), 400);
+
+wp_set_current_user($marketing);
+ac_check('a Marketing Manager reaches the product picker', ac_req('GET', '/coupons/eligible-products'), 200);
+ac_check('...and the category picker', ac_req('GET', '/coupons/eligible-categories'), 200);
+ac_check('...and reads a coupon\'s resolved names', ac_req('GET', "/coupons/{$id}"), 200,
+    static fn (array $d): bool|string => isset($d['data']['restrictions']) ? true : 'no restrictions block');
+// The positive control that says the pickers are not simply open: the same role
+// is still refused the catalogue they are a narrow substitute for.
+ac_check('...while /products stays refused to them', ac_req('GET', '/products'), 403);
+ac_check('...and /product-categories too', ac_req('GET', '/product-categories'), 403);
+
+wp_set_current_user($support);
+ac_check('a Support Agent reaches neither picker', ac_req('GET', '/coupons/eligible-products'), 403);
+ac_check('...nor the category picker', ac_req('GET', '/coupons/eligible-categories'), 403);
+wp_set_current_user(0);
+ac_check('the pickers need a credential', ac_req('GET', '/coupons/eligible-products'), 401);
+wp_set_current_user($admin);
+
 echo PHP_EOL, "── pagination and boundaries ──", PHP_EOL;
 
 ac_check('per_page is honoured', ac_req('GET', '/coupons', null, ['per_page' => 1]), 200,

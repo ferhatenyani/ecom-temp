@@ -385,6 +385,107 @@ foreach (['password', 'user_pass', 'roles', 'capabilities'] as $field) {
     });
 }
 
+/*
+ * The consent flag is refused by name too, and it is the only one of these a
+ * client reaches without typing it — the presenter emits it, so a GET → edit →
+ * PATCH arrives there. It used to answer "Unknown field.", which reads as "no such
+ * field" and sent an admin-panel build looking for a spelling mistake.
+ *
+ * Refused rather than dropped, unlike `role`: a silently ignored consent write
+ * leaves a shop believing it holds a consent it does not hold.
+ */
+ac_check('marketing_consent is refused by name', ac_req('PATCH', "/customers/{$customer}", [
+    'marketing_consent' => true,
+]), 400, function ($d) {
+    $message = (string) ($d['error']['details']['fields']['marketing_consent'] ?? '');
+
+    if ($message === '' || $message === 'Unknown field.') {
+        return 'the refusal should say whose the flag is';
+    }
+
+    return str_contains($message, '/account/marketing-consent')
+        ?: 'the refusal should name the route that can set it, got: ' . $message;
+});
+
+ac_assert('...and the flag did not move', \AlgerianCommerce\Campaigns\Consent::has($customer) === false
+    ?: 'a staff PATCH set marketing consent');
+
+/*
+ * The record beside the flag. Both are emitted so a panel can tell "declined" from
+ * "never asked" — a bare `false` cannot, and a screen showing one is answering a
+ * question it has not been given the data for.
+ */
+$consented = ac_check('a customer read carries the consent record', ac_req('GET', "/customers/{$customer}"), 200,
+    function ($d) {
+        foreach (['marketing_consent', 'marketing_consent_at', 'marketing_consent_source'] as $key) {
+            if (!array_key_exists($key, $d['data'])) {
+                return "{$key} is missing";
+            }
+        }
+
+        // Never decided: the flag is false and both halves of the record are null,
+        // which is the state a screen has to be able to distinguish.
+        return ($d['data']['marketing_consent'] === false
+            && $d['data']['marketing_consent_at'] === null
+            && $d['data']['marketing_consent_source'] === null)
+            ?: 'a customer who never decided should carry no date and no source';
+    });
+
+// The positive control. Without a consenting customer, "the date is emitted" is
+// satisfied by an endpoint that emits null forever — which is exactly what the
+// panel found: 0 of 16 customers had ever consented, so the affirmative branch
+// had no data that could reach it.
+$consent = new \AlgerianCommerce\Campaigns\Consent(
+    \AlgerianCommerce\Core\Plugin::instance()->auditLogger()
+);
+$consent->set($customer, true, 'account');
+
+ac_check('...and reports the date and the source once they decide', ac_req('GET', "/customers/{$customer}"), 200,
+    function ($d) {
+        if ($d['data']['marketing_consent'] !== true) {
+            return 'the flag did not move';
+        }
+        if ($d['data']['marketing_consent_source'] !== 'account') {
+            return 'the source was ' . var_export($d['data']['marketing_consent_source'], true);
+        }
+
+        $at = (string) ($d['data']['marketing_consent_at'] ?? '');
+
+        /*
+         * ISO 8601 with an offset, not the naive `Y-m-d H:i:s` the meta holds.
+         * `notes[].created_at` and `movements[].created_at` both hand a client a
+         * UTC instant written without saying so, and `new Date()` shifts it
+         * silently. A consent date off by an hour is a date in the wrong day.
+         */
+        return preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/', $at) === 1
+            ?: 'the date needs an offset, got ' . var_export($at, true);
+    });
+
+$consent->set($customer, false, 'account');
+
+ac_check('...and a withdrawal keeps the record rather than erasing it', ac_req('GET', "/customers/{$customer}"), 200,
+    function ($d) {
+        // "No, since never" and "no, withdrawn in March" are different answers to
+        // the same question, and only one of them is a bare false.
+        return ($d['data']['marketing_consent'] === false
+            && is_string($d['data']['marketing_consent_at'])
+            && $d['data']['marketing_consent_source'] === 'account')
+            ?: 'a withdrawal lost its date or its source';
+    });
+
+/*
+ * Put the fixture back. This customer is `ac_cus_shopper`, the shop's one
+ * richly-populated record, and leaving a withdrawal record on them would mean the
+ * consent screen shows a different state depending on whether the suite had run —
+ * the deterministic consenting customer is the seeded one, not this one.
+ */
+delete_user_meta($customer, \AlgerianCommerce\Campaigns\Consent::META);
+delete_user_meta($customer, \AlgerianCommerce\Campaigns\Consent::META_AT);
+delete_user_meta($customer, \AlgerianCommerce\Campaigns\Consent::META_SOURCE);
+
+ac_assert('the consent fixture is restored', \AlgerianCommerce\Campaigns\Consent::changedAt($customer) === null
+    ?: 'the suite left a consent record behind');
+
 // `role` is emitted by the presenter, so it is dropped rather than refused —
 // and dropping is what makes it safe.
 ac_check('role is dropped, not applied', ac_req('PATCH', "/customers/{$customer}", [

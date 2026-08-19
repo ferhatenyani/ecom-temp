@@ -34,15 +34,24 @@ final class CustomerInput
     private const READ_ONLY = [
         'id', 'username', 'role', 'is_paying_customer',
         'date_created', 'date_modified', 'orders_count', 'statistics',
+        'marketing_consent_at', 'marketing_consent_source',
     ];
 
     /**
      * Refused by name rather than as "Unknown field.".
      *
-     * None of these appear in a response, so nobody arrives at them by
+     * Most of these appear in no response, so nobody arrives at them by
      * round-tripping one — they are only ever typed on purpose, and the caller
      * deserves to be told where the capability boundary is instead of being
      * left to hunt for a spelling mistake.
+     *
+     * `marketing_consent` is the exception and the reason this list is not simply
+     * "fields we do not emit": it *is* emitted, so it is the one field a client
+     * reaches by GET → edit → PATCH rather than by typing. It was answering
+     * "Unknown field." — the same message a misspelling gets — which told a panel
+     * developer the field did not exist when in fact it exists and is somebody
+     * else's to set. It is refused rather than silently dropped for the same
+     * reason: a shop that thinks it ticked a consent box has no consent record.
      *
      * @var array<string, string>
      */
@@ -51,6 +60,9 @@ final class CustomerInput
         'user_pass' => 'Credentials are not managed through this endpoint.',
         'roles' => 'Roles are managed under ac_manage_users, not here.',
         'capabilities' => 'Capabilities are managed under ac_manage_users, not here.',
+        'marketing_consent' => 'Marketing consent is the customer\'s to give. '
+            . 'They set it at registration or at POST /account/marketing-consent, '
+            . 'and withdraw it with the unsubscribe link in any campaign.',
     ];
 
     private const STRING_FIELDS = ['first_name', 'last_name'];

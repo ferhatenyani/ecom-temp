@@ -40,7 +40,16 @@ final class CouponInput
      * Dropped silently rather than rejected so the GET → edit → PATCH round
      * trip works, exactly as `Products\ProductInput` does it.
      */
-    private const READ_ONLY = ['id', 'usage_count', 'used_by', 'date_created', 'date_modified'];
+    private const READ_ONLY = [
+        'id', 'usage_count', 'used_by', 'date_created', 'date_modified',
+        /*
+         * The resolved names beside the four id arrays. Dropped, not refused —
+         * `tests/Api/coupons.php` asserts that the whole GET body PATCHes back, and
+         * it failed the moment `restrictions` started being emitted. The ids remain
+         * the writable form; this is their rendering.
+         */
+        'restrictions',
+    ];
 
     /** @var array<string, string> */
     private const REJECTED = [
@@ -233,12 +242,12 @@ final class CouponInput
 
             $raw = $payload[$field];
 
-            // An empty string, null or zero all clear a threshold, which is
-            // how a shop removes a minimum spend — and how a body this API
-            // emitted round-trips, since `CouponPresenter` reports an absent
-            // threshold as null. `amount` is not clearable: a coupon that
-            // discounts nothing is a coupon that should be unpublished.
-            if ($raw === '' || $raw === null || ($field !== 'amount' && is_numeric($raw) && (float) $raw <= 0.0)) {
+            // An empty string or null clears a threshold, which is how a shop
+            // removes a minimum spend — and how a body this API emitted round-
+            // trips, since `CouponPresenter` reports an absent threshold as null.
+            // `amount` is not clearable: a coupon that discounts nothing is a
+            // coupon that should be unpublished.
+            if ($raw === '' || $raw === null) {
                 if ($field === 'amount') {
                     $errors['amount'] = 'A coupon needs an amount.';
                 } else {
@@ -254,8 +263,28 @@ final class CouponInput
                 continue;
             }
 
+            /*
+             * **Negative is refused before zero clears.**
+             *
+             * This check used to be unreachable for a threshold: the clearing arm
+             * above read `<= 0.0`, so `{"minimum_amount": "-1"}` answered 200 and
+             * silently erased a minimum spend of 15 000 DA. Measured against the
+             * live shop while building the admin panel — a threshold of 100.00 came
+             * back null, and nothing anywhere said so. A negative amount was
+             * refused by name the whole time, which made the two fields disagree
+             * about what a minus sign means.
+             *
+             * A typo must not be a destructive write. Clearing stays expressible
+             * three ways: `null`, `""` and `0`.
+             */
             if ((float) $raw < 0) {
                 $errors[$field] = 'Must not be negative.';
+
+                continue;
+            }
+
+            if ($field !== 'amount' && (float) $raw === 0.0) {
+                $clean[$field] = '';
 
                 continue;
             }

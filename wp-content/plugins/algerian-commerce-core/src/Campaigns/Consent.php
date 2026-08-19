@@ -67,6 +67,21 @@ final class Consent
     /** When it was given or withdrawn, for the record a shop may have to produce. */
     public const META_AT = '_ac_marketing_consent_at';
 
+    /**
+     * How it was given or withdrawn — the other half of the record.
+     *
+     * The audit log has carried this since the class was written, and that turned
+     * out not to be enough: `/audit-logs` stops at Admin while a customer record
+     * is read by Support Agent, and an audit query cannot be joined to a customer
+     * row without a heuristic. "How did this person opt in" is the question the
+     * docblock above says a consent record exists to answer, so the answer lives
+     * on the customer beside the flag as well as in the log.
+     *
+     * Absent on a consent recorded before this meta existed, which is why
+     * `source()` is nullable rather than defaulting to a guess.
+     */
+    public const META_SOURCE = '_ac_marketing_consent_source';
+
     public function __construct(private readonly AuditLogger $audit)
     {
     }
@@ -80,6 +95,63 @@ final class Consent
     public static function has(int $customerId): bool
     {
         return $customerId > 0 && get_user_meta($customerId, self::META, true) === '1';
+    }
+
+    /**
+     * When the customer last decided, as ISO 8601 — or null if they never have.
+     *
+     * **The offset is added here on purpose.** The meta is stored as
+     * `gmdate('Y-m-d H:i:s')`, which is a UTC instant written without saying so,
+     * and this project has already shipped that trap twice: `notes[].created_at`
+     * and `movements[].created_at` both hand a client a naive string beside sibling
+     * fields that carry `+00:00`, and `new Date()` reads the naive one as local
+     * time and shifts it silently. A consent date shifted by an hour is a date in
+     * the wrong day for a shop in a positive offset, so the ambiguity is resolved
+     * at the boundary rather than documented for every reader.
+     *
+     * Present on a `false` as well as a `true` — see `set()`.
+     */
+    public static function changedAt(int $customerId): ?string
+    {
+        $raw = self::rawChangedAt($customerId);
+
+        if ($raw === '') {
+            return null;
+        }
+
+        $when = \DateTimeImmutable::createFromFormat(
+            '!Y-m-d H:i:s',
+            $raw,
+            new \DateTimeZone('UTC')
+        );
+
+        // A meta value that is not the format this class writes is reported as no
+        // record rather than as a guess. Nothing else writes it today; something
+        // hand-editing the database is not a reason to emit an invalid date.
+        return $when === false ? null : $when->format('c');
+    }
+
+    /**
+     * How they decided — `registration`, `account`, `unsubscribe_link`, or whatever
+     * else a caller passed to `set()`.
+     *
+     * Null when the decision predates `META_SOURCE`, which is why nothing derives a
+     * default from it. An unknown source is information; an invented one is not.
+     */
+    public static function source(int $customerId): ?string
+    {
+        if ($customerId <= 0) {
+            return null;
+        }
+
+        $source = (string) get_user_meta($customerId, self::META_SOURCE, true);
+
+        return $source === '' ? null : $source;
+    }
+
+    private static function rawChangedAt(int $customerId): string
+    {
+        return $customerId > 0 ? (string) get_user_meta($customerId, self::META_AT, true) : '';
     }
 
     /**
@@ -103,7 +175,6 @@ final class Consent
 
         if ($consented) {
             update_user_meta($customerId, self::META, '1');
-            update_user_meta($customerId, self::META_AT, gmdate('Y-m-d H:i:s'));
         } else {
             /*
              * Deleted rather than set to '0'. A withdrawn consent is the absence of
@@ -112,7 +183,24 @@ final class Consent
              * answered as a yes.
              */
             delete_user_meta($customerId, self::META);
+        }
+
+        /*
+         * The when and the how are written for *both* directions and are kept when
+         * the flag itself is deleted. A withdrawal is the half of the record a shop
+         * is most likely to be asked to produce, and "no, since never" and "no,
+         * withdrawn on 3 March" are different answers to the same question.
+         *
+         * **Only on an actual change.** A one-click unsubscribe link gets clicked
+         * twice from two devices — that is the case `set()` is idempotent for — and
+         * moving the date on the second click would restate the record as though the
+         * customer had acted again. The `=== ''` arm is for a consent recorded before
+         * this meta existed: there is a decision with no date, and stamping it now is
+         * better than leaving it unanswerable forever.
+         */
+        if ($before !== $consented || self::rawChangedAt($customerId) === '') {
             update_user_meta($customerId, self::META_AT, gmdate('Y-m-d H:i:s'));
+            update_user_meta($customerId, self::META_SOURCE, $source);
         }
 
         $this->audit->record(
