@@ -192,6 +192,11 @@ Every private route requires one capability. The roles that hold them are roadma
 `GET /auth/me` tells a signed-in caller exactly which it has, which is what an admin panel should use to
 decide what to render.
 
+**Gate on the capability, never on the role.** Every guard in this API is `current_user_can()`, which
+is what let staff roles collapse to two tiers without touching a single one of them — see
+[Staff users and roles](#staff-users-and-roles). A client that branches on a role name instead breaks the moment the
+matrix moves; one that reads `/auth/me`'s capability list does not.
+
 | Capability | Covers |
 |---|---|
 | `ac_manage_products` | products, variations, categories, product import/export |
@@ -1154,9 +1159,21 @@ when it holds one of the seven roles or is a WordPress administrator; everything
 `GET /users/{id}` on a shopper is a 404, and so is `GET /customers/{id}` on a staff account.
 
 A role is **required** on create — an account with no role is a customer created through the wrong
-door. `GET /roles` publishes §45's matrix (role, display name, capabilities) and is the role picker's
-source. **There is no way to create a role**: the matrix is code, it is unit-tested, and a role
-invented at runtime is a capability set nothing has reviewed.
+door. `GET /roles` publishes §45's matrix (role, display name, capabilities, `assignable`) and is the
+role picker's source. **There is no way to create a role**: the matrix is code, it is unit-tested, and
+a role invented at runtime is a capability set nothing has reviewed.
+
+**Two roles are assignable; all seven are published.** Staff access is a two-tier model — **Super
+Admin** and **Manager** — and the other five are *retired*: still defined, still held by existing
+accounts, still returned by `GET /roles` and `?role=`, but no longer granted. `assignable` on each row
+is the difference, so a picker filters on the flag while a label can still resolve the role an account
+visibly has.
+
+Assigning a retired role is a **400 naming it as retired**, not as unknown — it exists, it is
+published on this very route, and accounts hold it, so "Unknown role" would send an operator looking
+for a typo. Nothing was removed from the matrix and no account was stranded: a role definition deleted
+out from under a live account leaves it authenticating normally and answering 403 everywhere, because
+WordPress resolves an unknown role to no capabilities at all.
 
 **Refused by name, with the reason**: `password` and `user_pass` (a password set by somebody else is
 one its owner cannot trust), `capabilities` (they come from the role), `roles` (an account holds
