@@ -46,13 +46,15 @@ final class UserInputTest extends TestCase
         $input = UserInput::forCreate([
             'username' => ' karim ',
             'email' => 'karim@example.test',
-            'role' => 'ac_order_manager',
+            // An assignable role: `ac_order_manager` was retired by the two-tier
+            // collapse and now fails here for a reason this test is not about.
+            'role' => 'ac_manager',
             'first_name' => ' Karim ',
         ]);
 
         self::assertSame('karim', $input->get('username'));
         self::assertSame('karim@example.test', $input->get('email'));
-        self::assertSame('ac_order_manager', $input->get('role'));
+        self::assertSame('ac_manager', $input->get('role'));
         self::assertSame('Karim', $input->get('first_name'));
     }
 
@@ -185,7 +187,24 @@ final class UserInputTest extends TestCase
         $errors = $this->updateErrors(['role' => 'ac_wizard']);
 
         self::assertStringContainsString('ac_super_admin', $errors['role']);
-        self::assertStringContainsString('ac_support_agent', $errors['role']);
+        self::assertStringContainsString('ac_manager', $errors['role']);
+
+        // The list offers what can be granted. Naming a retired role here would
+        // send an operator to a second refusal.
+        self::assertStringNotContainsString('ac_support_agent', $errors['role']);
+    }
+
+    /**
+     * A retired role reaches the same refusal through the request layer, and
+     * keeps its own message rather than collapsing into "unknown".
+     */
+    public function testARetiredRoleIsRefusedAsRetired(): void
+    {
+        $errors = $this->updateErrors(['role' => 'ac_support_agent']);
+
+        self::assertArrayHasKey('role', $errors);
+        self::assertStringContainsString('retired', $errors['role']);
+        self::assertStringNotContainsString('Unknown role', $errors['role']);
     }
 
     /**

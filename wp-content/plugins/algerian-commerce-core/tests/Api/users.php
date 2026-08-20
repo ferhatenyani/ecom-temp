@@ -185,6 +185,44 @@ ac_check('the matrix is published', ac_req('GET', '/roles'), 200, function ($d) 
             && $role['capabilities'] !== ['ac_manage_customers', 'ac_view_analytics']) {
             return 'Support Agent capabilities do not match the matrix';
         }
+
+        if (!array_key_exists('assignable', $role)) {
+            return 'a role row does not say whether it can be assigned';
+        }
+    }
+
+    return true;
+});
+
+/*
+ * The two-tier split, published rather than implied.
+ *
+ * All seven roles stay on this route — accounts still hold the retired five and
+ * a client that cannot look one up has no way to label the role an account
+ * visibly has. What narrowed is which of them may be *granted*, and that is a
+ * flag on the row rather than a shorter list.
+ */
+ac_check('the matrix says which roles can still be assigned', ac_req('GET', '/roles'), 200, function ($d) {
+    $assignable = [];
+    $retired = [];
+
+    foreach ($d['data'] as $role) {
+        if ($role['assignable'] === true) {
+            $assignable[] = $role['role'];
+        } else {
+            $retired[] = $role['role'];
+        }
+    }
+
+    sort($assignable);
+
+    if ($assignable !== ['ac_manager', 'ac_super_admin']) {
+        return 'expected exactly Super Admin and Manager to be assignable, got ' . implode(', ', $assignable);
+    }
+
+    // The positive control: the retired ones are still published, not dropped.
+    if (count($retired) !== 5 || !in_array('ac_support_agent', $retired, true)) {
+        return 'the retired roles are not published alongside the assignable ones';
     }
 
     return true;
@@ -242,15 +280,15 @@ echo PHP_EOL, "=== create ===", PHP_EOL;
 $created = ac_check('create a staff account', ac_req('POST', '/users', [
     'username' => 'ac_usr_new',
     'email' => 'ac_usr_new@example.test',
-    'role' => 'ac_order_manager',
+    'role' => 'ac_manager',
     'first_name' => 'Karim',
     'last_name' => 'Benali',
 ]), 201, function ($d) {
-    if ($d['data']['role'] !== 'ac_order_manager') {
+    if ($d['data']['role'] !== 'ac_manager') {
         return 'the role was not applied';
     }
 
-    if ($d['data']['role_name'] !== 'Order Manager') {
+    if ($d['data']['role_name'] !== 'Manager') {
         return 'the role name is wrong';
     }
 
@@ -276,8 +314,8 @@ if ($newId === 0) {
 
 ac_assert(
     'the account really holds the role capabilities',
-    user_can($newId, 'ac_manage_orders') && !user_can($newId, 'ac_manage_products')
-        ?: 'the created account does not hold exactly the Order Manager capabilities'
+    user_can($newId, 'ac_manage_orders') && !user_can($newId, 'ac_manage_settings')
+        ?: 'the created account does not hold exactly the Manager capabilities'
 );
 
 ac_assert(
@@ -293,21 +331,24 @@ ac_check('a role is required', ac_req('POST', '/users', [
         ?: 'the missing-role error does not point at /customers';
 });
 
+// An assignable role throughout this block: the field under test is the one
+// being asserted, and a retired role would add a second `role` error that masks
+// it — or turn a 409 into a 400.
 ac_check('a username is required', ac_req('POST', '/users', [
     'email' => 'ac_usr_x@example.test',
-    'role' => 'ac_support_agent',
+    'role' => 'ac_manager',
 ]), 400);
 
 ac_check('a duplicate username is a conflict', ac_req('POST', '/users', [
     'username' => 'ac_usr_new',
     'email' => 'ac_usr_other@example.test',
-    'role' => 'ac_support_agent',
+    'role' => 'ac_manager',
 ]), 409);
 
 ac_check('a duplicate email is a conflict', ac_req('POST', '/users', [
     'username' => 'ac_usr_another',
     'email' => 'ac_usr_new@example.test',
-    'role' => 'ac_support_agent',
+    'role' => 'ac_manager',
 ]), 409);
 
 echo PHP_EOL, "=== refused by name, with the reason ===", PHP_EOL;
@@ -324,7 +365,7 @@ foreach ($refusals as $field => $needle) {
     ac_check("{$field} is refused by name", ac_req('POST', '/users', [
         'username' => 'ac_usr_refused',
         'email' => 'ac_usr_refused@example.test',
-        'role' => 'ac_support_agent',
+        'role' => 'ac_manager',
         $field => 'anything',
     ]), 400, function ($d) use ($field, $needle) {
         $message = ac_field_error($d, $field);
@@ -381,6 +422,38 @@ ac_check('an unknown role lists the real ones', ac_req('POST', '/users', [
 });
 
 /*
+ * A retired role is refused, and refused as itself.
+ *
+ * "Unknown role" would be the easy message and the wrong one: the role exists,
+ * it is published at /roles, and accounts in this very shop hold it. An operator
+ * told it is unknown goes looking for a typo.
+ */
+ac_check('a retired role is refused by name', ac_req('POST', '/users', [
+    'username' => 'ac_usr_retired',
+    'email' => 'ac_usr_retired@example.test',
+    'role' => 'ac_support_agent',
+]), 400, function ($d) {
+    $message = ac_field_error($d, 'role');
+
+    if (!str_contains($message, 'retired')) {
+        return 'the retired-role refusal does not say the role is retired';
+    }
+
+    if (str_contains($message, 'Unknown role')) {
+        return 'a retired role was reported as unknown';
+    }
+
+    return str_contains($message, 'ac_manager') ?: 'the refusal does not say what to choose instead';
+});
+
+// The control: an account already on that role is untouched and still readable.
+ac_assert(
+    'an account already holding a retired role keeps it',
+    get_userdata($agent) && in_array('ac_support_agent', (array) get_userdata($agent)->roles, true)
+        ?: 'the retired-role fixture lost its role'
+);
+
+/*
  * The rule that has no caller today and exists for the day there is one: a
  * caller may not grant a role holding capabilities they lack. Constructing it
  * needs an account that can manage users and is not Super Admin, which is not a
@@ -410,7 +483,7 @@ ac_check('cannot grant a role above your own', ac_req('POST', '/users', [
 ac_check('but can grant one at or below it', ac_req('POST', '/users', [
     'username' => 'ac_usr_belowme',
     'email' => 'ac_usr_belowme@example.test',
-    'role' => 'ac_support_agent',
+    'role' => 'ac_manager',
 ]), 201);
 
 $escalatorUser->remove_cap('ac_manage_users');
@@ -425,13 +498,32 @@ ac_check('rename a staff account', ac_req('PATCH', "/users/{$newId}", ['display_
         return $d['data']['display_name'] === 'Karim B.' ?: 'the display name did not change';
     });
 
-ac_check('move a role', ac_req('PATCH', "/users/{$newId}", ['role' => 'ac_product_manager']), 200, function ($d) {
-    return $d['data']['role'] === 'ac_product_manager' ?: 'the role did not move';
+/*
+ * Up a tier, then back down.
+ *
+ * Two assignable roles is two, so this can no longer move between disjoint
+ * capability sets the way `ac_product_manager` → `ac_order_manager` did. The
+ * property under test survives the collapse intact, because Manager is a strict
+ * subset of Super Admin: moving *down* must take the extra capabilities away. An
+ * implementation that added a role's capabilities without removing the previous
+ * ones passes the promotion and fails the demotion.
+ */
+ac_check('move a role', ac_req('PATCH', "/users/{$newId}", ['role' => 'ac_super_admin']), 200, function ($d) {
+    return $d['data']['role'] === 'ac_super_admin' ?: 'the role did not move';
+});
+
+ac_assert(
+    'the promotion granted the new capabilities',
+    user_can($newId, 'ac_manage_settings') ?: 'the account did not gain Super Admin capabilities'
+);
+
+ac_check('move it back', ac_req('PATCH', "/users/{$newId}", ['role' => 'ac_manager']), 200, function ($d) {
+    return $d['data']['role'] === 'ac_manager' ?: 'the role did not move back';
 });
 
 ac_assert(
     'the old capabilities are gone, not added to',
-    user_can($newId, 'ac_manage_products') && !user_can($newId, 'ac_manage_orders')
+    user_can($newId, 'ac_manage_orders') && !user_can($newId, 'ac_manage_settings')
         ?: 'the account kept capabilities from its previous role'
 );
 
@@ -446,7 +538,7 @@ ac_check('you cannot patch a customer', ac_req('PATCH', "/users/{$shopper}", ['d
 
 echo PHP_EOL, "=== you, and what you may not do to yourself ===", PHP_EOL;
 
-ac_check('you cannot change your own role', ac_req('PATCH', "/users/{$super}", ['role' => 'ac_admin']), 403,
+ac_check('you cannot change your own role', ac_req('PATCH', "/users/{$super}", ['role' => 'ac_manager']), 403,
     function ($d) {
         return str_contains((string) $d['error']['message'], 'your own role') ?: 'the wrong refusal';
     });
@@ -469,12 +561,12 @@ ac_check('a customer with no role assignment is not found', ac_req('PATCH', "/us
     ['display_name' => 'Nope']), 404);
 
 ac_check('promoting a customer to staff is allowed and reported', ac_req('PATCH', "/users/{$promotable}",
-    ['role' => 'ac_support_agent']), 200, function ($d) {
+    ['role' => 'ac_manager']), 200, function ($d) {
         if (($d['meta']['promoted_from_customer'] ?? false) !== true) {
             return 'the promotion was not reported in meta';
         }
 
-        return $d['data']['role'] === 'ac_support_agent' ?: 'the role was not applied';
+        return $d['data']['role'] === 'ac_manager' ?: 'the role was not applied';
     });
 
 ac_check('and the account is staff afterwards', ac_req('GET', "/users/{$promotable}"), 200);
@@ -641,14 +733,15 @@ ac_check('the creation was audited', ac_req('GET', '/audit-logs', null, ['action
     $find('user.created', function ($row) use ($newId) {
         return $row['resource_type'] === 'user'
             && $row['resource_id'] === (string) $newId
-            && ($row['metadata']['role'] ?? '') === 'ac_order_manager';
+            && ($row['metadata']['role'] ?? '') === 'ac_manager';
     }));
 
+// The demotion, which is the half that proves capabilities were taken away.
 ac_check('the role change names both roles', ac_req('GET', '/audit-logs', null, ['action' => 'user.role_changed']), 200,
     $find('user.role_changed', function ($row) use ($newId) {
         return $row['resource_id'] === (string) $newId
-            && ($row['metadata']['from'] ?? '') === 'ac_order_manager'
-            && ($row['metadata']['to'] ?? '') === 'ac_product_manager';
+            && ($row['metadata']['from'] ?? '') === 'ac_super_admin'
+            && ($row['metadata']['to'] ?? '') === 'ac_manager';
     }));
 
 ac_check('the promotion is flagged in the trail', ac_req('GET', '/audit-logs', null, ['action' => 'user.role_changed']), 200,

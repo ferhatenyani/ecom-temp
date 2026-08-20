@@ -20,6 +20,7 @@ use AlgerianCommerce\Audit\AuditLogger;
 use AlgerianCommerce\Audit\AuditRepository;
 use AlgerianCommerce\Auth\AuthController;
 use AlgerianCommerce\Auth\AuthService;
+use AlgerianCommerce\CLI\CollapseRolesCommand;
 use AlgerianCommerce\CLI\ImportAlgeriaCommand;
 use AlgerianCommerce\CLI\MigrateCommand;
 use AlgerianCommerce\CLI\RolesCommand;
@@ -503,6 +504,7 @@ final class Plugin
 
         WP_CLI::add_command('algerian-commerce migrate', new MigrateCommand($this->migrations()));
         WP_CLI::add_command('algerian-commerce roles', new RolesCommand($this->roles()));
+        WP_CLI::add_command('algerian-commerce collapse-roles', new CollapseRolesCommand($this->logger()));
         WP_CLI::add_command('algerian-commerce unlock', new UnlockCommand($this->rateLimiter(), $this->rateLimitStore()));
         WP_CLI::add_command('algerian-commerce import-algeria', new ImportAlgeriaCommand($this->geoImporter()));
         WP_CLI::add_command('algerian-commerce seed', new SeedCommand($this->seeder()));

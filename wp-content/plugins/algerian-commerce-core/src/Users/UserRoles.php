@@ -43,10 +43,66 @@ final class UserRoles
         'customer',
     ];
 
-    /** The roles this API assigns — §45's seven, and nothing else. */
+    /**
+     * The two roles this API hands out.
+     *
+     * **Assignable is a narrower question than managed**, and keeping them
+     * separate is the whole design of the two-tier collapse. `managed()` stays
+     * §45's seven because accounts still hold the other five and every read path
+     * — `UserPresenter::role()`, `UserService::currentRole()` — asks "is this a
+     * role we recognise?" to decide what to report. Narrowing *that* would make
+     * a Support Agent present as though they had no role at all.
+     *
+     * So the five intermediate roles are retired rather than deleted: still
+     * defined, still recognised, still reported, no longer granted. Nothing is
+     * removed from `Capabilities::roles()` and `Roles::install()` never calls
+     * `remove_role()` on them, which is what keeps the collapse free of the one
+     * failure that would matter — a live account pointing at a role WordPress no
+     * longer defines resolves to *zero* capabilities, authenticates fine, and
+     * 403s on every route.
+     *
+     * `ac_manager` is the Assistant tier verbatim. It was not invented for this:
+     * it is the capability set the shop has been running on, which is why the
+     * second tier needs no new matrix entry and no new tests of its own.
+     *
+     * @return list<string>
+     */
+    public static function assignable(): array
+    {
+        return [Capabilities::SUPER_ADMIN, Capabilities::MANAGER];
+    }
+
+    public static function isAssignable(string $role): bool
+    {
+        return in_array($role, self::assignable(), true);
+    }
+
+    /**
+     * Every role this API recognises — §45's seven.
+     *
+     * Recognised, not grantable. See `assignable()` for the difference and why
+     * this list did not shrink with it.
+     *
+     * @return list<string>
+     */
     public static function managed(): array
     {
         return Capabilities::roleKeys();
+    }
+
+    /**
+     * Recognised but no longer handed out — the five the two-tier model retires.
+     *
+     * @return list<string>
+     */
+    public static function retired(): array
+    {
+        return array_values(array_diff(self::managed(), self::assignable()));
+    }
+
+    public static function isRetired(string $role): bool
+    {
+        return in_array($role, self::retired(), true);
     }
 
     /**
@@ -73,6 +129,14 @@ final class UserRoles
      * Vocabulary only. Whether the *caller* is allowed to grant it is
      * `capabilitiesBeyond()`, because that needs to know who is asking and this
      * class deliberately does not.
+     *
+     * **Three refusals, not two.** A retired role earns its own message because
+     * it is not unknown: it exists, it is defined, and accounts are still on it.
+     * Telling an operator `Unknown role "ac_support_agent"` when the account in
+     * front of them visibly holds it is the same lie `marketing_consent` used to
+     * tell by answering "Unknown field." to a field the API emits — a message
+     * that reads as "no such thing" when the truth is "it exists and you may not
+     * have it."
      */
     public static function assignmentError(string $role): ?string
     {
@@ -80,8 +144,16 @@ final class UserRoles
             return 'A role is required. An account with no role is a customer, and customers are managed at /customers.';
         }
 
-        if (self::isManaged($role)) {
+        if (self::isAssignable($role)) {
             return null;
+        }
+
+        if (self::isRetired($role)) {
+            return sprintf(
+                'The role "%s" is retired and is no longer assigned. Accounts already holding it keep it and are unaffected; new assignments choose one of: %s.',
+                $role,
+                implode(', ', self::assignable())
+            );
         }
 
         if (in_array($role, self::CORE_ROLES, true)) {
@@ -91,7 +163,7 @@ final class UserRoles
             );
         }
 
-        return sprintf('Unknown role "%s". Choose one of: %s.', $role, implode(', ', self::managed()));
+        return sprintf('Unknown role "%s". Choose one of: %s.', $role, implode(', ', self::assignable()));
     }
 
     /**

@@ -54,15 +54,100 @@ final class UserRolesTest extends TestCase
 
         self::assertStringContainsString('Unknown role', $error);
 
-        foreach (UserRoles::managed() as $role) {
+        // The roles it offers are the ones that can actually be granted, not
+        // every role the API recognises — half of which would 400 if chosen.
+        foreach (UserRoles::assignable() as $role) {
             self::assertStringContainsString($role, $error);
         }
     }
 
-    public function testEveryManagedRoleIsAssignable(): void
+    public function testEveryAssignableRoleIsAssignable(): void
     {
-        foreach (UserRoles::managed() as $role) {
+        foreach (UserRoles::assignable() as $role) {
             self::assertNull(UserRoles::assignmentError($role), $role);
+        }
+    }
+
+    /**
+     * The two-tier model, as a fact rather than as a convention.
+     *
+     * `ac_manager` is the Assistant tier verbatim — the capability set the shop
+     * already ran on — which is why the collapse adds no matrix entry.
+     */
+    public function testExactlyTwoRolesAreAssignable(): void
+    {
+        self::assertSame(
+            [Capabilities::SUPER_ADMIN, Capabilities::MANAGER],
+            UserRoles::assignable()
+        );
+    }
+
+    /**
+     * The distinction the collapse rests on. Narrowing `managed()` alongside
+     * `assignable()` would make every read path — `UserPresenter::role()`,
+     * `UserService::currentRole()` — stop recognising the role an account
+     * visibly holds, and a Support Agent would present as having none.
+     */
+    public function testRetiredRolesStayRecognisedEvenThoughTheyAreNotGranted(): void
+    {
+        self::assertCount(7, UserRoles::managed());
+        self::assertCount(5, UserRoles::retired());
+
+        foreach (UserRoles::retired() as $role) {
+            self::assertTrue(UserRoles::isManaged($role), $role);
+            self::assertFalse(UserRoles::isAssignable($role), $role);
+        }
+
+        self::assertNotContains(Capabilities::SUPER_ADMIN, UserRoles::retired());
+        self::assertNotContains(Capabilities::MANAGER, UserRoles::retired());
+    }
+
+    /**
+     * A retired role is not an unknown one, and must not be reported as though
+     * it were — the account in front of the operator is still holding it.
+     */
+    public function testARetiredRoleIsRefusedByNameRatherThanAsUnknown(): void
+    {
+        $error = (string) UserRoles::assignmentError(Capabilities::SUPPORT_AGENT);
+
+        self::assertStringContainsString('retired', $error);
+        self::assertStringNotContainsString('Unknown role', $error);
+
+        // And it says what to choose instead.
+        self::assertStringContainsString(Capabilities::MANAGER, $error);
+    }
+
+    /**
+     * Positive control for the test above: the three refusal arms are distinct,
+     * so "contains the word retired" cannot pass by matching every message.
+     */
+    public function testTheThreeRefusalsAreDistinguishable(): void
+    {
+        $retired = (string) UserRoles::assignmentError(Capabilities::MARKETING_MANAGER);
+        $core = (string) UserRoles::assignmentError('administrator');
+        $unknown = (string) UserRoles::assignmentError('ac_wizard');
+
+        self::assertStringContainsString('retired', $retired);
+        self::assertStringNotContainsString('retired', $core);
+        self::assertStringNotContainsString('retired', $unknown);
+
+        self::assertStringContainsString('commerce roles', $core);
+        self::assertStringNotContainsString('commerce roles', $retired);
+
+        self::assertStringContainsString('Unknown role', $unknown);
+        self::assertStringNotContainsString('Unknown role', $retired);
+    }
+
+    /**
+     * Retired roles keep their place in the staff list. An account that dropped
+     * out of `/users` because its role was retired would be an account with live
+     * access and no way to see it — the same argument that keeps
+     * `administrator` on the list.
+     */
+    public function testRetiredRolesStillCountAsStaff(): void
+    {
+        foreach (UserRoles::retired() as $role) {
+            self::assertContains($role, UserRoles::staff(), $role);
         }
     }
 
