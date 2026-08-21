@@ -133,6 +133,8 @@ use AlgerianCommerce\Permissions\Capabilities;
 $silenceMail = static fn (): bool => true;
 add_filter('pre_wp_mail', $silenceMail, 99);
 
+global $wpdb;
+
 $plugin = Plugin::instance();
 $campaignRepo = $plugin->campaignRepository();
 $recipientRepo = $plugin->recipientRepository();
@@ -169,6 +171,26 @@ foreach ($EMAILS as $key => $email) {
         'role' => 'customer',
     ]);
 }
+
+/*
+ * **This suite was not re-runnable, and the second run said so unhelpfully.**
+ *
+ * It deletes and recreates its three customers above but left its segments
+ * behind, so a second run answered **409 "A segment already uses that name"** on
+ * the very first assertion and then fatalled forty lines later on a campaign id
+ * of 0 — a failure that reads like a broken feature and is a dirty fixture. The
+ * campaigns clean themselves up at the end; the segments never did.
+ *
+ * Deleted by name prefix rather than by the ids of this run, because the rows
+ * that break the next run are the ones a *previous* run left behind. Straight
+ * SQL: `DELETE /segments/{id}` refuses a segment a campaign still uses, which is
+ * correct for an operator and wrong for a teardown that has to work regardless
+ * of what the last run managed to finish.
+ */
+$wpdb->query($wpdb->prepare(
+    "DELETE FROM {$wpdb->prefix}ac_customer_segments WHERE name LIKE %s",
+    $wpdb->esc_like($SUFFIX) . '%'
+));
 
 // Consent for two of the three. The third is the control that must be absent.
 $consent->set($customers['yes-a'], true, 'test');
@@ -288,17 +310,70 @@ $explicit = ac_check(
 );
 $explicitId = (int) ($explicit['data']['id'] ?? 0);
 
-/*
- * Over the route it is a 503, because this stack has no SMTP_HOST and the mail
- * precondition answers first — which is itself the right order, since a shop that
- * cannot send should not resolve five thousand people to find out. The consent
- * assertion this campaign exists for is made below with a transport configured, where
- * the answer is a 409 naming "nobody".
+/**
+ * A `CampaignService` whose mail configuration this file controls.
+ *
+ * **Both halves of the mail precondition are asserted in-process, and that is a
+ * fix rather than a style choice.** The 503 half used to go over the route and
+ * therefore depended on the *deployment* having no `SMTP_HOST` — so the moment a
+ * stack configured one, two assertions here failed and said "sending is 503
+ * rather than a lie" about a shop that could now send. A suite that breaks when
+ * the environment is made more capable is asserting the environment, not the
+ * code.
+ *
+ * The positive half already worked this way (see `$sendable` below) and the
+ * comment there states the rule: `Config` is built from the environment once per
+ * process, so the service is rebuilt with a `Config` this file controls, and a
+ * production class must not grow a door for a test. This just applies it to both
+ * sides.
  */
-ac_check(
+$serviceWithMail = static function (string $host) use (
+    $campaignRepo,
+    $recipientRepo,
+    $segmentRepo,
+    $plugin,
+    $consent
+): AlgerianCommerce\Campaigns\CampaignService {
+    return new AlgerianCommerce\Campaigns\CampaignService(
+        $campaignRepo,
+        $recipientRepo,
+        $segmentRepo,
+        $plugin->audienceResolver(),
+        $consent,
+        new AlgerianCommerce\Settings\SettingsRepository(),
+        new AlgerianCommerce\Notifications\MailTransport(
+            new AlgerianCommerce\Core\Config($host === '' ? [] : ['SMTP_HOST' => $host]),
+            new AlgerianCommerce\Core\Logger('test', AlgerianCommerce\Core\Logger::ERROR)
+        ),
+        $plugin->auditLogger(),
+        new AlgerianCommerce\Core\Logger('test', AlgerianCommerce\Core\Logger::ERROR)
+    );
+};
+
+$unsendable = $serviceWithMail('');
+
+/** Run a service call and report the ApiException it was supposed to throw. */
+$refusalFrom = static function (callable $call): array {
+    try {
+        $call();
+
+        return ['code' => 'none', 'status' => 0];
+    } catch (AlgerianCommerce\API\ApiException $e) {
+        return ['code' => $e->errorCode(), 'status' => $e->statusCode()];
+    }
+};
+
+/*
+ * The mail precondition answers before the audience does, which is the right
+ * order: a shop that cannot send should not resolve five thousand people to find
+ * out. The consent assertion this campaign exists for is made below with a
+ * transport configured, where the answer is a 409 naming "nobody".
+ */
+$refusal = $refusalFrom(static fn () => $unsendable->send($explicitId));
+ac_assert(
     '...is refused, and the mail precondition answers first',
-    ac_req('POST', "/campaigns/{$explicitId}/send"),
-    503
+    $refusal['code'] === 'mail_not_configured' && $refusal['status'] === 503
+        ?: 'got ' . wp_json_encode($refusal)
 );
 
 echo PHP_EOL, "── the mail precondition ──", PHP_EOL;
@@ -329,12 +404,11 @@ ac_assert(
         ?: 'stored html is ' . ($campaign['data']['body_html'] ?? '')
 );
 
-ac_check(
+$refusal = $refusalFrom(static fn () => $unsendable->send($campaignId));
+ac_assert(
     'with no mail transport, sending is 503 rather than a lie',
-    ac_req('POST', "/campaigns/{$campaignId}/send"),
-    503,
-    static fn (array $d): bool|string => ($d['error']['code'] ?? '') === 'mail_not_configured'
-        ? true : 'code was ' . ($d['error']['code'] ?? '?')
+    $refusal['code'] === 'mail_not_configured' && $refusal['status'] === 503
+        ?: 'got ' . wp_json_encode($refusal)
 );
 
 ac_assert(
@@ -348,20 +422,7 @@ ac_assert(
  * is rebuilt with a Config this file controls — the same device tests/Api/account.php
  * uses for password reset. A production class must not grow a door for a test.
  */
-$sendable = new AlgerianCommerce\Campaigns\CampaignService(
-    $campaignRepo,
-    $recipientRepo,
-    $segmentRepo,
-    $plugin->audienceResolver(),
-    $consent,
-    new AlgerianCommerce\Settings\SettingsRepository(),
-    new AlgerianCommerce\Notifications\MailTransport(
-        new AlgerianCommerce\Core\Config(['SMTP_HOST' => 'smtp.example.test']),
-        new AlgerianCommerce\Core\Logger('test', AlgerianCommerce\Core\Logger::ERROR)
-    ),
-    $plugin->auditLogger(),
-    new AlgerianCommerce\Core\Logger('test', AlgerianCommerce\Core\Logger::ERROR)
-);
+$sendable = $serviceWithMail('smtp.example.test');
 
 echo PHP_EOL, "── the consent filter, with a transport ──", PHP_EOL;
 
@@ -650,6 +711,86 @@ ac_check(
     200,
     static fn (array $d): bool|string => count($d['data'] ?? []) > 0 ? true : 'no rows came back'
 );
+
+/*
+ * **`meta.total` has to follow `?status=`, and once did not.** Measured
+ * 2026-08-21: the rows were filtered by `RecipientRepository::paginate()` and the
+ * total came from the unfiltered `counts()`, so `?status=failed` answered **0
+ * rows with `meta.total: 9`** — a paginating client showed "9 recipients" above
+ * an empty table and offered pages that do not exist.
+ *
+ * It is the one filter this route exists to serve: `send-campaigns` ends with
+ * *"see GET /campaigns/{id}/recipients?status=failed"*, so the URL the drain
+ * hands an operator was the one that reported wrong.
+ *
+ * Asserted as **the sum, not as a number**. Hard-coding "3 failed" would pin how
+ * many rows this suite's fixture happens to have; asserting that the three
+ * filtered totals add up to the unfiltered one holds whatever the fixture does,
+ * and it is the property that was actually broken.
+ */
+/*
+ * One row parked as permanently failed first, through `markFailed()` — the
+ * drain's own method, with the drain's own error string.
+ *
+ * Without it every recipient in this fixture is `sent`, so each filter returns
+ * either everything or nothing and never a **subset**: the floor below caught
+ * exactly that on the first run. A partition of 9 and 1 is what makes
+ * "returns only rows of that status" a claim about filtering rather than about
+ * an empty result.
+ */
+$parked = $recipientRepo->paginate($campaignId, [], 1, 1);
+$recipientRepo->markFailed((int) ($parked[0]['id'] ?? 0), 'wp_mail() did not accept the message.', false);
+
+$whole = ac_req('GET', "/campaigns/{$campaignId}/recipients", null, ['per_page' => 100]);
+$wholeTotal = (int) ($whole[1]['meta']['total'] ?? 0);
+$byStatus = [];
+
+foreach ([RecipientRepository::STATUS_PENDING, RecipientRepository::STATUS_SENT, RecipientRepository::STATUS_FAILED] as $status) {
+    $response = ac_req('GET', "/campaigns/{$campaignId}/recipients", null, [
+        'status' => $status,
+        'per_page' => 100,
+    ]);
+    $body = $response[1];
+    $byStatus[$status] = (int) ($body['meta']['total'] ?? -1);
+
+    ac_assert(
+        "recipients ?status={$status} reports what it returns",
+        $byStatus[$status] === count($body['data'] ?? [])
+            ?: "meta.total {$byStatus[$status]} against " . count($body['data'] ?? []) . ' rows'
+    );
+
+    // And every row it returned really is that status, which is the half a
+    // count check cannot see.
+    $foreign = array_filter($body['data'] ?? [], static fn (array $r): bool => ($r['status'] ?? '') !== $status);
+    ac_assert(
+        "...and returns only {$status} rows",
+        $foreign === [] ?: count($foreign) . ' row(s) of another status came back'
+    );
+}
+
+ac_assert(
+    'the three filtered totals account for every recipient',
+    array_sum($byStatus) === $wholeTotal
+        ?: 'the parts sum to ' . array_sum($byStatus) . " against a whole of {$wholeTotal}"
+);
+
+// The floor. If the fixture were all one status, every assertion above would
+// pass against a filter that does nothing at all.
+ac_assert(
+    'and the fixture spans more than one status, or none of that proved anything',
+    count(array_filter($byStatus, static fn (int $n): bool => $n > 0)) >= 2
+        ?: 'recipients are all one status: ' . wp_json_encode($byStatus)
+);
+
+/*
+ * Put the parked row back, because the purge section downstream compares the
+ * **live** counts it reads before the purge against the campaign's **stored
+ * columns** after it — and those columns were written by the drain, before this
+ * block existed. Leaving the row failed made "the counts survive the purge"
+ * report a drift this block had caused, which is a fixture bleeding into an
+ * assertion about something else.
+ */
+$recipientRepo->markSent((int) ($parked[0]['id'] ?? 0));
 ac_check('...and count a segment', ac_req('GET', "/segments/{$segmentId}/preview"), 200);
 ac_check(
     '...and sees the audience count in a preview',

@@ -3754,6 +3754,50 @@ by value, because publishing is what makes a page public. A **category slug** is
 word of the content, and the homepage records its section *types* and their count. The suite asserts both
 halves — that the types are there, and that a headline is not.
 
+### A recipient list that reported more than it returned (§85)
+
+`feat/campaign-recipient-counts`, 2026-08-21, found while building the admin panel's campaigns branch.
+
+**`GET /campaigns/{id}/recipients?status=` filtered the rows and not the total.** The rows came from
+`RecipientRepository::paginate()`, which honours the filter; `meta.total` came from the unfiltered
+`counts()` two lines above. Measured: `?status=failed` answered **0 rows with `meta.total: 9`**, so a
+paginating client showed "9 recipients" over an empty table and offered pages that do not exist.
+
+It is the one filter this route exists to serve. `send-campaigns` ends its run with *"see GET
+/campaigns/{id}/recipients?status=failed"*, so the URL the drain hands an operator was the one that
+reported wrong. `counts()` already returns the per-status breakdown beside the total, so the fix is a
+key lookup on a result the method was already fetching — no extra query, no new method.
+
+`array_key_exists` rather than `??` on that lookup, so a status the enum gains but `counts()` does not
+yet initialise reports zero rather than falling back to the unfiltered total, which is the failure
+being fixed one vocabulary change later.
+
+### The campaigns suite no longer asserts the deployment's mail configuration
+
+Two changes to `tests/Api/campaigns.php` in the same branch, both found by running it.
+
+**It depended on the stack having no `SMTP_HOST`.** The 503 half of the mail precondition went over
+the route, so configuring a transport — which the panel needs, since `send` is unreachable without
+one — made two assertions fail and claim "sending is 503 rather than a lie" about a shop that could
+now send. A suite that breaks when the environment is made *more* capable is asserting the
+environment rather than the code. The positive half already avoided this by rebuilding the service
+with a `Config` the file controls, and the comment there states the rule; both halves now do it, via
+one `$serviceWithMail()` helper. Verified **108/0 with `SMTP_HOST` set and 108/0 with it empty**.
+
+**It was not re-runnable.** It deletes and recreates its three customers but left its segments behind,
+so a second run answered 409 *"A segment already uses that name"* on the first assertion and then
+fatalled forty lines later on a campaign id of 0 — a failure that reads like a broken feature and is a
+dirty fixture. Segments are now deleted by name prefix at the start, in SQL rather than through
+`DELETE /segments/{id}`, which correctly refuses a segment a campaign still uses and is therefore
+wrong for a teardown that must work regardless of what the previous run finished.
+
+The suite grew nine assertions to **108**, including a floor that caught its own weakness: every
+recipient in the fixture was `sent`, so the status filters only ever returned everything or nothing.
+One row is now parked as failed through `markFailed()` — the drain's own method — and restored with
+`markSent()` afterwards, because the purge section downstream compares live counts before against the
+campaign's stored columns after, and a fixture left mutated made *that* assertion report a drift this
+block had caused.
+
 ## The notification queue, read and retried (§90)
 
 `src/Notifications/` gained `NotificationController` and `NotificationPresenter`, three methods on

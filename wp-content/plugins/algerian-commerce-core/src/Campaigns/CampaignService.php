@@ -431,6 +431,19 @@ final class CampaignService
      * addresses. Available until the purge, after which the counts on the campaign
      * are what remains.
      *
+     * **`total` follows the filter, and once did not.** Measured 2026-08-21:
+     * `?status=failed` returned **0 rows with `meta.total: 9`** — the rows were
+     * filtered by `paginate()` and the total was the unfiltered count from
+     * `counts()`, so a paginating client showed "9 recipients" above an empty
+     * table and offered pages that do not exist. The drain's own warning sends
+     * an operator to exactly that URL — *"see GET /campaigns/{id}/recipients
+     * ?status=failed"* — so the one filter this route exists to serve was the
+     * one that reported wrong.
+     *
+     * `counts()` already returns the per-status breakdown beside the total, so
+     * the filtered total costs no query: it is a key lookup on a result this
+     * method was already fetching.
+     *
      * @param array<string, mixed> $criteria
      * @return array{items: list<array<string, mixed>>, total: int, purged: bool}
      */
@@ -441,10 +454,11 @@ final class CampaignService
 
         $campaign = $this->requireCampaign($id);
         $counts = $this->recipients->counts($id);
+        $status = (string) ($criteria['status'] ?? '');
 
         $rows = $this->recipients->paginate(
             $id,
-            ['status' => (string) ($criteria['status'] ?? '')],
+            ['status' => $status],
             (int) ($criteria['page'] ?? 1),
             (int) ($criteria['per_page'] ?? 20)
         );
@@ -459,7 +473,16 @@ final class CampaignService
                 'last_error' => (string) ($row['last_error'] ?? ''),
                 'sent_at' => (string) ($row['sent_at'] ?? ''),
             ], $rows),
-            'total' => $counts['total'],
+            /*
+             * The filtered count when a status is asked for, the whole count
+             * otherwise. `array_key_exists` rather than `??`, so a status the
+             * enum gains but `counts()` does not yet initialise reports zero
+             * rather than silently falling back to the unfiltered total — which
+             * is the failure this is fixing, one vocabulary change later.
+             */
+            'total' => $status !== '' && array_key_exists($status, $counts)
+                ? (int) $counts[$status]
+                : (int) $counts['total'],
             // True once the addresses are gone; the campaign's own counts still say
             // what happened.
             'purged' => $campaign->toArray()['recipients']['purged'],
