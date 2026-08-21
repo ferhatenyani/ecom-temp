@@ -3798,6 +3798,49 @@ failed over, and an operator looking at it needs to see what the drain saw.
 no WordPress at all — and is the more exact answer, since every writer here stores
 `current_time('mysql', true)`.
 
+### `recipient` and `subject_id`, added because a screen could not be built without them
+
+`feat/notification-filters`, 2026-08-21. §90 shipped four filters — `channel`, `status`, `dedupe_key`
+and the date range — and `dedupe_key` was argued for as *the* filter, correctly: it is
+`event:subject_id` by construction, so `?dedupe_key=order.placed:1234` is "did the customer get their
+confirmation?" in one request.
+
+**What it cannot express is a set.** It is exact and it names one event about one subject. "Everything
+sent to this person" and "everything about this order" had no filter at all, and — measured against the
+built API before this branch — `?recipient=`, `?subject_id=`, `?event=` and `?audience=` were **accepted
+and silently ignored**, which is the failure mode §65 keeps warning about: a filter that does not filter
+looks exactly like a collection that all matches.
+
+The panel found it the way `feat/cms-page-index` was found one collection over. A customer-detail
+section showing that customer's notifications had to issue one request per order per event name — four
+guesses per order, on event names the client would have had to hard-code, roughly thirty requests for an
+eight-order customer. That read belongs in the API.
+
+Two clauses in `buildWhere()` and two `args` entries, no migration:
+
+```
+?recipient=amina@example.test    every channel, every event, one person
+?subject_id=4529                 every event about one order, the customer's and the shop's
+```
+
+Three decisions worth keeping:
+
+- **Neither widens disclosure**, which is the §63 question this route always has to answer. Both columns
+  are already on every list row and the whole route is `ac_manage_customers`; a caller who can filter by
+  an address is a caller who could already read it.
+- **`recipient` is not validated as an email.** It is whatever the channel addresses, and §29's other
+  four would put a phone number or a device token in that column.
+- **`event` and `audience` stay unfilterable.** An `event` filter overlaps `dedupe_key`, whose left half
+  *is* the event, and `audience` has two values that `recipient` already separates. `orderby` and
+  `order` remain non-parameters for the same reason they always were.
+
+`tests/Api/notifications.php` grew eleven assertions and the suite is at **67**. The recipient case is
+asserted as a **property rather than a count** — every row returned was addressed to that person, the
+fixture row is among them, and the set is strictly narrower than the unfiltered one. The count version
+was written first and failed, because earlier sections of the same suite write to the same address; the
+floor clause is what makes the property version catch an ignored filter, since an ignored filter returns
+everything and satisfies the other two.
+
 ### Retry never sends, and the refusal is the `UPDATE`'s own `WHERE`
 
 `retry` puts the row back to `pending`, clears `attempts` and `last_error`, and answers **202** naming

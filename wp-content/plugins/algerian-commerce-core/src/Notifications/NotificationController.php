@@ -77,6 +77,35 @@ final class NotificationController extends AbstractController
                     'validate_callback' => 'rest_validate_request_arg',
                     'sanitize_callback' => 'sanitize_text_field',
                 ],
+                /*
+                 * "Everything sent to this person", which `dedupe_key` cannot
+                 * express — it is exact and it names an event and a subject,
+                 * not an address. A customer's own notifications were otherwise
+                 * one request per order per event name.
+                 *
+                 * Not `format => email`: `recipient` is whatever the channel
+                 * addresses, and §29's other four would put a phone number or a
+                 * device token in this column. 191 matches the column.
+                 */
+                'recipient' => [
+                    'type' => 'string',
+                    'maxLength' => 191,
+                    'validate_callback' => 'rest_validate_request_arg',
+                    'sanitize_callback' => 'sanitize_text_field',
+                ],
+                /*
+                 * "Everything about this order", across every event that
+                 * touched it. `subject_type` is deliberately not a filter
+                 * beside it: every row this queue writes is an order, so it
+                 * would be a filter that never narrows, and adding one now
+                 * would pin a shape the second subject type has not chosen yet.
+                 */
+                'subject_id' => [
+                    'type' => 'integer',
+                    'minimum' => 1,
+                    'validate_callback' => 'rest_validate_request_arg',
+                    'sanitize_callback' => 'absint',
+                ],
                 'date_from' => $this->dateArg(),
                 'date_to' => $this->dateArg(),
             ],
@@ -120,6 +149,8 @@ final class NotificationController extends AbstractController
             'channel' => (string) $request->get_param('channel'),
             'status' => (string) $request->get_param('status'),
             'dedupe_key' => (string) $request->get_param('dedupe_key'),
+            'recipient' => (string) $request->get_param('recipient'),
+            'subject_id' => (int) $request->get_param('subject_id'),
             'date_from' => (string) $request->get_param('date_from'),
             'date_to' => (string) $request->get_param('date_to'),
         ]);
