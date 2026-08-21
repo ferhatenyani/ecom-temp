@@ -194,6 +194,43 @@ ac_check('an export is a file, not the envelope', ac_req('GET', '/export/invento
     return str_starts_with($d, "\xEF\xBB\xBF") ?: 'no UTF-8 byte-order mark';
 });
 
+/*
+ * The one thing this stage *can* see about the serving, and the reason it is
+ * here rather than only in scripts/test-api.sh.
+ *
+ * `rest_pre_serve_request` never fires under `rest_do_request()`, so everything
+ * above proves the CSV and nothing about whether the client receives it. What
+ * is visible in-process is the response's **type**, and that is exactly where
+ * the defect was: `FileDownload` used to mark its responses with
+ * `set_matched_route()`, which `WP_REST_Server::respond_to_request()` overwrites
+ * after the callback returns — so the filter declined every download and
+ * WordPress JSON-encoded the CSV as a bare string. A `FileDownloadResponse`
+ * survives `rest_ensure_response()` unchanged, and this asserts the controller
+ * still returns one.
+ */
+$exportResponse = rest_do_request(
+    (function () {
+        $r = new WP_REST_Request('GET', '/algerian-commerce/v1/export/inventory');
+        $r->set_param('limit', 2);
+
+        return $r;
+    })()
+);
+
+ac_assert('an export is typed as a download, which is how it escapes the encoder',
+    $exportResponse instanceof AlgerianCommerce\API\FileDownloadResponse
+        ?: 'got ' . get_class($exportResponse));
+
+ac_assert('and an export error is not, so it keeps the envelope',
+    !(rest_do_request(
+        (function () {
+            $r = new WP_REST_Request('GET', '/algerian-commerce/v1/export/orders');
+            $r->set_param('limit', 999999);
+
+            return $r;
+        })()
+    ) instanceof AlgerianCommerce\API\FileDownloadResponse));
+
 ac_check('the stock export names the columns the importer reads', ac_req('GET', '/export/inventory', null, [
     'limit' => 2,
 ]), 200, function ($d) {

@@ -35,12 +35,37 @@ use WP_REST_Response;
  * "I have written the body myself", and returning true from it stops the server
  * encoding anything. `API\Cors` already uses the same hook, which is why this
  * registers later — headers first, body second.
+ *
+ * > **Corrected in the build: the response cannot be marked with
+ * > `set_matched_route()`.** It was, and the marker never survived to the
+ * > filter: `WP_REST_Server::respond_to_request()` calls
+ * > `$response->set_matched_route($route)` *after* the callback returns, so by
+ * > the time `rest_pre_serve_request` fires the marker has been overwritten
+ * > with the real route and `serve()` declined every single download. WordPress
+ * > then JSON-encoded the CSV as a bare string, and **every export answered
+ * > `"﻿sku,stock_quantity\r\nAC-TAP-001,12\r\n"`** — one line, quoted,
+ * > with the BOM as the six characters `﻿`, every accent as `è` and
+ * > every newline as the two characters `\r\n`. Content type `text/csv`,
+ * > `Content-Disposition: attachment`, and a file no spreadsheet can open.
+ * >
+ * > Measured 2026-08-21 on WordPress 7.0.4 while building the admin panel's
+ * > export screen. It is marked by **type** now — `rest_ensure_response()`
+ * > returns a `WP_REST_Response` subclass unchanged, and nothing in core or in
+ * > this plugin rewrites an object's class the way it rewrites its matched
+ * > route. A controller still cannot opt in by accident, because the only
+ * > constructor is this class's own factory.
+ * >
+ * > Two assertions in `scripts/test-api.sh` were watching and could not see it,
+ * > which is the more useful half of the finding. "The body is a CSV, not
+ * > JSON" tested `grep -q '"success"'` — a JSON-encoded *string* has no
+ * > `success` key, so it passed. "The CSV names its columns" tested
+ * > `head -1 | grep -q 'sku'` — the whole file was one line and `sku` was on
+ * > it, so it passed too. Both now assert the shape they meant: the first byte
+ * > is the real BOM `EF BB BF` and not a quote, and the second line is a
+ * > record.
  */
 final class FileDownload
 {
-    /** Marks a response this class built. Never sent to the client. */
-    private const MARKER = '_ac_file_download';
-
     public const PRIORITY = 20;
 
     public function register(): void
@@ -55,7 +80,7 @@ final class FileDownload
      */
     public static function csv(string $body, string $filename): WP_REST_Response
     {
-        $response = new WP_REST_Response($body, 200);
+        $response = new FileDownloadResponse($body, 200);
 
         $response->set_headers([
             // The charset matters: CsvWriter emits a UTF-8 BOM for Excel, and a
@@ -68,8 +93,6 @@ final class FileDownload
             'Cache-Control' => 'no-store, private',
             'X-Content-Type-Options' => 'nosniff',
         ]);
-
-        $response->set_matched_route(self::MARKER);
 
         return $response;
     }
@@ -84,11 +107,7 @@ final class FileDownload
         ?WP_REST_Request $request = null,
         mixed $server = null
     ): mixed {
-        if ($served === true || !$result instanceof WP_REST_Response) {
-            return $served;
-        }
-
-        if ($result->get_matched_route() !== self::MARKER) {
+        if ($served === true || !$result instanceof FileDownloadResponse) {
             return $served;
         }
 

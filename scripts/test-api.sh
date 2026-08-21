@@ -755,11 +755,34 @@ check "the filename cannot carry a header injection" "yes" \
   "$(grep -i '^content-disposition' <<<"$EXPORT_HEADERS" | grep -qE 'filename="[A-Za-z0-9._-]+"' && echo yes || echo no)"
 
 # The body is the CSV itself and not an envelope around it.
+#
+# These two assertions used to be weaker, and they let a real defect through
+# for the whole life of the feature. `FileDownload` marked its own responses
+# with `set_matched_route()`, which `WP_REST_Server::respond_to_request()`
+# overwrites *after* the callback returns — so the filter declined every
+# download and WordPress JSON-encoded the CSV as a bare string. Every export
+# answered one quoted line: the BOM as the six characters `﻿`, every
+# accent as `è`, every newline as the two characters `\r\n`.
+#
+# The old pair passed over it. "Not JSON" grepped for `"success"`, which a
+# JSON-encoded *string* has no key for; "names its columns" grepped the first
+# line for `sku`, and the whole file was one line with `sku` on it. Both were
+# true of the broken body. So they assert the shape now rather than the
+# absence of one wrong marker: the first three bytes are the real UTF-8 BOM,
+# and the file has a second line.
 EXPORT_BODY=$(curl -s -m 30 -u "$CRED" "${API}/export/inventory?limit=2")
 check "the body is a CSV, not JSON" "yes" \
   "$(grep -q '"success"' <<<"$EXPORT_BODY" && echo no || echo yes)"
 check "the CSV names its columns" "yes" \
   "$(head -1 <<<"$EXPORT_BODY" | grep -q 'sku' && echo yes || echo no)"
+# Excel needs the BOM and this is the only place it can be seen. `﻿` as
+# six literal characters is exactly what the JSON encoder produced.
+check "the body opens with a real UTF-8 BOM" "efbbbf" \
+  "$(curl -s -m 30 -u "$CRED" "${API}/export/inventory?limit=2" | head -c 3 | xxd -p | tr -d '\n')"
+# A CSV has records on their own lines. The encoded body was a single line
+# however many rows it held, which is what made "names its columns" blind.
+check "the CSV has a record after its header" "yes" \
+  "$(sed -n '2p' <<<"$EXPORT_BODY" | grep -q ',' && echo yes || echo no)"
 
 # An error must never be served raw: a client would save the error message as
 # products.csv. The envelope comes back with the 4xx.
