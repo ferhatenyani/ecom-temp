@@ -1087,6 +1087,11 @@ customer list with no consent yet, and is never silently reported as "sent to 0 
 `GET /campaigns/{id}/recipients` answers "who got this?", with `meta.purged` once the addresses are gone.
 **Recipient addresses are purged 30 days after a campaign completes**; the counts on the campaign survive.
 
+It takes `?status=` — `pending`, `sent` or `failed` — and **`meta.total` follows the filter**, which it
+did not before `feat/campaign-recipient-counts`: measured 2026-08-21, `?status=failed` answered 0 rows
+with `meta.total: 9`, because the rows were filtered and the total was not. It is the filter the drain
+itself points at when a run ends with *"see GET /campaigns/{id}/recipients?status=failed"*.
+
 ### Unsubscribe
 
 ```
