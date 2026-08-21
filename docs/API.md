@@ -976,7 +976,21 @@ Imports take the **CSV file as the raw request body** with `Content-Type: text/c
 multipart. `dry_run` defaults to **true**: a client that forgets the flag previews and never writes.
 `mode` is `create` or `update` (products) — neither does both.
 
-Exports return the file, not the envelope. Every imported stock change writes a ledger movement.
+Exports return the file, not the envelope: `Content-Type: text/csv; charset=utf-8`, a
+`Content-Disposition` filename that is the API's, `Cache-Control: no-store`, and a body that **begins
+with a UTF-8 byte-order mark** (`EF BB BF`) so Excel does not read it in the system codepage and break
+every Arabic name. An export *error* is still the envelope with its 4xx, so a client never saves an
+error message as `products.csv`. Every imported stock change writes a ledger movement.
+
+**Fixed on `fix/export-download`, measured 2026-08-21 on WordPress 7.0.4:** the body was arriving
+JSON-encoded — one quoted line per export, with the BOM as the six characters `﻿`, every accent as
+`è` and every newline as the two characters `\r\n`. `API\FileDownload` marked its own responses
+with `set_matched_route()`, and `WP_REST_Server::respond_to_request()` overwrites that *after* the
+callback returns, so `rest_pre_serve_request` declined every download and WordPress encoded the string
+it was handed. The marker is a response **subclass** now, which `rest_ensure_response()` leaves alone.
+The two HTTP assertions watching this passed over the broken body — "not JSON" looked for a `success`
+key a JSON-encoded string does not have, and "names its columns" grepped a first line that was the
+whole file — and now assert the BOM bytes and the presence of a second line instead.
 
 ## Marketing
 
