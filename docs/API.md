@@ -1348,6 +1348,29 @@ placed.
 |---|---|---|
 | GET | `/audit-logs` | `ac_view_audit_logs` |
 
+Filters by `actor_id`, `action`, `resource_type`, `resource_id` and `date_from` / `date_to` (`Y-m-d`,
+**UTC**, both ends covering the whole day — `AuditEvent` stamps `gmdate()` and nothing else writes the
+table). Newest first, and `orderby` / `order` are **not parameters**: the table is append-only, so id
+order is time order and there is no second ordering worth offering. An unknown `action` is a 200 with
+no rows rather than a 400 — the vocabulary is open by design, since every subsystem adds to it.
+
+**`resource_id` is a string, not an integer**, because the things this trail records are not all
+numbered: a page is audited by path, a FAQ category by slug, a menu by location. It is only meaningful
+beside `resource_type` — ids are unique per type, not globally.
+
+**`resource_id` and the date range were added on `feat/audit-filters`.** Measured 2026-08-21 against
+16 632 rows, both were **accepted and silently ignored** — §65's failure mode, where a filter that does
+not filter is indistinguishable from a collection that all matches. The clause for `resource_id` had
+been in `AuditRepository::buildWhere()` since the table existed; the route simply never declared the
+argument, so `WP_REST_Request` dropped it before the controller looked. The date range had neither.
+Both are named in the admin panel's specification as though they worked, and without them 16 632 rows
+at 20 a page is 832 pages with no way to reach yesterday and no way to get from an audited object to
+its own history. `tests/Api/audit.php` is the route's first suite, **35 assertions**, and its floor is
+that a filtered set is *strictly smaller* than the whole rather than merely a 200.
+
+**`search` is accepted and ignored, and stays that way.** Writes are audited by field *name*, never by
+value, so there is no column holding what a free-text box would be searching for.
+
 §87's writes record `user.created`, `user.role_changed`, `user.suspended`, `user.reactivated`,
 `user.updated`, `user.deleted`, `user.app_password_created` and `user.app_password_revoked`. A role
 change names both roles, because "somebody's role changed" answers none of the questions the trail is
