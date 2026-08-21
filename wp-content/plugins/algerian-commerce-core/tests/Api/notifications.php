@@ -459,6 +459,115 @@ ac_check(
         ?: 'expected exactly the customer row, got ' . wp_json_encode($d['meta'] ?? [])
 );
 
+/*
+ * `recipient` and `subject_id` are the two questions `dedupe_key` cannot ask,
+ * added on `feat/notification-filters` because the admin panel could not be
+ * built without them: an exact `event:subject_id` cannot express "everything
+ * sent to this person" or "everything about this order", and both were
+ * previously accepted and silently ignored.
+ *
+ * The two fixture rows are the whole argument in miniature. They share
+ * `subject_id` 90001 and differ in recipient and event, so `subject_id` must
+ * find both and `recipient` must find one — and each assertion below carries
+ * the opposite filter as its control, because a filter that returns one row for
+ * every input looks identical to a working one when there are only two rows.
+ */
+/*
+ * Asserted as a **property, not a count**: earlier sections of this suite write
+ * to `$MAIL` too, so "exactly one" would be an assertion about how many
+ * fixtures happen to precede this line rather than about the filter. Every row
+ * returned was addressed to this person, the fixture row is among them, and the
+ * set is strictly narrower than the unfiltered one — that last clause is the
+ * floor, since a filter that is accepted and ignored returns every row and
+ * satisfies the first two.
+ */
+$everything = ac_req('GET', '/notifications', null, ['per_page' => 100]);
+$allRows = (int) ($everything[1]['meta']['total'] ?? 0);
+
+ac_check(
+    'filter by recipient finds that person\'s rows and nobody else\'s',
+    ac_req('GET', '/notifications', null, ['recipient' => $MAIL, 'per_page' => 100]),
+    200,
+    static function ($d) use ($MAIL, $customerRow, $allRows): bool|string {
+        $rows = $d['data'] ?? [];
+        $total = (int) ($d['meta']['total'] ?? 0);
+        $foreign = array_filter($rows, static fn ($r): bool => ($r['recipient'] ?? '') !== $MAIL);
+        $ids = array_map(static fn ($r): int => (int) ($r['id'] ?? 0), $rows);
+
+        if ($foreign !== []) {
+            return count($foreign) . ' row(s) addressed to somebody else came back';
+        }
+
+        if (!in_array($customerRow, $ids, true)) {
+            return 'the fixture row was not among the ' . $total . ' returned';
+        }
+
+        return $total > 0 && $total < $allRows
+            ?: "the filter did not narrow: {$total} of {$allRows}";
+    }
+);
+
+ac_check(
+    'and the other address finds the other row, not the same one',
+    ac_req('GET', '/notifications', null, ['recipient' => 'shop@example.test']),
+    200,
+    static fn ($d): bool|string => ($d['meta']['total'] ?? 0) === 1
+        && (int) ($d['data'][0]['id'] ?? 0) === $adminRow
+        ?: 'expected the admin row alone, got ' . wp_json_encode($d['meta'] ?? [])
+);
+
+ac_check(
+    'an address nobody was written to',
+    ac_req('GET', '/notifications', null, ['recipient' => 'nobody@example.test']),
+    200,
+    static fn ($d): bool => ($d['meta']['total'] ?? -1) === 0
+);
+
+/*
+ * The one `dedupe_key` genuinely cannot do: **both** notifications about one
+ * order, the customer's and the shop's, in one request.
+ */
+ac_check(
+    'filter by subject_id finds every event about that order',
+    ac_req('GET', '/notifications', null, ['subject_id' => 90001]),
+    200,
+    static fn ($d): bool|string => ($d['meta']['total'] ?? 0) === 2
+        ?: 'expected both rows for order 90001, got ' . wp_json_encode($d['meta'] ?? [])
+);
+
+ac_check(
+    'while an order nothing was queued for finds none',
+    ac_req('GET', '/notifications', null, ['subject_id' => 90002]),
+    200,
+    static fn ($d): bool => ($d['meta']['total'] ?? -1) === 0
+);
+
+// AND-ed with the rest rather than replacing them: this is the customer's own
+// notification about this one order, which is the customer-detail screen's read.
+ac_check(
+    'recipient and subject_id narrow together',
+    ac_req('GET', '/notifications', null, ['recipient' => $MAIL, 'subject_id' => 90001]),
+    200,
+    static fn ($d): bool|string => ($d['meta']['total'] ?? 0) === 1
+        && (int) ($d['data'][0]['id'] ?? 0) === $customerRow
+        ?: 'expected one row, got ' . wp_json_encode($d['meta'] ?? [])
+);
+
+// `minimum => 1`. Zero is not a row id anywhere, and `subject_id` is nullable —
+// so accepting it would have to mean "the rows with no subject", which is not
+// what typing a zero asks for.
+ac_check(
+    'subject_id zero is refused rather than reinterpreted',
+    ac_req('GET', '/notifications', null, ['subject_id' => 0]),
+    400
+);
+
+ac_check(
+    'and a subject_id that is not a number is refused',
+    ac_req('GET', '/notifications', null, ['subject_id' => 'order-90001']),
+    400
+);
+
 ac_check(
     'filter by channel',
     ac_req('GET', '/notifications', null, ['channel' => 'email']),
@@ -522,6 +631,15 @@ ac_assert(
     ($hostile[1]['meta']['total'] ?? -1) === 0
         ?: 'the injection payload matched ' . ($hostile[1]['meta']['total'] ?? '?')
         . ' rows, against ' . ($honest[1]['meta']['total'] ?? '?') . ' for an honest filter'
+);
+
+// The same rule applied to the filter added last, which is the one whose value
+// comes from a customer record rather than from a vocabulary this code owns.
+$hostileRecipient = ac_req('GET', '/notifications', null, ['recipient' => "x' OR '1'='1"]);
+ac_assert(
+    'and the same for recipient',
+    ($hostileRecipient[1]['meta']['total'] ?? -1) === 0
+        ?: 'the injection payload matched ' . ($hostileRecipient[1]['meta']['total'] ?? '?') . ' rows'
 );
 
 echo PHP_EOL, "── §90: retry queues and never sends ──", PHP_EOL;

@@ -1285,12 +1285,35 @@ ten other management capabilities is refused.
 hangs would hang the admin panel, and the operator most likely to press retry is the one whose mail server
 is already misbehaving.
 
-`GET /notifications` filters by `channel`, `status` (`pending`, `sent`, `failed`), `dedupe_key` and
-`date_from` / `date_to` (`Y-m-d`, **UTC**, both ends covering the whole day). Newest first — the opposite
-of the drain, which sends oldest first so a customer is not told "delivered" before "shipped".
+`GET /notifications` filters by `channel`, `status` (`pending`, `sent`, `failed`), `dedupe_key`,
+`recipient`, `subject_id` and `date_from` / `date_to` (`Y-m-d`, **UTC**, both ends covering the whole
+day). Newest first — the opposite of the drain, which sends oldest first so a customer is not told
+"delivered" before "shipped".
 
 **`dedupe_key` is the filter that answers the question.** It is `event:subject_id` by construction, so
 `?dedupe_key=order.placed:1234` finds the confirmation for order 1234 in one request.
+
+**`recipient` and `subject_id` answer the two questions `dedupe_key` cannot**, and they were added on
+`feat/notification-filters` because the admin panel could not be built without them. `dedupe_key` is
+exact and names one event about one subject; nothing named *everything sent to this person* or
+*everything about this order*. Measured 2026-08-21 before they existed, `?recipient=`, `?subject_id=`,
+`?event=` and `?audience=` were all **accepted and silently ignored** — so a customer's own
+notifications cost one request per order per event name, on event names the caller had to hard-code.
+
+```
+?recipient=amina@example.test    every channel, every event, one customer
+?subject_id=4529                 every notification about order 4529
+```
+
+Neither discloses anything new: both columns are already on every list row and the route is
+`ac_manage_customers` throughout. `recipient` is **not** validated as an email — it is whatever the
+channel addresses, and §29's other four would put a phone number there.
+
+**`event` and `audience` remain unfilterable, and that is deliberate.** An `event` filter overlaps
+`dedupe_key`, whose left half *is* the event; `audience` has two values that `recipient` already
+separates. **`orderby` and `order` are not parameters at all** — measured, they are accepted and
+ignored, including `?orderby=nonsense`, because the ordering is `created_at DESC, id DESC` and the
+screen this exists for has no reason to reverse it.
 
 **The list omits the message; the single read carries it.** `GET /notifications/{id}` adds a `message`
 block — `subject`, `body`, `context` — read out of the stored payload by allowlist, so a key a future

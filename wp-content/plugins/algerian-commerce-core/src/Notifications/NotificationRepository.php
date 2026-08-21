@@ -173,7 +173,28 @@ final class NotificationRepository
      * `?dedupe_key=order.placed:1234`, because the key is `event:subject_id`
      * by construction (`Notification::dedupeKey()`).
      *
-     * @param array{channel?: string, status?: string, dedupe_key?: string, date_from?: string, date_to?: string, page?: int, per_page?: int} $criteria
+     * **`recipient` and `subject_id` answer the question §90 did not ask**, and
+     * they were added because a panel could not be built without them. The
+     * exact-match `dedupe_key` answers "this event, for this subject"; nothing
+     * answered "everything sent to this person" or "everything about this
+     * order". Measured 2026-08-21 against the built API: `?recipient=`,
+     * `?subject_id=`, `?event=` and `?audience=` were all accepted and ignored,
+     * so the only way to show a customer their own notifications was one
+     * request per order per event name — four guesses per order, on event names
+     * the caller would have had to hard-code. `feat/cms-page-index` is the
+     * precedent: the read the screen needs belongs in the API, not assembled
+     * out of fan-out on the client.
+     *
+     * They disclose nothing new. Both columns are already published on every
+     * list row, and the whole route is `ac_manage_customers` — a caller who can
+     * filter by an address is a caller who could already read it.
+     *
+     * `event` and `audience` stay unfilterable on purpose: `dedupe_key` is
+     * `event:subject_id`, so an event filter overlaps one that already exists,
+     * and `audience` has two values that a status filter and a recipient filter
+     * already separate in practice.
+     *
+     * @param array{channel?: string, status?: string, dedupe_key?: string, recipient?: string, subject_id?: int, date_from?: string, date_to?: string, page?: int, per_page?: int} $criteria
      * @return array{items: list<array<string, mixed>>, total: int}
      */
     public function search(array $criteria): array
@@ -278,11 +299,24 @@ final class NotificationRepository
         $clauses = [];
         $params = [];
 
-        foreach (['channel', 'status', 'dedupe_key'] as $field) {
+        foreach (['channel', 'status', 'dedupe_key', 'recipient'] as $field) {
             if (($criteria[$field] ?? '') !== '') {
                 $clauses[] = "{$field} = %s";
                 $params[] = (string) $criteria[$field];
             }
+        }
+
+        /*
+         * Separate from the loop above because zero is a real id nowhere and an
+         * empty string is: `subject_id` is nullable, and a row queued for
+         * something with no subject stores NULL rather than 0. `> 0` is the
+         * "asked for" test, so `?subject_id=0` filters nothing rather than
+         * matching the rows that have no subject at all — which would be an
+         * odd thing to ask for by typing a zero.
+         */
+        if ((int) ($criteria['subject_id'] ?? 0) > 0) {
+            $clauses[] = 'subject_id = %d';
+            $params[] = (int) $criteria['subject_id'];
         }
 
         /*
