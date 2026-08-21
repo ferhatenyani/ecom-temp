@@ -72,6 +72,53 @@ final class CmsPresenter
         ];
     }
 
+    /** @param list<WP_Post> $pages @return list<array<string, mixed>> */
+    public static function pages(array $pages): array
+    {
+        return array_values(array_map([self::class, 'pageRow'], $pages));
+    }
+
+    /**
+     * A page as it appears in the index — deliberately less than `page()`.
+     *
+     * Three fields are missing and each one is missing for a measured reason
+     * rather than for tidiness:
+     *
+     *   `content`  the whole body. An index that ships every page's HTML costs
+     *              the same as opening all of them at once, and no list renders
+     *              a page body.
+     *
+     *   `seo`      `SeoResolver::resolve()` is a resolver pass per page — it
+     *              reads the thumbnail, the excerpt, the overrides and builds
+     *              structured data. Twenty rows would run it twenty times to
+     *              render a title somebody is about to click past.
+     *
+     *   `excerpt`  cheap, but it is only ever shown on the page itself, and a
+     *              field nothing reads is a field that drifts.
+     *
+     * `path` and `status` are the two the index exists for, and `parent_path`
+     * is here so a flat list can still show where a page is filed without the
+     * client walking anything.
+     *
+     * @return array<string, mixed>
+     */
+    public static function pageRow(WP_Post $page): array
+    {
+        $parentId = (int) $page->post_parent;
+
+        return [
+            'id' => (int) $page->ID,
+            'path' => (string) get_page_uri($page),
+            'slug' => $page->post_name,
+            'parent_path' => $parentId > 0 ? (string) get_page_uri($parentId) : '',
+            'status' => (string) $page->post_status,
+            'title' => self::title($page),
+            'menu_order' => (int) $page->menu_order,
+            'date_created' => mysql_to_rfc3339($page->post_date_gmt),
+            'date_modified' => mysql_to_rfc3339($page->post_modified_gmt),
+        ];
+    }
+
     /** @param list<WP_Post> $banners @return list<array<string, mixed>> */
     public static function banners(array $banners): array
     {

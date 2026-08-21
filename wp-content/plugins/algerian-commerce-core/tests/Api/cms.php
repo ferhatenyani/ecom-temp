@@ -167,6 +167,7 @@ $routes = [
     'GET /cms/homepage' => ['GET', '/cms/homepage'],
     'GET /cms/banners' => ['GET', '/cms/banners'],
     'GET /cms/faqs' => ['GET', '/cms/faqs'],
+    'GET /cms/pages' => ['GET', '/cms/pages'],
     'GET /cms/pages/{path}' => ['GET', '/cms/pages/anything'],
     'GET /cms/menus/{location}' => ['GET', '/cms/menus/primary'],
 ];
@@ -345,6 +346,221 @@ ac_check('GET an unpublished page', ac_req('GET', '/cms/pages/ac-unpublished'), 
 // The route pattern is the first line of defence on a slug that reaches
 // get_page_by_path().
 ac_check('GET a page with a traversal slug', ac_req('GET', '/cms/pages/../../wp-config'), 404);
+
+echo PHP_EOL, "=== the page index ===", PHP_EOL;
+
+/*
+ * §89 built a complete write surface over a read surface that could not list.
+ * `GET /cms/pages` is the missing half, and most of what is asserted here is
+ * about what it deliberately leaves out — see `SystemPages` and
+ * `CmsPresenter::pageRow()`.
+ */
+
+/** Every path the index returns, at a given status. @return list<string> */
+function ac_page_paths(string $status = 'any'): array
+{
+    [, $body] = ac_req('GET', '/cms/pages', null, ['per_page' => 100, 'status' => $status]);
+
+    return array_map(static fn ($row): string => (string) ($row['path'] ?? ''), $body['data'] ?? []);
+}
+
+ac_check('GET the page index', ac_req('GET', '/cms/pages'), 200, static function ($data): bool|string {
+    $rows = $data['data'] ?? [];
+
+    if ($rows === []) {
+        return 'the index is empty, so nothing below proves anything';
+    }
+
+    foreach (['id', 'path', 'slug', 'parent_path', 'status', 'title', 'menu_order'] as $key) {
+        if (!array_key_exists($key, $rows[0])) {
+            return "a row is missing {$key}";
+        }
+    }
+
+    /*
+     * The omissions, asserted rather than described. `content` and `seo` are
+     * left out for cost — a resolver pass and a whole page body per row — and a
+     * field left out for a reason drifts back in the first time somebody reuses
+     * `CmsPresenter::page()` here by mistake.
+     */
+    foreach (['content', 'seo', 'excerpt'] as $key) {
+        if (array_key_exists($key, $rows[0])) {
+            return "the index row carries {$key}, which it is not meant to";
+        }
+    }
+
+    return true;
+});
+
+/*
+ * The exclusion, and the positive control beside it.
+ *
+ * A test that only asserts the absence of `checkout` passes just as well
+ * against an index that is broken and returns nothing, which is why the count
+ * of ordinary pages is asserted in the same breath.
+ */
+ac_check(
+    'the index omits the pages whose body the shop generates',
+    ac_req('GET', '/cms/pages', null, ['per_page' => 100, 'status' => 'any']),
+    200,
+    static function ($data): bool|string {
+        $paths = array_map(static fn ($r): string => (string) $r['path'], $data['data'] ?? []);
+
+        foreach (['shop', 'cart', 'checkout', 'my-account'] as $functional) {
+            if (in_array($functional, $paths, true)) {
+                return "the index carries {$functional}";
+            }
+        }
+
+        // The floor: an index that returned nothing would pass the loop above.
+        if (!in_array('ac-legal', $paths, true)) {
+            return 'the index does not carry an ordinary page, so the absences above prove nothing';
+        }
+
+        $excluded = $data['meta']['excluded_system'] ?? null;
+
+        return is_int($excluded) && $excluded > 0
+            ? true
+            : 'meta.excluded_system is missing or zero';
+    }
+);
+
+/*
+ * The exclusion belongs to the *index*, not to the API. A functional page is
+ * still readable and still writable by path — hiding it from a list while the
+ * single-resource route answers normally is the honest split, because the
+ * reason it is hidden is that nobody edits it from a CMS screen, not that it is
+ * secret.
+ */
+ac_check('a functional page is still readable by path', ac_req('GET', '/cms/pages/checkout'), 200);
+
+/*
+ * The ambiguity this index resolves, and the reason it is worth more than
+ * discovery on its own.
+ *
+ * On the single-resource route a **draft** and a **path that does not exist**
+ * are the same 404 with the same message, so an operator looking for a page
+ * they cannot find learns nothing about which of the two happened. Measured on
+ * this install: WordPress creates `privacy-policy` as a draft, and it answered
+ * "No page at that path." about a page sitting right there.
+ *
+ * All three legs are asserted together, because each one alone is consistent
+ * with a different bug.
+ */
+$draftPath = 'ac-unpublished';
+
+ac_check(
+    'a draft is 404 on the single-resource route',
+    ac_req('GET', '/cms/pages/' . $draftPath),
+    404,
+    static fn ($data): bool => ($data['error']['message'] ?? '') === 'No page at that path.'
+);
+
+ac_check(
+    'the same draft is readable with ?status=any',
+    ac_req('GET', '/cms/pages/' . $draftPath, null, ['status' => 'any']),
+    200
+);
+
+ac_assert(
+    'the index tells the operator that draft exists',
+    in_array($draftPath, ac_page_paths('any'), true)
+        && !in_array($draftPath, ac_page_paths('publish'), true)
+            ?: 'the draft is absent from ?status=any, or present in ?status=publish'
+);
+
+ac_check(
+    '?search= narrows the index',
+    ac_req('GET', '/cms/pages', null, ['search' => 'legal', 'status' => 'any', 'per_page' => 100]),
+    200,
+    static function ($data): bool|string {
+        $paths = array_map(static fn ($r): string => (string) $r['path'], $data['data'] ?? []);
+
+        // A search that is honoured finds the page; a search that is *ignored*
+        // also finds it, inside a much longer list. Both halves are needed.
+        if (!in_array('ac-legal', $paths, true)) {
+            return 'the search did not find the page';
+        }
+
+        return !in_array('refund_returns', $paths, true)
+            ? true
+            : 'the search was accepted and ignored — every page came back';
+    }
+);
+
+/*
+ * **`?search=` matches the title and the body, and not the path.**
+ *
+ * `WP_Query`'s `s` searches `post_title`, `post_content` and `post_excerpt`;
+ * `post_name` is not among them and is not one of the columns `search_columns`
+ * will accept either. So on a resource whose *address* is its path, the search
+ * cannot find an address — measured here rather than assumed, because "search"
+ * is exactly the parameter a caller assumes covers the obvious field.
+ *
+ * Asserted rather than fixed. A bespoke `posts_where` on the one list route in
+ * this plugin that has one would be a divergence to maintain forever, and the
+ * shop it would serve has eight editorial pages in it. The client's job is to
+ * say what the field matches — `/customers` already sets that precedent, where
+ * `?search=` matches a login and never a name.
+ */
+ac_check(
+    '?search= does not match a page path',
+    ac_req('GET', '/cms/pages', null, ['search' => 'ac-legal', 'status' => 'any', 'per_page' => 100]),
+    200,
+    static function ($data): bool|string {
+        $paths = array_map(static fn ($r): string => (string) $r['path'], $data['data'] ?? []);
+
+        return !in_array('ac-legal', $paths, true)
+            ? true
+            : 'the path is searchable after all — the client may stop warning about it';
+    }
+);
+
+echo PHP_EOL, "=== a page an option points at cannot be deleted ===", PHP_EOL;
+
+/*
+ * The second half of `SystemPages`, and the half that makes the first one true
+ * for callers that are not this panel.
+ *
+ * `?force=true` does **not** override this, unlike the children guard below it:
+ * reparenting children is recoverable, while leaving
+ * `woocommerce_checkout_page_id` pointing at nothing makes WooCommerce report a
+ * missing page rather than a broken setting.
+ */
+foreach (['checkout' => 'woocommerce_checkout_page_id'] as $path => $option) {
+    ac_check(
+        "DELETE /cms/pages/{$path} is refused",
+        ac_req('DELETE', '/cms/pages/' . $path),
+        409,
+        static fn ($data): bool|string => ($data['error']['details']['option'] ?? '') === $option
+            ? true
+            : 'the refusal does not name the option to clear'
+    );
+
+    ac_check(
+        "DELETE /cms/pages/{$path}?force=true is refused too",
+        ac_req('DELETE', '/cms/pages/' . $path, null, ['force' => true]),
+        409
+    );
+}
+
+ac_assert(
+    'the refused page is still there',
+    get_page_by_path('checkout', OBJECT, 'page') instanceof WP_Post ?: 'checkout was deleted'
+);
+
+/*
+ * The control: an ordinary page created by WooCommerce and referenced by no
+ * option deletes like any other. Without this, the two refusals above are
+ * equally consistent with a delete route that refuses everything.
+ */
+ac_post('page', 'ac89-deletable', ['post_title' => 'Ac89 deletable']);
+
+ac_check(
+    'an ordinary page still deletes',
+    ac_req('DELETE', '/cms/pages/ac89-deletable', null, ['force' => true]),
+    200
+);
 
 echo PHP_EOL, "=== banners ===", PHP_EOL;
 

@@ -799,7 +799,7 @@ names, daira and coordinates. Postal codes are deliberately empty — they are n
 | Method | Route | Guard |
 |---|---|---|
 | GET, PUT | `/cms/homepage` | `ac_manage_content` |
-| POST | `/cms/pages` | `ac_manage_content` |
+| GET, POST | `/cms/pages` | `ac_manage_content` |
 | GET, PATCH, DELETE | `/cms/pages/{path}` | `ac_manage_content` |
 | GET, POST | `/cms/banners` | `ac_manage_content` |
 | PATCH, DELETE | `/cms/banners/{id}` | `ac_manage_content` |
@@ -831,6 +831,40 @@ behind, so every storefront link built on the old one is now a 404.
 
 A page's `seo` block is read and written here, and SEO errors land in the same `details.fields` list as the
 rest of the write. There is no SEO endpoint.
+
+### The page index, and the two kinds of page it treats differently
+
+`GET /cms/pages` lists pages with `?status=`, `?search=`, `?page=` and `?per_page=`, ordered by title.
+A row carries `id`, `path`, `slug`, `parent_path`, `status`, `title`, `menu_order` and the two dates —
+and deliberately **not** `content`, `seo` or `excerpt`. The first is a whole page body per row and the
+second is a `SeoResolver` pass per row; an index that carried them would cost what opening every page at
+once costs.
+
+**`?search=` matches the title and the body, never the path.** `WP_Query`'s `s` does not search
+`post_name`, so on the one resource whose address *is* its path, searching for `legal/terms` finds
+nothing. Asserted in `tests/Api/cms.php` rather than worked around, and a client is expected to say what
+the field matches — the same treatment `/customers` gets, where `?search=` matches a login and never a
+name.
+
+A WordPress install running WooCommerce contains pages nobody wrote, and they are not one kind of thing.
+`SystemPages` splits them by the only distinction that matters, and derives both sets from options
+WordPress and WooCommerce already store rather than from a list of paths:
+
+- **Functional** — `page_on_front`, `page_for_posts` and the WooCommerce `shop`, `cart`, `checkout`,
+  `myaccount`, `view_order`, `edit_address` and `lost_password` page ids. Their body is a block, a
+  shortcode, or nothing at all. **Omitted from the index**, with `meta.excluded_system` reporting how many,
+  so a count that is short of what wp-admin shows is explicable. They remain readable and writable by
+  path: the reason they are hidden is that nobody edits them from a CMS screen, not that they are secret.
+- **Referenced** — the above plus `wp_page_for_privacy_policy` and `woocommerce_terms_page_id`. These two
+  are prose somebody has to be able to edit, so they stay in the index and stay writable. **`DELETE` is a
+  409 on any referenced page**, naming the option in `details.option`, and **`?force=true` does not
+  override it** — unlike the children guard, where force is exactly what the flag is for. Reparenting
+  children is recoverable; leaving `woocommerce_checkout_page_id` pointing at nothing makes WooCommerce
+  report a missing page rather than a broken setting, so the person fixing it starts from the wrong
+  symptom.
+
+A page referenced by no option — `refund_returns`, which WooCommerce creates and then forgets — is an
+ordinary page: listed, editable and deletable like any other.
 
 ### Drafts
 

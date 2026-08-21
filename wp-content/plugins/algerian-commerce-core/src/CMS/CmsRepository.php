@@ -74,6 +74,48 @@ final class CmsRepository
     }
 
     /**
+     * The page index.
+     *
+     * §89 could address a page and could not list one, because every route it
+     * added was single-resource: `POST /cms/pages` and `GET, PATCH, DELETE
+     * /cms/pages/{path}`. That is a complete write surface and an incomplete
+     * read one — a content manager could edit any page whose path they already
+     * knew and could not discover a single one — and a panel built on it would
+     * be the only screen in the shop with no index behind it.
+     *
+     * The criteria are `baseArgs()`, unchanged and untyped to this post type, so
+     * `?status=`, `?search=`, `?page=` and `?per_page=` mean here exactly what
+     * they mean on banners and FAQs. The one addition is the exclusion, and
+     * `SystemPages` carries the argument for it.
+     *
+     * @param array<string, mixed> $criteria
+     * @return array{items: list<WP_Post>, total: int, excluded: int}
+     */
+    public function pages(array $criteria): array
+    {
+        $args = $this->baseArgs('page', $criteria);
+
+        $excluded = SystemPages::functional();
+
+        if ($excluded !== []) {
+            $args['post__not_in'] = $excluded;
+        }
+
+        /*
+         * Ordered by title rather than by `menu_order` then date, which is the
+         * one place this list departs from `baseArgs()`'s default and does so
+         * deliberately. A banner strip and an FAQ list are *ordered things* — the
+         * order is the content — while pages are a set somebody searches. Every
+         * page on this install has `menu_order` 0, so the default degenerates to
+         * "newest first", and a page index sorted by creation date is one where
+         * the page you are looking for moves every time somebody adds another.
+         */
+        $args['orderby'] = ['title' => 'ASC'];
+
+        return $this->run($args) + ['excluded' => count($excluded)];
+    }
+
+    /**
      * The full path of a page — the address `page()` resolves.
      *
      * `get_page_uri()` walks the ancestors and returns exactly the string this
