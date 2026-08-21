@@ -983,15 +983,38 @@ began `10,simple,AC-TAP-001,…` and `POST /import/products` read the first prod
 header, answering *"The file is missing required columns. Missing: sku."* with `columns_found` listing
 a product name as a column.
 
-**A product export still does not round-trip through `POST /import/products` unedited**, and that is a
-WooCommerce fact rather than a bug here. The header carries WooCommerce's **display labels** — `ID`,
-`SKU`, `GTIN, UPC, EAN, or ISBN` — because that is the file every other WooCommerce tool reads, and the
-table mapping those labels onto field names lives in `includes/admin/importers/mappings/`, inside
-`admin/`, which `WooCsv` deliberately does not load: the whole argument of that class is that only the
-*loader* is admin-gated and the engine is not. Measured 2026-08-21, a re-import parses every row and
-resolves an empty `sku` on each; the same file with a lowercased header resolves every SKU and previews
-`updated: 2`. Both directions are asserted in `tests/Api/import-export.php`. The inventory export, which
-uses our own writer and our own field names, round-trips as it stands.
+**A product export round-trips through `POST /import/products` unedited.** Send it back with
+`mode=update` and every SKU resolves. It did not until `fix/product-export-field-names`, and the way it
+failed is the reason the paragraph is this long.
+
+The header carried WooCommerce's **display labels** — `ID`, `SKU`, `GTIN, UPC, EAN, or ISBN`.
+`WC_Product_CSV_Importer::map_headers()` is `isset($mapping[$key]) ? $mapping[$key] : $key`: with no
+mapping passed, the header *is* the field names and is matched **exactly**. The table that turns `SKU`
+into `sku` lives in `includes/admin/importers/mappings/` and is applied by the admin *controller*, which
+`WooCsv` does not load. So WooCommerce read nothing off the file — and `CsvReader`, which lower-cases the
+header on purpose so that `SKU` and ` Sku ` are one column, was satisfied. Two readers disagreeing with
+only the lenient one asked is the whole defect. Measured 2026-08-21 on a 33-product catalogue:
+
+    rows 33, created 33, updated 0, skipped 0, failed 0
+    first preview row: {"line": 2, "action": "created", "sku": "", "name": ""}
+
+**33 creations reported, out of a file from which not one field had been read.** Two things changed.
+`GET /export/products` now writes the importer's field names — `id,type,sku,global_unique_id,name,…` —
+which is `WC_CSV_Exporter`'s own column *ids*, with `stock` corrected to `stock_quantity`, one of exactly
+two columns whose export id is not the import field name (the other is `global_unique_id`, which
+WooCommerce's admin importer itself drops). And `POST /import/products` now asks WooCommerce's importer
+what it made of the header — `get_mapped_keys()`, the very array the parse reads rows with — and **refuses
+with a 400 naming `sku`** when the answer does not contain it, rather than previewing a file it could not
+read. A `mapping` that merely folded case was the tempting alternative and is worse: it would resolve
+`SKU` and `Name` and still drop `Regular price`, `Stock` and forty others, so the file would import as
+products with no prices and report success.
+
+Nothing is lost by the rename. Measured 2026-08-22 against WooCommerce's own admin importer, a field-name
+header arrives already equal to a `get_mapping_options()` value and is preselected on the mapping screen:
+40 of 52 columns against 39 of 52 for the label header, the twelve attribute columns identical in both,
+and the one difference is the GTIN column, which the label header loses. Both directions are asserted in
+`tests/Api/import-export.php` and, over real HTTP, in `scripts/test-api.sh`. The inventory export, which
+uses our own writer and our own field names, has always round-tripped.
 
 Exports return the file, not the envelope: `Content-Type: text/csv; charset=utf-8`, a
 `Content-Disposition` filename that is the API's, `Cache-Control: no-store`, and a body that **begins
