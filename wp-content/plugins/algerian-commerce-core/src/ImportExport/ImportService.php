@@ -251,6 +251,10 @@ final class ImportService
         // Parsed once here purely to refuse an unusable file with our own error
         // shape before WooCommerce sees it, and to bound the row count the same
         // way the inventory import is bounded.
+        //
+        // This is the lenient half of the `sku` check and it is not sufficient
+        // on its own — `requireMappableHeader()` below says why, and cost a dry
+        // run that reported 33 creations from a file it had read nothing out of.
         $csv = CsvReader::parse($contents);
         $csv->requireColumns(['sku']);
 
@@ -264,6 +268,8 @@ final class ImportService
                 'delimiter' => CsvWriter::DELIMITER,
                 'lines' => CsvReader::MAX_ROWS,
             ]);
+
+            self::requireMappableHeader($importer);
 
             $report = new ImportReport($dryRun);
 
@@ -289,6 +295,58 @@ final class ImportService
         $this->auditRun('products', $report, $csv);
 
         return $payload;
+    }
+
+    /**
+     * The second `sku` check, which is not the first one again.
+     *
+     * `CsvReader::requireColumns(['sku'])` above asks *our* reader, which
+     * lower-cases and trims the header on purpose — a spreadsheet that has been
+     * through Excel and a colleague should not be rejected over `SKU`. This asks
+     * **WooCommerce's** reader, which does not: `map_headers()` is
+     * `isset($mapping[$key]) ? $mapping[$key] : $key`, and with no mapping
+     * passed the header must already *be* the field names, matched exactly.
+     *
+     * > **Corrected in the build: the two questions were not the same question,
+     * > and only the lenient one was asked.** Measured 2026-08-22, a products
+     * > export — whose header was WooCommerce's display labels until the same
+     * > branch fixed it — passed `requireColumns` on the strength of `SKU`
+     * > lower-casing to `sku`, and then WooCommerce mapped nothing off it. The
+     * > dry run answered `rows 33, created 33, updated 0, skipped 0, failed 0`
+     * > with `sku` and `name` **empty on every preview row**: an operator was
+     * > told 33 products were about to be created from a file out of which not
+     * > one field had been read.
+     * >
+     * > A silent partial read is the failure worth refusing here. The tempting
+     * > alternative — hand WooCommerce a `mapping` that lower-cases the header —
+     * > would resolve `SKU` and `Name` and still drop `Regular price`, `Stock`
+     * > and forty others, so the same file would import as products with names
+     * > and no prices and report success. Refusing names the problem while the
+     * > operator can still act on it.
+     *
+     * It asks the importer rather than re-deriving the answer, so the check
+     * cannot drift from the parse it is guarding: `get_mapped_keys()` is the
+     * very array `parse_data()` reads the rows with.
+     */
+    private static function requireMappableHeader(object $importer): void
+    {
+        /** @var list<string> $mapped */
+        $mapped = array_map('strval', (array) $importer->get_mapped_keys());
+
+        if (in_array('sku', $mapped, true)) {
+            return;
+        }
+
+        throw ApiException::invalidRequest('The header does not name WooCommerce\'s import fields.', [
+            'fields' => [
+                'file' => 'Missing: sku. WooCommerce\'s importer matches column names exactly and reads '
+                    . 'field names — sku, name, regular_price, stock_quantity — not the display labels '
+                    . '"SKU" and "Regular price" that a wp-admin product export writes. '
+                    . 'GET /export/products writes a header this route can read.',
+            ],
+            'columns_found' => $mapped,
+            'columns_required' => ['sku'],
+        ]);
     }
 
     /**

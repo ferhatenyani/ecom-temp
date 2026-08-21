@@ -784,6 +784,35 @@ check "the body opens with a real UTF-8 BOM" "efbbbf" \
 check "the CSV has a record after its header" "yes" \
   "$(sed -n '2p' <<<"$EXPORT_BODY" | grep -q ',' && echo yes || echo no)"
 
+# The products export, and the round trip it exists for.
+#
+# Every assertion above this line reads `/export/inventory`, which our own
+# writer produces and which has always named its columns. Not one of them ever
+# looks at `/export/products`, which WooCommerce's exporter produces — so the
+# whole stage was structurally blind to two real defects in that file in two
+# days: a missing header row, and then a header of WooCommerce's *display
+# labels* that no importer outside `wp-admin` can read. The second one was
+# worse than a refusal: a dry run answered `created: 33, failed: 0` for a file
+# whose every field had resolved empty.
+#
+# So the file is measured where the bug lived — over HTTP, on the products
+# route, by feeding the export straight back in. `mode=update` because the
+# products already exist: `updated` is the answer that proves the SKUs
+# resolved, and it is what the operator's export-edit-reimport errand asks for.
+PRODUCT_CSV=$(curl -s -m 60 -u "$CRED" "${API}/export/products?limit=2")
+PRODUCT_HEADER=$(head -1 <<<"$PRODUCT_CSV")
+check "the product export names import fields, not labels" "yes" \
+  "$(grep -q 'sku,' <<<"$PRODUCT_HEADER" && grep -q 'stock_quantity' <<<"$PRODUCT_HEADER" \
+     && ! grep -q 'Regular price' <<<"$PRODUCT_HEADER" && echo yes || echo no)"
+ROUNDTRIP=$(curl -s -m 60 -u "$CRED" -X POST -H 'Content-Type: text/csv' \
+  --data-binary "$PRODUCT_CSV" "${API}/import/products?mode=update")
+check "a products export round-trips over HTTP" "yes" \
+  "$(grep -q '"action":"updated"' <<<"$ROUNDTRIP" && echo yes || echo no)"
+# The negative half. An empty `sku` in the preview is what "created 33" was
+# hiding, and it is the one string that cannot appear in a working round trip.
+check "and no preview row resolved an empty SKU" "yes" \
+  "$(grep -q '"sku":""' <<<"$ROUNDTRIP" && echo no || echo yes)"
+
 # An error must never be served raw: a client would save the error message as
 # products.csv. The envelope comes back with the 4xx.
 ERROR_BODY=$(curl -s -m 30 -u "$CRED" "${API}/export/orders?limit=999999")

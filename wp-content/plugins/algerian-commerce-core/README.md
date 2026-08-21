@@ -184,7 +184,7 @@ tests/Unit/                  unit tests — no WordPress required
 | GET | `/analytics/cod` | `ac_view_analytics` | the COD funnel over a window |
 | POST | `/import/products` | `ac_manage_products` | CSV body; `dry_run` (default true), `mode=create\|update` |
 | POST | `/import/inventory` | `ac_manage_inventory` | CSV body; `dry_run` (default true) |
-| GET | `/export/products` | `ac_manage_products` | WooCommerce's own 40-column CSV |
+| GET | `/export/products` | `ac_manage_products` | WooCommerce's own CSV, headed with the fields `/import/products` reads back |
 | GET | `/export/inventory` | `ac_manage_inventory` | the columns `/import/inventory` reads back |
 | GET | `/export/orders` | `ac_manage_orders` | one row per order (`status`, `date_from`, `date_to`, `limit`) |
 | GET | `/export/customers` | `ac_manage_customers` | customer records, without lifetime statistics |
@@ -2828,6 +2828,50 @@ simply never required in a non-admin request. Measured 2026-08-16: with `is_admi
 So the product CSV format is reused, not reimplemented. Forking forty columns of variations, attributes,
 cross-sells and meta would break "never fork their data models" and produce a file no other WooCommerce
 tool could read — for a shop whose likeliest reason to export is to hand it to something else.
+
+### The export header names fields, because that is what the importer reads
+
+Export, edit in a spreadsheet, re-import is the entire reason both routes exist, and it did not work
+until `fix/product-export-field-names`. `WC_CSV_Exporter` keeps its columns as `id => label` and the
+export wrote the **labels** — `ID,Type,SKU,"GTIN, UPC, EAN, or ISBN",Name,…`. Nothing outside `wp-admin`
+reads those. `WC_Product_CSV_Importer::map_headers()` is `isset($mapping[$key]) ? $mapping[$key] : $key`:
+with no mapping passed the header *is* the field names, matched exactly, and the label-to-field table
+lives in `includes/admin/importers/mappings/` and is applied by the admin *controller* — which `WooCsv`
+does not load, that being the whole argument above.
+
+**The failure was not a refusal, which is what made it worth a branch.** Measured 2026-08-21 on the
+seeded 33-product catalogue, feeding `/export/products` straight into `POST /import/products`:
+
+    rows 33, created 33, updated 0, skipped 0, failed 0
+    first preview row: {"line": 2, "action": "created", "sku": "", "name": ""}
+
+An operator was told 33 products were about to be created out of a file from which not one field had been
+read. It survived a whole day and a previous branch's assertions because **two readers disagreed and only
+the lenient one was asked**: `CsvReader` lower-cases the header on purpose, so `requireColumns(['sku'])`
+was satisfied by `SKU`, while WooCommerce matched exactly and mapped nothing. `mode=update` was near
+unusable for the same reason — exporting is the only way an operator learns what the columns are called.
+
+Two changes, and the second is the one that makes the class of bug impossible:
+
+- The export writes `WC_CSV_Exporter`'s column **ids**, which are the import field names, with `stock`
+  corrected to `stock_quantity`. Composing WooCommerce's own two tables — the exporter's `id => label`
+  against the admin importer's `label => field` — found exactly two divergences in 52 columns, and the
+  other is `global_unique_id`, which has no entry in the admin table at all and which WooCommerce's own
+  admin importer therefore drops. Two corrections to two ids; not a copy of the mapping.
+- The import **asks WooCommerce's importer what it made of the header** — `get_mapped_keys()`, the very
+  array `parse_data()` reads the rows with — and answers 400 naming `sku` when the answer does not
+  contain it. A file this route cannot read is now a refusal, not a preview.
+
+A `mapping` that merely folded case was the tempting alternative and is worse: it resolves `SKU` and
+`Name` and still drops `Regular price`, `Stock` and forty others, so the file imports as products with no
+prices and reports success. A silent partial read is the failure worth refusing.
+
+**The rename costs nothing in WooCommerce's own admin importer**, which was the reason the labels were
+kept. Measured 2026-08-22 against `auto_map_columns()` and the `<select>` the mapping screen builds from
+`get_mapping_options()`: a field-name header arrives already equal to an option value and is preselected.
+40 of 52 columns, against 39 of 52 for the label header — the twelve attribute columns resolve
+identically in both, and the single difference is the GTIN column, which the label header loses and this
+one keeps.
 
 ### A CSV is a document a spreadsheet will run
 

@@ -18,8 +18,10 @@ use WC_Product_CSV_Exporter;
  * §64's stateless design exists to avoid. `get_csv_data()` is the third thing,
  * and it is protected.
  *
- * So this subclass exists to widen one method's visibility and nothing else. It
- * is the smallest possible amount of WooCommerce to reimplement: none of it.
+ * So this subclass widens one method's visibility, and renames the header row
+ * to the field names WooCommerce's importer reads — see `get_column_names()`.
+ * It is still the smallest possible amount of WooCommerce to reimplement: none
+ * of it. Both methods delegate; neither knows what a product is.
  *
  * **It must not be referenced before `WooCsv::load()` has run.** The parent
  * class is not autoloaded in a non-admin request, and PHP resolves a parent at
@@ -29,6 +31,82 @@ use WC_Product_CSV_Exporter;
  */
 final class ProductCsvExporter extends WC_Product_CSV_Exporter
 {
+    /**
+     * The two columns whose export id is not the importer's field name.
+     *
+     * `WC_CSV_Exporter` keeps its columns as `id => label`; the ids are the
+     * importer's field names *almost* everywhere, and composing WooCommerce's
+     * own two tables — this exporter's `id => label` against the admin
+     * importer's `label => field` — named the exceptions rather than leaving
+     * them to be discovered. Measured 2026-08-22 across all 52 columns of a
+     * real export, exactly two diverge:
+     *
+     * - `stock` is the export id and `stock_quantity` is the field. Emitting
+     *   `stock` would produce a file whose quantity column WooCommerce's
+     *   importer silently ignores, which is the same class of failure this
+     *   whole change is about — a file that looks right and imports nothing.
+     * - `global_unique_id` has **no** entry in the admin importer's label
+     *   table, so WooCommerce's own admin importer maps that column to the
+     *   lowercased label `gtin, upc, ean, or isbn` and drops it. The field
+     *   name is `global_unique_id` — `WC_Product::set_global_unique_id()`
+     *   exists and `set_props()` reaches it — so the id is already right and
+     *   this file's header is the one that carries the GTIN through.
+     *
+     * The table is deliberately a list of *exceptions* and not a copy of
+     * WooCommerce's mapping. A copy would be the label-to-field fork `WooCsv`
+     * exists to refuse; two entries are a correction to two ids.
+     *
+     * @var array<string, string>
+     */
+    private const IMPORTER_FIELD_NAMES = [
+        'stock' => 'stock_quantity',
+    ];
+
+    /**
+     * The same columns, named the way WooCommerce's *importer* reads them.
+     *
+     * > **Corrected in the build: the header was display labels, and no
+     * > importer outside `wp-admin` can read them.** Measured 2026-08-22, a
+     * > products export fed straight back into `POST /import/products` reported
+     * > `rows 33, created 33, updated 0, skipped 0, failed 0` with `sku` and
+     * > `name` **empty on every preview row** — a dry run telling an operator
+     * > that 33 products were about to be created out of a file from which
+     * > nothing had been read.
+     * >
+     * > `WC_Product_CSV_Importer::map_headers()` is `isset($mapping[$key]) ?
+     * > $mapping[$key] : $key` — with no mapping passed, the header **is** the
+     * > field names, matched exactly. The table that turns `SKU` into `sku`
+     * > lives in `includes/admin/importers/mappings/` and is applied by the
+     * > admin *controller*, not by the importer; `WooCsv` does not load
+     * > `admin/`, and that is the whole argument of that class.
+     * >
+     * > So the header is written as field names. `export_column_headers()`
+     * > emits the *values* of this map and `export_row()`/`generate_row_data()`
+     * > key off the ids, so replacing the values renames the header and moves
+     * > no data.
+     * >
+     * > **This costs nothing in WooCommerce's own admin importer, which was the
+     * > reason the labels were kept.** Measured 2026-08-22 against
+     * > `WC_Product_CSV_Importer_Controller::auto_map_columns()` and the
+     * > `<select>` the mapping screen builds from `get_mapping_options()`: a
+     * > field-name header arrives already equal to an option value and is
+     * > preselected — 40 of 52 columns, against 39 of 52 for the label header,
+     * > the twelve attribute columns resolving identically in both. The one
+     * > column that differs is the GTIN, which the label header loses and this
+     * > one keeps.
+     */
+    public function get_column_names()
+    {
+        $names = [];
+
+        foreach (array_keys(parent::get_column_names()) as $id) {
+            $id = (string) $id;
+            $names[$id] = self::IMPORTER_FIELD_NAMES[$id] ?? $id;
+        }
+
+        return $names;
+    }
+
     /**
      * The whole export as a string, with the BOM `CsvWriter` puts on ours.
      *

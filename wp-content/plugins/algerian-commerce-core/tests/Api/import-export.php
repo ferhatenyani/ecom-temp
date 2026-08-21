@@ -278,45 +278,98 @@ ac_check('and it names its columns, which a data row cannot', ac_req('GET', '/ex
 });
 
 /*
- * The half of the round trip that works, and the half that does not — asserted
- * rather than described, because the admin panel's export screen has to tell an
- * operator which is which.
+ * **The header is the importer's field names**, which it was not until
+ * `fix/product-export-field-names`.
  *
- * Our own reader lowercases the header, so the exported file now passes
- * `requireColumns(['sku'])` where before it was a 400. **WooCommerce's importer
- * still maps nothing**: its header-to-field table lives in
- * `includes/admin/importers/mappings/`, which is inside `admin/` and which
- * `WooCsv` deliberately does not load — the whole argument of that class is that
- * only the *loader* is admin-gated and the engine is not. So a re-import of the
- * exported file previews with an empty `sku` on every row, and the same file
- * with a lowercased header previews correctly.
+ * `WC_CSV_Exporter` keeps its columns as `id => label` and wrote the labels, so
+ * the export began `ID,Type,SKU,"GTIN, UPC, EAN, or ISBN",Name,…`. Nothing
+ * outside `wp-admin` reads those: `WC_Product_CSV_Importer::map_headers()` is
+ * `isset($mapping[$key]) ? $mapping[$key] : $key` and the label-to-field table
+ * is applied by the admin *controller*, which `WooCsv` does not load.
  *
- * Both are asserted so neither can drift silently, and the second is the
- * positive control that proves the first is about the header rather than about
- * the rows.
+ * `stock_quantity` is named on purpose. It is one of exactly two columns whose
+ * export id is not the importer's field name — the id is `stock` — so it is the
+ * column a header built from raw ids would silently drop, and a re-import that
+ * dropped every quantity is precisely this bug wearing a smaller hat.
+ */
+ac_check('the header names import fields, not display labels', ac_req('GET', '/export/products', null, [
+    'limit' => 2,
+]), 200, function ($d) {
+    $header = explode("\n", str_replace("\xEF\xBB\xBF", '', $d))[0];
+    $columns = str_getcsv(rtrim($header, "\r"));
+
+    foreach (['sku', 'name', 'regular_price', 'stock_quantity'] as $field) {
+        if (!in_array($field, $columns, true)) {
+            return "the header has no {$field} column: " . substr($header, 0, 120);
+        }
+    }
+
+    // The labels, which are what it used to say. Named rather than implied, so
+    // a revert cannot pass by adding `sku` alongside them.
+    foreach (['SKU', 'Regular price', 'Stock', 'Is featured?'] as $label) {
+        if (in_array($label, $columns, true)) {
+            return "the header still carries the display label {$label}";
+        }
+    }
+
+    return true;
+});
+
+/*
+ * **And the file round-trips**, which is the whole reason both routes exist.
+ *
+ * Measured 2026-08-21 against the previous version: the exported file previewed
+ * `rows 33, created 33, updated 0, skipped 0, failed 0` with `sku` and `name`
+ * empty on every row — a dry run reporting 33 creations out of a file from which
+ * WooCommerce had read nothing at all. `mode: update` is asserted because that
+ * is the operator's actual errand: export, edit in a spreadsheet, send it back.
  */
 $exported = ac_req('GET', '/export/products', null, ['limit' => 2])[1];
-$lowercased = (function (string $csv): string {
+
+ac_check('a products export round-trips, SKUs and all', ac_req('POST', '/import/products', $exported, [
+    'mode' => 'update',
+]), 200, function ($d) {
+    $preview = $d['data']['preview'] ?? [];
+    $skus = array_column($preview, 'sku');
+    $actions = array_unique(array_column($preview, 'action'));
+
+    if ($skus === [] || in_array('', $skus, true)) {
+        return 'the SKUs did not resolve: ' . wp_json_encode($skus);
+    }
+
+    return $actions === ['updated']
+        ?: 'products that exist were not reported as updates: ' . wp_json_encode($actions);
+});
+
+/*
+ * The negative control, and it is one character wide.
+ *
+ * `sku` is uppercased in the header and nothing else is touched — which is what
+ * a wp-admin product export calls that column. `CsvReader` lower-cases the
+ * header on purpose, so `requireColumns(['sku'])` is satisfied; WooCommerce
+ * matches exactly, so it maps nothing. Those two readings disagreeing, with only
+ * the lenient one asked, is the entire defect: the previous version answered
+ * **200** here with `created: 2` and an empty `sku` on both rows.
+ *
+ * A refusal, not a rescue. Handing WooCommerce a case-folding `mapping` would
+ * resolve `SKU` and `Name` and still drop `Regular price` and forty others, so
+ * the file would import as products with no prices and report success.
+ */
+$uppercasedSku = (function (string $csv): string {
     $lines = explode("\n", str_replace("\xEF\xBB\xBF", '', $csv));
-    $lines[0] = strtolower($lines[0]);
+    $lines[0] = preg_replace('/(^|,)sku(,|$)/', '$1SKU$2', $lines[0], 1);
 
     return implode("\n", $lines);
 })($exported);
 
-ac_check('the exported file gets past our own reader', ac_req('POST', '/import/products', $exported, [
-    'mode' => 'update',
-]), 200, function ($d) {
-    // Not "it round-trips": WooCommerce maps nothing off a display header here.
-    return ($d['data']['rows'] ?? 0) > 0 ?: 'no rows were parsed at all';
-});
-
-ac_check('and round-trips once the header is field names', ac_req('POST', '/import/products', $lowercased, [
-    'mode' => 'update',
-]), 200, function ($d) {
-    $skus = array_column($d['data']['preview'] ?? [], 'sku');
-
-    return $skus !== [] && !in_array('', $skus, true)
-        ?: 'the SKUs did not resolve: ' . wp_json_encode($skus);
+ac_check('a header the importer cannot map is refused, not previewed', ac_req(
+    'POST',
+    '/import/products',
+    $uppercasedSku,
+    ['mode' => 'update']
+), 400, function ($d) {
+    return str_contains((string) wp_json_encode($d['error']['details'] ?? []), 'sku')
+        ?: 'the refusal does not name the column: ' . wp_json_encode($d);
 });
 
 ac_check('an export beyond the cap is refused with the limit named', ac_req('GET', '/export/orders', null, [
