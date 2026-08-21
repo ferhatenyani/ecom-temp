@@ -974,7 +974,24 @@ The data to compute them honestly does not exist.
 
 Imports take the **CSV file as the raw request body** with `Content-Type: text/csv` — not JSON, not
 multipart. `dry_run` defaults to **true**: a client that forgets the flag previews and never writes.
-`mode` is `create` or `update` (products) — neither does both.
+`mode` is `create` or `update` (products) — neither does both, and it defaults to `create`.
+
+**Every export names its columns on the first line.** `/export/products` did not until
+`fix/product-export-header`: `ProductCsvExporter::toCsv()` called `get_csv_data()`, which is the rows,
+where `WC_CSV_Exporter::export()` sends `export_column_headers() . get_csv_data()`. So a 48-column file
+began `10,simple,AC-TAP-001,…` and `POST /import/products` read the first product's own values as the
+header, answering *"The file is missing required columns. Missing: sku."* with `columns_found` listing
+a product name as a column.
+
+**A product export still does not round-trip through `POST /import/products` unedited**, and that is a
+WooCommerce fact rather than a bug here. The header carries WooCommerce's **display labels** — `ID`,
+`SKU`, `GTIN, UPC, EAN, or ISBN` — because that is the file every other WooCommerce tool reads, and the
+table mapping those labels onto field names lives in `includes/admin/importers/mappings/`, inside
+`admin/`, which `WooCsv` deliberately does not load: the whole argument of that class is that only the
+*loader* is admin-gated and the engine is not. Measured 2026-08-21, a re-import parses every row and
+resolves an empty `sku` on each; the same file with a lowercased header resolves every SKU and previews
+`updated: 2`. Both directions are asserted in `tests/Api/import-export.php`. The inventory export, which
+uses our own writer and our own field names, round-trips as it stands.
 
 Exports return the file, not the envelope: `Content-Type: text/csv; charset=utf-8`, a
 `Content-Disposition` filename that is the API's, `Cache-Control: no-store`, and a body that **begins

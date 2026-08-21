@@ -36,11 +36,30 @@ final class ProductCsvExporter extends WC_Product_CSV_Exporter
      * so without it an Arabic product name arrives as mojibake — and a shop
      * whose product export is unreadable and whose order export is fine would
      * reasonably conclude the product export is broken.
+     *
+     * > **Corrected in the build: `get_csv_data()` is the rows and not the
+     * > file.** It was called on its own here, and `WC_CSV_Exporter` splits the
+     * > two — `export()` sends `export_column_headers() . get_csv_data()` and
+     * > this called only the second half. So **the product export had no header
+     * > row**: measured 2026-08-21, it began `10,simple,AC-TAP-001,…` where
+     * > `/export/orders`, `/export/inventory` and `/export/customers` all begin
+     * > with their column names.
+     * >
+     * > That is not cosmetic. A 52-column file with no column names is not
+     * > readable by a person, and it is **not re-importable by this API**:
+     * > `POST /import/products` reads the first line as the header, so the file
+     * > answered *"The file is missing required columns. Missing: sku."* with
+     * > `columns_found` listing one product's own values as though they were
+     * > column names. Export, edit, re-import is the entire reason both routes
+     * > exist, and the products half of it could not complete.
+     * >
+     * > Found while building the admin panel's import and export screen, where
+     * > that round trip is what the screen is for.
      */
     public function toCsv(): string
     {
         $this->prepare_data_to_export();
 
-        return CsvWriter::BOM . $this->get_csv_data();
+        return CsvWriter::BOM . $this->export_column_headers() . $this->get_csv_data();
     }
 }

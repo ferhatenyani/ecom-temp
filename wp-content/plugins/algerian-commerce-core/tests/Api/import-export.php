@@ -253,6 +253,72 @@ ac_check('the product export is WooCommerce\'s own format', ac_req('GET', '/expo
         ?: 'this does not look like the 40-column product CSV';
 });
 
+/*
+ * **And it names its columns**, which it did not until `fix/product-export-header`.
+ *
+ * `WC_CSV_Exporter` splits the file in two — `export()` sends
+ * `export_column_headers() . get_csv_data()` — and `ProductCsvExporter::toCsv()`
+ * called only the second half. So the product export began `10,simple,AC-TAP-001,…`
+ * while `/export/orders`, `/export/inventory` and `/export/customers` all began
+ * with their column names. A 48-column file with no column names is unreadable
+ * by a person, and `POST /import/products` read the first product's own values
+ * as the header and answered *"Missing: sku."*
+ *
+ * The assertion above could not see it: it counts commas on the first line, and
+ * a data row has more of them than the header does. This one names the column,
+ * which is the thing that was missing.
+ */
+ac_check('and it names its columns, which a data row cannot', ac_req('GET', '/export/products', null, [
+    'limit' => 2,
+]), 200, function ($d) {
+    $header = strtolower(explode("\n", str_replace("\xEF\xBB\xBF", '', $d))[0]);
+
+    return str_starts_with($header, 'id,') && str_contains($header, 'sku')
+        ?: 'the first line is not a header: ' . substr($header, 0, 80);
+});
+
+/*
+ * The half of the round trip that works, and the half that does not — asserted
+ * rather than described, because the admin panel's export screen has to tell an
+ * operator which is which.
+ *
+ * Our own reader lowercases the header, so the exported file now passes
+ * `requireColumns(['sku'])` where before it was a 400. **WooCommerce's importer
+ * still maps nothing**: its header-to-field table lives in
+ * `includes/admin/importers/mappings/`, which is inside `admin/` and which
+ * `WooCsv` deliberately does not load — the whole argument of that class is that
+ * only the *loader* is admin-gated and the engine is not. So a re-import of the
+ * exported file previews with an empty `sku` on every row, and the same file
+ * with a lowercased header previews correctly.
+ *
+ * Both are asserted so neither can drift silently, and the second is the
+ * positive control that proves the first is about the header rather than about
+ * the rows.
+ */
+$exported = ac_req('GET', '/export/products', null, ['limit' => 2])[1];
+$lowercased = (function (string $csv): string {
+    $lines = explode("\n", str_replace("\xEF\xBB\xBF", '', $csv));
+    $lines[0] = strtolower($lines[0]);
+
+    return implode("\n", $lines);
+})($exported);
+
+ac_check('the exported file gets past our own reader', ac_req('POST', '/import/products', $exported, [
+    'mode' => 'update',
+]), 200, function ($d) {
+    // Not "it round-trips": WooCommerce maps nothing off a display header here.
+    return ($d['data']['rows'] ?? 0) > 0 ?: 'no rows were parsed at all';
+});
+
+ac_check('and round-trips once the header is field names', ac_req('POST', '/import/products', $lowercased, [
+    'mode' => 'update',
+]), 200, function ($d) {
+    $skus = array_column($d['data']['preview'] ?? [], 'sku');
+
+    return $skus !== [] && !in_array('', $skus, true)
+        ?: 'the SKUs did not resolve: ' . wp_json_encode($skus);
+});
+
 ac_check('an export beyond the cap is refused with the limit named', ac_req('GET', '/export/orders', null, [
     'limit' => 999999,
 ]), 400);
