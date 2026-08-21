@@ -110,6 +110,17 @@ final class CmsService
         return $this->homepage();
     }
 
+    /**
+     * @param array<string, mixed> $criteria
+     * @return array{items: list<WP_Post>, total: int, excluded: int}
+     */
+    public function pages(array $criteria): array
+    {
+        Permissions::assert(Capabilities::MANAGE_CONTENT);
+
+        return $this->repository->pages($criteria);
+    }
+
     /** @param list<string> $statuses */
     public function page(string $path, array $statuses = CmsRepository::DEFAULT_STATUSES): WP_Post
     {
@@ -231,6 +242,34 @@ final class CmsService
         $page = $this->page($path, PageInput::STATUSES);
         $id = (int) $page->ID;
         $actual = $this->repository->pathFor($page);
+
+        /*
+         * A page an option points at is refused, and `?force=true` does not
+         * override it — unlike the children check below, where force is exactly
+         * what the flag is for.
+         *
+         * The two refusals guard different things and that is why they behave
+         * differently. Reparenting children is destructive but *recoverable*: an
+         * administrator who meant it can move them back. Deleting the checkout
+         * page leaves `woocommerce_checkout_page_id` pointing at nothing, and
+         * WooCommerce then reports a missing page rather than a broken setting —
+         * so the person who has to fix it starts from the wrong symptom.
+         *
+         * Clearing the option first is one step, and it is the step that says
+         * "this page is no longer the shop's checkout", which is the decision
+         * actually being made. `SystemPages` carries the rest of the argument.
+         */
+        $option = SystemPages::optionFor($id);
+
+        if ($option !== null) {
+            throw ApiException::conflict(
+                sprintf(
+                    'This page is registered as the shop\'s "%s" and cannot be deleted here. Clear that setting first.',
+                    $option
+                ),
+                ['option' => $option, 'path' => $actual]
+            );
+        }
 
         $children = $this->repository->childPageIds($id);
 

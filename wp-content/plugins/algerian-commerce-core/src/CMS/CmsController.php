@@ -16,8 +16,8 @@ use WP_REST_Response;
  * CMS endpoints — roadmap §61 (reads) and §89 (writes).
  *
  *   GET               /cms/homepage          PUT    /cms/homepage
- *   GET               /cms/pages/{path}      POST   /cms/pages
- *                                            PATCH  /cms/pages/{path}
+ *   GET               /cms/pages             POST   /cms/pages
+ *   GET               /cms/pages/{path}      PATCH  /cms/pages/{path}
  *                                            DELETE /cms/pages/{path}
  *   GET               /cms/banners           POST   /cms/banners
  *                                            PATCH  /cms/banners/{id}
@@ -179,9 +179,17 @@ final class CmsController extends AbstractController
         ]);
 
         register_rest_route($this->restNamespace(), '/cms/pages', [
-            'methods' => 'POST',
-            'callback' => $this->handle([$this, 'storePage']),
-            'permission_callback' => $guard,
+            [
+                'methods' => 'GET',
+                'callback' => $this->handle([$this, 'pages']),
+                'permission_callback' => $guard,
+                'args' => $this->paginationArgs() + $this->searchArg() + $this->statusArg(),
+            ],
+            [
+                'methods' => 'POST',
+                'callback' => $this->handle([$this, 'storePage']),
+                'permission_callback' => $guard,
+            ],
         ]);
 
         /*
@@ -339,6 +347,33 @@ final class CmsController extends AbstractController
         $meta = $result['problems'] === [] ? [] : ['problems' => $result['problems']];
 
         return Response::success($result['data'], 200, $meta);
+    }
+
+    public function pages(WP_REST_Request $request): WP_REST_Response
+    {
+        $page = (int) $request->get_param('page');
+        $perPage = (int) $request->get_param('per_page');
+
+        $result = $this->service->pages([
+            'page' => $page,
+            'per_page' => $perPage,
+            'search' => (string) $request->get_param('search'),
+            'statuses' => $this->statuses($request),
+        ]);
+
+        /*
+         * `excluded_system` rather than a silent omission. The index leaves out
+         * the pages whose body the shop generates — see `SystemPages` — and a
+         * count that is quietly four short of what wp-admin shows is a count
+         * somebody will eventually file a bug about. Reporting the number makes
+         * the difference explicable without publishing the rows themselves.
+         */
+        return Response::success(
+            CmsPresenter::pages($result['items']),
+            200,
+            Response::paginationMeta($result['total'], $page, $perPage)
+                + ['excluded_system' => $result['excluded']]
+        );
     }
 
     public function page(WP_REST_Request $request): WP_REST_Response
