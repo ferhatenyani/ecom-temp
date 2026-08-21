@@ -37,7 +37,7 @@ final class AuditRepository
     }
 
     /**
-     * @param array{action?: string, actor_id?: int, resource_type?: string} $filters
+     * @param array{action?: string, actor_id?: int, resource_type?: string, resource_id?: string, date_from?: string, date_to?: string} $filters
      * @return list<array<string, mixed>>
      */
     public function paginate(array $filters, int $page, int $perPage): array
@@ -60,7 +60,7 @@ final class AuditRepository
         return is_array($rows) ? array_map([$this, 'hydrate'], $rows) : [];
     }
 
-    /** @param array{action?: string, actor_id?: int, resource_type?: string} $filters */
+    /** @param array{action?: string, actor_id?: int, resource_type?: string, resource_id?: string, date_from?: string, date_to?: string} $filters */
     public function count(array $filters): int
     {
         [$where, $params] = $this->buildWhere($filters);
@@ -101,6 +101,29 @@ final class AuditRepository
         if (!empty($filters['resource_id'])) {
             $clauses[] = 'resource_id = %s';
             $params[] = (string) $filters['resource_id'];
+        }
+
+        /*
+         * Both ends cover the whole day, matching `/notifications` and
+         * `/orders`. `created_at` is UTC — `AuditEvent` stamps
+         * `gmdate('Y-m-d H:i:s')` and nothing else writes this table — so the
+         * bounds are UTC too rather than quietly shifting a shop's day.
+         *
+         * This is the difference between a usable screen and a scroll: the
+         * trail is append-only and unpruned, so a shop a few months old
+         * already answers tens of thousands of rows, and at 20 a page "what
+         * happened yesterday" is otherwise a page number somebody has to
+         * guess. `KEY created_at` has been on the table since migration 001,
+         * put there for exactly this range.
+         */
+        if (($filters['date_from'] ?? '') !== '') {
+            $clauses[] = 'created_at >= %s';
+            $params[] = (string) $filters['date_from'] . ' 00:00:00';
+        }
+
+        if (($filters['date_to'] ?? '') !== '') {
+            $clauses[] = 'created_at <= %s';
+            $params[] = (string) $filters['date_to'] . ' 23:59:59';
         }
 
         return [$clauses === [] ? '' : 'WHERE ' . implode(' AND ', $clauses), $params];
