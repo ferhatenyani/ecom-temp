@@ -309,7 +309,7 @@ variations and term meta, so the catalogue survives; bookmarked URLs do not.
 | `page` `per_page` | integer | `per_page` is capped at 100 |
 | `search` `sku` | string | `search` is a substring match, not relevance ranking |
 | `status` | enum | `draft` `pending` `private` `publish` |
-| `orderby` `order` | enum | `date id title price sku menu_order popularity rating` |
+| `orderby` `order` | enum | `date id title price sku menu_order popularity rating` — 12 of the 16 combinations are measured sorting; see below |
 | `category` `tag` | `12` or `12,15` | **term ids**, repeatable as a comma list |
 | `min_price` `max_price` | number | the **effective** price — a discounted product filters at its sale price |
 | `attributes[pa_size]` | `m,l` | term **slugs**; values within one attribute are alternatives, different attributes narrow together |
@@ -322,6 +322,41 @@ variations and term meta, so the catalogue survives; bookmarked URLs do not.
 attribute can be filtered or counted**: an attribute typed directly onto one
 product has no shared vocabulary and no term to count. Naming one is a `400`
 whose `details.facetable_attributes` lists what this shop does offer.
+
+### `orderby`: twelve of sixteen measured, and two that nothing here can settle
+
+Eight values, two directions. Measured 2026-08-25 against the live 28-product catalogue, each value
+checked against the order the field itself implies and counted for distinct values first, so a column
+where every row ties could not fake a pass:
+
+| `orderby` | distinct values | verdict |
+|---|---|---|
+| `date` (default) | 16 | sorts, both directions |
+| `id` | 28 | sorts, both directions |
+| `title` | 28 | sorts, both directions |
+| `price` | 21 | sorts, both directions |
+| `sku` | 28 | sorts, both directions |
+| `popularity` | 13 | sorts, both directions |
+| `menu_order` | **1** | **unprovable here** — every product in the shop is `menu_order` 0 |
+| `rating` | **1** | **unprovable here** — every product is `_wc_average_rating` 0.00 |
+
+The two unprovable rows are not failures. A field on which every row ties answers identically whether
+the sort works or does nothing at all, which is exactly the degeneracy that let a client read a working
+coupon sort as a broken one. Neither is a claim that they work: **do not offer `menu_order` or `rating`
+as a sort column on the strength of this table.**
+
+`tests/Api/products.php` settles `menu_order` separately, on four products of its own carrying real
+values 1–4 — the endpoint does sort by it. That proves the parameter, not the catalogue: until somebody
+sets `menu_order` on real products, a shopper choosing it sees nothing move. `rating` gets no such
+fixture, because `_wc_average_rating` is derived from a product's approved reviews and WooCommerce
+recomputes it — writing one in would assert a number the system overwrites. Proving `rating` needs real
+reviews, and nobody has built them.
+
+The same suite builds those four products with id, title, SKU, price, popularity, `menu_order` and date
+orders that are **mutually distinct**, and asserts each in both directions. That distinctness is the
+floor: neuter `ProductRepository::orderingClause()` and eight of the fourteen fail. The six that survive
+are `title`, `menu_order` and `date` — the three values WooCommerce's own product query honours without
+help, which is precisely the set that repair never touched.
 
 ### Configurable options — §83
 

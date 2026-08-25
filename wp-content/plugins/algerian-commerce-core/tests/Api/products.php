@@ -919,11 +919,31 @@ echo PHP_EOL, "── every published orderby actually sorts ──", PHP_EOL;
  * full 28-row catalogue in **byte-identical order to `date`**, in both
  * directions — accepted with a 200 and silently unsorted, because
  * `WC_Product_Data_Store_CPT` drops the `orderby` vocabulary it does not
- * recognise. See `ProductRepository::orderingClause()`.
+ * recognise. `ProductRepository::orderingClause()` is that repair.
  *
- * The fixture's effective prices are deliberately distinct — 100, 190 (sale),
- * 300, 400, 500, 590 — so price order and SKU order are different sequences and
- * a fallback to either cannot pass as the other.
+ * **Re-measured 2026-08-25, after it: twelve of the sixteen combinations
+ * genuinely sort** — `date`, `id`, `title`, `price`, `sku` and `popularity`,
+ * each in both directions, checked against the order the field itself implies
+ * and with enough distinct values per field that ties cannot fake a pass. The
+ * paragraph that used to stand here still named `sku` and `popularity` among
+ * the broken, four assertions below one that proves `sku` sorts; a measurement
+ * that outlives its repair is how a fixed thing gets worked around forever.
+ *
+ * Only `menu_order` and `rating` are unsettled, and not because they fail:
+ * every product in the 28-row catalogue carries 0 for both, so nothing there
+ * can tell a working sort from a dead one. The next section settles
+ * `menu_order` on a fixture of its own, and says why `rating` cannot be
+ * settled the same way.
+ *
+ * **What this section proves is narrower than it looks**, which is why that one
+ * exists. `AC-F82-1`…`AC-F82-6` were created in id order, are named after their
+ * SKUs, and are priced 100…590 ascending in that same order — so id, title, SKU
+ * and price order are one sequence wearing four names. `$byPrice` below is the
+ * expected result for `sku` as much as for `price`, because here they are the
+ * same six SKUs in the same order, and a fallback from `sku` to `id`, or from
+ * `title` to `price`, passes every assertion in this section. Only `date order
+ * is not price order` controls anything, and it rules out a *total* fallback to
+ * the default and nothing finer.
  */
 $byPrice = ['AC-F82-1', 'AC-F82-2', 'AC-F82-3', 'AC-F82-4', 'AC-F82-5', 'AC-F82-6'];
 
@@ -950,6 +970,172 @@ ac_assert('ascending and descending differ', ac82_order('price', 'asc') !== ac82
 
 ac_assert('every row survives being sorted', count(ac82_order('price', 'asc')) === 6
     ?: 'sorting by price returned ' . count(ac82_order('price', 'asc')) . ' of 6 rows');
+
+echo PHP_EOL, "── orderby, on a fixture whose orders are mutually distinct ──", PHP_EOL;
+
+/*
+ * The control the section above cannot be: four products of its own, built the
+ * way `tests/Api/coupons.php`'s `── orderby, and the positive control it never
+ * had ──` builds three, and for the same reason.
+ *
+ * Seven sequences, all different from each other. That distinctness is the
+ * floor — a repository that ignored `orderby` returns one sequence for all
+ * seven and fails six of them, and no single field's order can stand in for
+ * another's, which is exactly what the six-product fixture above allows.
+ *
+ *   #  sku  title    price  total_sales  menu_order  created
+ *   1  -C   delta     400        3            2      4th (newest)
+ *   2  -D   alpha     300        1            4      3rd
+ *   3  -A   charlie   100        4            3      2nd
+ *   4  -B   bravo     200        2            1      1st (oldest)
+ *
+ * Created in that order, so ids ascend 1,2,3,4 while every other field
+ * disagrees with them and with each other. `date` is deliberately the exact
+ * reverse of `id`: on coupons the one assertion that survived a neutered
+ * repository was `date`, whose fallback *is* the ordering it asks for, so a
+ * `date` fixture that merely happened to agree with id order would prove
+ * nothing at all.
+ *
+ * Scoped by a search token of its own — the listing never sees `AC82`'s
+ * catalogue or the seeded shop's 28 rows.
+ */
+
+$ORD = 'F82Ordering';
+$ORD_SKU = 'AC-F82O-';
+
+/** SKU suffix => [title word, price, total_sales, menu_order, created]. In creation order. */
+$orderFixtures = [
+    'C' => ['delta', '400', 3, 2, '2026-04-04 09:00:00'],
+    'D' => ['alpha', '300', 1, 4, '2026-03-03 09:00:00'],
+    'A' => ['charlie', '100', 4, 3, '2026-02-02 09:00:00'],
+    'B' => ['bravo', '200', 2, 1, '2026-01-01 09:00:00'],
+];
+
+$orderBuilt = 0;
+
+foreach ($orderFixtures as $suffix => [$word, $price, $sales, $menuOrder, $created]) {
+    ac_purge_sku($ORD_SKU . $suffix);
+
+    $product = new WC_Product_Simple();
+    $product->set_name($ORD . ' ' . $word);
+    $product->set_sku($ORD_SKU . $suffix);
+    $product->set_regular_price($price);
+    $product->set_status('publish');
+    $product->set_catalog_visibility('visible');
+    $product->set_menu_order($menuOrder);
+
+    /*
+     * `total_sales` is the shop's count and not the panel's, so it is read-only
+     * over the wire and set through the CRUD class here — as `usage_count` is
+     * on coupons. It has to go through `save()` for a second reason: the column
+     * `orderby=popularity` actually sorts on is
+     * `wc_product_meta_lookup.total_sales`, which WooCommerce writes from the
+     * data store. A fixture that poked the postmeta row directly would sort by
+     * a stale lookup and fail for a reason that has nothing to do with the API.
+     */
+    $product->set_total_sales($sales);
+    $product->set_date_created($created);
+
+    if ((int) $product->save() > 0) {
+        $orderBuilt++;
+    }
+}
+
+ac_assert('four fixtures to sort', $orderBuilt === 4 ?: "built {$orderBuilt}");
+
+/** The ordering fixture's SKU suffixes, in the order a listing returned them. */
+$ordering = static function (string $orderby, string $order) use ($ORD, $ORD_SKU): array {
+    [$status, $data] = ac_req('GET', '/products', null, [
+        'search' => $ORD,
+        'per_page' => 20,
+        'orderby' => $orderby,
+        'order' => $order,
+    ]);
+
+    if ($status !== 200) {
+        return ["HTTP {$status}"];
+    }
+
+    return array_map(
+        static fn (array $row): string => str_replace($ORD_SKU, '', (string) $row['sku']),
+        $data['data'] ?? []
+    );
+};
+
+$expected = [
+    'id' => ['C', 'D', 'A', 'B'],
+    'title' => ['D', 'B', 'A', 'C'],
+    'sku' => ['A', 'B', 'C', 'D'],
+    'price' => ['A', 'B', 'D', 'C'],
+    'popularity' => ['D', 'B', 'C', 'A'],
+    'menu_order' => ['B', 'C', 'A', 'D'],
+    'date' => ['B', 'A', 'D', 'C'],
+];
+
+ac_assert(
+    'the seven orders are mutually distinct',
+    count(array_unique(array_map(static fn (array $o): string => implode('', $o), $expected))) === 7
+        ?: 'the fixture does not separate the seven values, so nothing below proves anything'
+);
+
+foreach ($expected as $orderby => $ascending) {
+    $got = $ordering($orderby, 'asc');
+
+    ac_assert(
+        "orderby={$orderby} really sorts, ascending",
+        $got === $ascending ?: 'got ' . (implode('', $got) ?: 'nothing')
+    );
+
+    $gotDesc = $ordering($orderby, 'desc');
+
+    ac_assert(
+        '...and order=desc reverses it',
+        $gotDesc === array_reverse($ascending) ?: 'got ' . (implode('', $gotDesc) ?: 'nothing')
+    );
+}
+
+/*
+ * **`menu_order` is asserted above; `rating` is not, and the asymmetry is the
+ * point rather than an omission.**
+ *
+ * The live catalogue settles neither: all 28 products carry `menu_order` 0 and
+ * `_wc_average_rating` 0.00, so both tie on every row and answer identically
+ * whatever the repository does. This project's rule is that a control ships
+ * only once someone measured it working, and a degenerate fixture is not a
+ * measurement — that is what §85 paid for on coupons.
+ *
+ * `menu_order` gets distinct values because it *can* have them honestly: one
+ * setter, and the products really do carry 1, 2, 3, 4. Read the assertion for
+ * precisely what it says — **the endpoint sorts by `menu_order`** — and not for
+ * what it does not. The shop still cannot exercise it, so a panel offering it
+ * as a sort column shows a shopper nothing moving until somebody sets the
+ * values on real products. Both halves belong in the docs, and are there.
+ *
+ * `rating` has no honest fixture. `_wc_average_rating` is **derived** —
+ * WooCommerce recomputes it from a product's approved reviews on every review
+ * change — so writing it directly asserts a number the system does not agree
+ * with and will overwrite, which is worse than asserting nothing. Proving it
+ * needs real reviews, and until someone builds them `rating` stays recorded as
+ * unprovable, with the reason, rather than as working.
+ *
+ * What can be honestly said about it is said below, and no more: it is
+ * accepted, and it does not lose rows. Whether it *orders* them is untested.
+ */
+ac_assert(
+    'rating is accepted and keeps every row — all this fixture can prove',
+    count($ordering('rating', 'asc')) === 4
+        ?: 'orderby=rating returned ' . (implode('', $ordering('rating', 'asc')) ?: 'nothing')
+);
+
+foreach (array_keys($orderFixtures) as $suffix) {
+    ac_purge_sku($ORD_SKU . $suffix);
+}
+
+ac_assert(
+    'the ordering fixture left nothing behind',
+    wc_get_products(['limit' => 5, 'return' => 'ids', 'status' => ['publish', 'draft', 'trash'], 's' => $ORD]) === []
+        ?: 'ordering fixture products survived teardown'
+);
 
 echo PHP_EOL, "── two filters compose ──", PHP_EOL;
 

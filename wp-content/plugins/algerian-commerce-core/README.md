@@ -609,6 +609,44 @@ fallback. Lists exclude variations — those are addressed through their parent.
 
 `GET /product-categories` is read-only, paginated, filterable by `search` and `parent`.
 
+### Twelve of the sixteen sorts are measured, and the fixture that proved four of them was lying
+
+`orderingClause()` repaired five values that WooCommerce accepted and dropped. Re-measured 2026-08-25
+against the live 28-product catalogue, with distinct-value counts taken first so a column where every
+row ties could not fake a pass: **`date`, `id`, `title`, `price`, `sku` and `popularity` all genuinely
+sort, in both directions — twelve of the sixteen combinations.**
+
+The other four are `menu_order` and `rating`, and they are *unprovable* rather than broken. Every
+product in the shop carries 0 for both, so each ties on every row and answers identically whether the
+sort works or does nothing whatsoever. That is the same degeneracy §85 hit on coupons, where a tie on
+every row got read as a dead parameter and a whole screen was built around the misreading.
+
+**The existing control could not have caught any of this.** `AC-F82-1`…`AC-F82-6` are created in id
+order, named after their SKUs, and priced 100…590 ascending in that same order, so id, title, SKU and
+price order are one sequence wearing four names — the suite used the identical expected array for
+`price` and for `sku`, because on that fixture they *are* identical. A fallback from `sku` to `id`, or
+from `title` to `price`, passed everything. Neutering `orderingClause()` proves it: exactly one of that
+section's six assertions fails, and it is not the one written as the control.
+
+So `tests/Api/products.php` now builds four products of its own — as `tests/Api/coupons.php` does, and
+for the same reason — with id, title, SKU, price, popularity, `menu_order` and date orders that are
+**mutually distinct**, and asserts each in both directions. The floor is that distinctness: neuter
+`orderingClause()` and eight of the fourteen fail. The six survivors are `title`, `menu_order` and
+`date`, which is not luck — they are the three values absent from `ORDERBY_COLUMN` because WooCommerce
+honours them itself, so the repair never touched them.
+
+`menu_order` is asserted there and `rating` is not. `menu_order` can hold real distinct values for one
+setter call, so the fixture gives it 1–4 and the assertion says what it means: **the endpoint sorts by
+`menu_order`** — not that the catalogue can show it, which it still cannot until somebody sets the
+values. `rating` has no honest fixture: `_wc_average_rating` is derived from approved reviews and
+WooCommerce recomputes it, so writing one in would pin a number the system overwrites. A green
+assertion resting on a value the system disagrees with is worse than none, so `rating` is recorded
+unprovable with the reason. The suite asserts only that it is accepted and loses no rows.
+
+**The rule this leaves behind**: a sort is not verified by a fixture that cannot distinguish it working
+from it not working — and a fixture whose fields all ascend together is that fixture, however many
+assertions it carries.
+
 ## Inventory
 
 Roadmap §49, docs/PLAN.md §7. One rule shapes the whole module:
