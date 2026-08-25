@@ -181,8 +181,12 @@ password** until the window passes — an operator lifts it with
 ## Pagination
 
 Every list endpoint takes `page` (default 1) and `per_page` (default **20**, maximum **100**), and
-returns the `meta` block shown above. Most also take `orderby` and `order`. Asking for more than 100 is
-clamped, not an error.
+returns the `meta` block shown above. Most also take `orderby` and `order`.
+
+**Asking for more than 100 is a 400, not a clamp** — corrected here after measurement: `?per_page=101`
+answers 400 on `/coupons`, `/products`, `/orders` and `/customers` alike, and `tests/Api/coupons.php`
+has asserted the refusal all along. A client written against the old sentence would have expected 100
+rows and got an error.
 
 ---
 
@@ -700,6 +704,24 @@ not build UI that requires it.
 Types: `percent`, `fixed_cart`, `fixed_product`. Codes are lowercased on save.
 `maximum_discount` is **refused by name** — WooCommerce has no such field, and `maximum_amount` caps the
 *cart*, not the discount.
+
+### `orderby` works, and here is the control that proves it
+
+`orderby` takes `date` (default), `id`, `code` and `usage`, with `order` as `asc` or `desc`. Anything
+else is a 400. **All four genuinely reorder** — `usage` numerically, so 99 sorts above 7 rather than
+below it.
+
+That sentence needs the proof beside it, because the absence of one was read as evidence of the
+opposite. The seeded shop's four coupons share a single `post_date` and all carry `usage_count` 0, so
+`date` and `usage` tie on every row and answer identically whatever the repository does; a client that
+tried those two, saw no movement, and never checked `id` or `code` against the unparameterised request
+would conclude the parameter was accepted and ignored. One did, and shipped a coupon list with no
+sorting on the strength of it.
+
+`tests/Api/coupons.php` now builds three coupons whose code, id, date and usage orders are **mutually
+distinct**, and asserts each ordering in both directions. With `applyOrderby()` neutered to return its
+arguments untouched, six of those eight assertions fail — and the two that still pass are `date`, whose
+fallback is the very ordering it asks for. That is why `date` alone can never answer this question.
 
 ### Restrictions are ids, and they are checked
 

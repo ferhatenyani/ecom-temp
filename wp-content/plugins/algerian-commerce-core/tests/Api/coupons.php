@@ -139,6 +139,8 @@ ac_check('a negative amount is refused', ac_req('POST', '/coupons', ['code' => '
 ac_check('an unknown field is refused', ac_req('PATCH', "/coupons/{$id}", ['nonsense' => 1]), 400);
 ac_check('a bad expiry is refused', ac_req('PATCH', "/coupons/{$id}", ['date_expires' => '2027-02-31']), 400);
 ac_check('minimum above maximum is refused', ac_req('PATCH', "/coupons/{$id}", ['minimum_amount' => '900', 'maximum_amount' => '100']), 400);
+// Paired with the positive control below — on its own this assertion is passed
+// just as happily by a router that validates the parameter and then ignores it.
 ac_check('an unknown orderby is refused', ac_req('GET', '/coupons', null, ['orderby' => 'post_password']), 400);
 
 /*
@@ -151,6 +153,114 @@ ac_check('a discount cap is refused with the reason', ac_req('POST', '/coupons',
 ]), 400, static fn (array $d): bool|string => str_contains(
     (string) ($d['error']['details']['fields']['maximum_discount'] ?? ''), 'maximum_amount'
 ) ? true : 'the reason did not name maximum_amount');
+
+echo PHP_EOL, "── orderby, and the positive control it never had ──", PHP_EOL;
+
+/*
+ * **This section exists because its absence was read as a measurement.**
+ *
+ * The refusal above was the only thing here that touched `orderby`, and a
+ * negative alone settles nothing: a repository that validates the parameter and
+ * then drops it passes it exactly as a working one does. The panel looked for a
+ * positive control, found none, recorded `orderby` as accepted-and-ignored,
+ * reproduced that in its mock — with a test pinning the identical sequence — and
+ * shipped its coupon list with no sorting. All four values in fact work.
+ *
+ * **The seeded shop cannot settle it either way.** Its four coupons share one
+ * `post_date` and all carry `usage_count` 0, so `date` and `usage` tie on every
+ * row and answer identically whatever the repository does. That degeneracy is
+ * what made the sort look inert, and it is why this builds fixtures of its own
+ * rather than leaning on the seed — the same reason `tests/Api/products.php`
+ * builds its own catalogue.
+ *
+ * The three are given code, id, date and usage orders that are **mutually
+ * distinct**, which is the floor: a repository ignoring the parameter returns
+ * one sequence for all four values and fails three of them, and one sorting
+ * `usage` as text rather than as a number puts 99 before 7 and fails that one.
+ */
+
+$SORT_PREFIX = 'ac-sort-';
+
+/* code suffix => [usage_count, post_date]. Deliberately not in id order: ids
+   ascend charlie < alpha < bravo, so a `date` sort that silently fell back to
+   `id` would still be caught. */
+$sortFixtures = [
+    'charlie' => [7, '2026-01-03 09:00:00'],
+    'alpha' => [99, '2026-01-01 09:00:00'],
+    'bravo' => [1, '2026-01-05 09:00:00'],
+];
+
+foreach (array_keys($sortFixtures) as $suffix) {
+    $stale = wc_get_coupon_id_by_code($SORT_PREFIX . $suffix);
+    if ($stale) { wp_delete_post($stale, true); }
+}
+
+$sortBuilt = 0;
+foreach ($sortFixtures as $suffix => [$usage, $date]) {
+    [$status, $body] = ac_req('POST', '/coupons', ['code' => $SORT_PREFIX . $suffix, 'amount' => '5']);
+    $newId = (int) ($body['data']['id'] ?? 0);
+
+    if ($status !== 201 || $newId === 0) { continue; }
+
+    // `usage_count` is read-only over the wire — deliberately, it is the shop's
+    // count and not the panel's — so it is set through the CRUD class here.
+    $coupon = new WC_Coupon($newId);
+    $coupon->set_usage_count($usage);
+    $coupon->save();
+
+    wp_update_post(['ID' => $newId, 'post_date' => $date, 'post_date_gmt' => get_gmt_from_date($date)]);
+    clean_post_cache($newId);
+    $sortBuilt++;
+}
+
+ac_assert('three fixtures to sort', $sortBuilt === 3 ? true : "built {$sortBuilt}");
+
+$sortOrder = static function (string $orderby, string $order) use ($SORT_PREFIX): array {
+    [$status, $body] = ac_req('GET', '/coupons', null, [
+        'search' => rtrim($SORT_PREFIX, '-'),
+        'per_page' => 20,
+        'orderby' => $orderby,
+        'order' => $order,
+    ]);
+
+    return $status === 200
+        ? array_map(static fn (array $row): string => (string) $row['code'], $body['data'] ?? [])
+        : [];
+};
+
+$expected = [
+    'code' => ['alpha', 'bravo', 'charlie'],
+    'id' => ['charlie', 'alpha', 'bravo'],
+    'date' => ['alpha', 'charlie', 'bravo'],
+    'usage' => ['bravo', 'charlie', 'alpha'],
+];
+
+ac_assert(
+    'the four orders are mutually distinct',
+    count(array_unique(array_map(static fn (array $o): string => implode(',', $o), $expected))) === 4
+        ? true : 'the fixtures do not separate the four values, so nothing below proves anything',
+);
+
+foreach ($expected as $orderby => $ascending) {
+    $want = array_map(static fn (string $s): string => $SORT_PREFIX . $s, $ascending);
+
+    $got = $sortOrder($orderby, 'asc');
+    ac_assert(
+        "orderby={$orderby} really sorts, ascending",
+        $got === $want ? true : 'got ' . (implode(',', $got) ?: 'nothing'),
+    );
+
+    $gotDesc = $sortOrder($orderby, 'desc');
+    ac_assert(
+        "...and order=desc reverses it",
+        $gotDesc === array_reverse($want) ? true : 'got ' . (implode(',', $gotDesc) ?: 'nothing'),
+    );
+}
+
+foreach (array_keys($sortFixtures) as $suffix) {
+    $leftover = wc_get_coupon_id_by_code($SORT_PREFIX . $suffix);
+    if ($leftover) { wp_delete_post($leftover, true); }
+}
 
 echo PHP_EOL, "── a percentage cannot exceed 100 ──", PHP_EOL;
 

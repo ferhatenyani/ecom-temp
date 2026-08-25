@@ -950,6 +950,29 @@ A client PATCHing back a body this API had just produced got a 400 about two fie
 Thresholds are now `null` when absent — the treatment `usage_limit` already had — and the input accepts
 either date shape.
 
+### A working sort that a whole screen was built around not having
+
+`applyOrderby()` was correct the entire time. `orderby=date|id|code|usage` all reorder, `usage`
+numerically. No code changed here — what was missing was a **positive control**, and its absence got
+read as a measurement.
+
+The only assertion touching `orderby` was *an unknown orderby is refused*, and a negative alone settles
+nothing: a repository that validates the parameter and then drops it passes that test exactly as a
+working one does. Meanwhile the seeded shop cannot separate the cases — its four coupons share one
+`post_date` and all carry `usage_count` 0, so `date` and `usage` tie on every row. Someone tried those
+two, saw nothing move, never checked `id` or `code` against the unparameterised request, and concluded
+the parameter was accepted and ignored. The admin panel then reproduced that in its own mock, pinned it
+with a test asserting the identical sequence, and shipped its coupon list with no sorting.
+
+The suite now builds three coupons of its own — as `tests/Api/products.php` does, and for the same
+reason — with code, id, date and usage orders that are **mutually distinct**, and asserts all four in
+both directions. The floor is that distinctness: neuter `applyOrderby()` to return its arguments
+untouched and six of the eight fail. The two that survive are `date`, because the fallback *is* date.
+A control built only on `date` would have been green against a completely dead parameter.
+
+**The lesson is the one §85 already paid for**: a filter or a sort is not verified by a fixture that
+cannot distinguish it working from it not working. Where the seed is degenerate, the test builds its own.
+
 ## Notifications (§29, §30, step 34)
 
 Migration **010**. No REST routes: §29 asks for an abstraction, not an endpoint.
