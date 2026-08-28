@@ -2542,6 +2542,41 @@ application code runs, so the two numbers move together. And `docker/apache-word
 and that block is the layer that does not depend on either being right. `scripts/test-api.sh` asserts
 it, because a vhost edit could silently drop it.
 
+### Deleting is permanent, so the check happens before the button
+
+`MediaRepository::delete()` is `wp_delete_attachment($id, true)` — force, not trash. The row goes and
+the file and its generated sizes leave the disk. An earlier docblock called an accidental delete "a
+recoverable mistake"; it is not, and `MediaService::delete()` now says what the code does.
+
+The fix is not a usage check inside `delete()`. That would be five queries paid by every caller to
+guard the decision one caller in a thousand gets wrong, and a hard refusal would make a deliberately
+unused picture undeletable. `GET /media/{id}/usage` is the same check, on demand: one attachment, one
+request, at the moment a person opens the delete dialog.
+
+`MediaUsageRepository` answers it from **five stores, not the eight they look like**. A product's
+featured image, a variation's image, a page's thumbnail and a banner's thumbnail are all
+`_thumbnail_id` — WooCommerce maps `image_id` onto it for products and variations, and
+`CmsRepository::applyThumbnail()` is `set_post_thumbnail()` — so one indexed query answers four, and
+the post type tells them apart. The other four are `_product_image_gallery`, `_ac_option_set`,
+`_ac_seo_image_id` and `store.logo_id` in `ac_client_settings`.
+
+Two of those are documents stored as text — a comma-separated list and a JSON blob — and neither can
+be matched exactly in SQL. Both LIKEs are **candidate filters only**, bounded to 100 rows: the answer
+is decided in PHP, by splitting the list or decoding the document, so `12` never reports `120` and a
+foreign key inside the JSON never becomes a reference. `tests/Api/media.php` asserts both, each with
+the positive control that makes the negative mean something.
+
+### What the endpoint cannot promise, and says so
+
+The homepage document stores per-section `data` with **no schema per type** (`HomepageSections`
+validates the `type` and that `data` is an object, nothing more), so `{"type":"hero","data":{"image":
+42}}` is a valid, stored, unfindable reference. `ContentHtml::ALLOWED` permits `<img>`, so an image
+dropped into a page, banner, product or email body is a URL rather than an id.
+
+The response therefore carries `checked` and `incomplete` beside `total`, and both are named rather
+than left to inference — a caller told only what *was* checked will assume the complement was too.
+That is what lets the panel write "3 known uses" and have the sentence be true.
+
 ### Where the upload tests live, and why they are split
 
 `tests/Api/media.php` proves every hostile file is refused, through the real route. It stops there:

@@ -987,6 +987,7 @@ predates §89, or that was written in wp-admin, carries no such guarantee.
 | GET | `/media` | `ac_manage_content` |
 | POST | `/media` | `ac_manage_content` |
 | GET, PATCH, DELETE | `/media/{id}` | `ac_manage_content` |
+| GET | `/media/{id}/usage` | `ac_manage_content` |
 
 `POST /media` is `multipart/form-data` with the file in a field named `file`, plus optional `alt`,
 `title`, `caption`. **jpg, jpeg, png and webp only.** The stored filename is generated here, not taken
@@ -994,6 +995,41 @@ from you, and the extension comes from the sniffed type. Every accepted image is
 pixels, which strips metadata. Over the cap is 413, wrong type is 415.
 
 Note the capability: a Product Manager **cannot** upload. That is a documented gap, not an oversight.
+
+### `DELETE /media/{id}` is permanent, and `usage` is why that is safe to offer
+
+`DELETE` is `wp_delete_attachment($id, true)`: the trash is bypassed, the row goes, and the file and
+every generated size are unlinked from disk. **Nothing about it is recoverable.** It is also
+unconditional — a picture nobody uses is still a picture somebody may have deliberately kept, so this
+API reports and the operator decides.
+
+`GET /media/{id}/usage` is the read that makes that decision an informed one. Ask it once, when a
+person opens the delete dialog; it is not a field on `GET /media/{id}`, because every reader of an
+attachment would otherwise pay for it on every row.
+
+```jsonc
+{ "total": 3,
+  "references": [
+    { "kind": "product",  "id": 5119, "title": "Tapis berbère",   "slot": "featured_image" },
+    { "kind": "variation","id": 22,   "title": "Fibule - Argent", "slot": "featured_image" },
+    { "kind": "settings", "id": 0,    "title": "Boutique Amel",   "slot": "store_logo" }
+  ],
+  "checked":    ["featured_image", "gallery", "option_choice_image", "seo_image", "store_logo"],
+  "incomplete": ["homepage_section_data", "content_html"] }
+```
+
+`kind` is `product`, `variation`, `page`, `banner`, `settings`, or the raw post type for anything
+else that holds the id — nothing is filtered out by type. The settings reference has **id 0**: the
+shop's logo lives in an option, not on a post.
+
+**`total` counts `checked`, and `incomplete` is not decoration.** The homepage document stores
+per-section `data` for which this API defines no schema per type, and `<img>` is allowed in page,
+banner, product and email bodies where an image is a URL rather than an id — so an attachment can be
+referenced in either and no query can find it. Say **"3 known uses"**, never "3 uses". A slot in both
+lists was searched and hit its 100-row bound.
+
+Same 404 as `GET /media/{id}` for an unknown id **and** for a post id that is not an attachment:
+`{"code": "not_found", "message": "No media item with that id."}`.
 
 ## Analytics
 

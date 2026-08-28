@@ -89,6 +89,7 @@ use AlgerianCommerce\Media\ImageSanitizer;
 use AlgerianCommerce\Media\MediaController;
 use AlgerianCommerce\Media\MediaRepository;
 use AlgerianCommerce\Media\MediaService;
+use AlgerianCommerce\Media\MediaUsageRepository;
 use AlgerianCommerce\Media\UploadPolicy;
 use AlgerianCommerce\Notifications\EmailChannel;
 use AlgerianCommerce\Notifications\NotificationChannelRegistry;
@@ -278,6 +279,7 @@ final class Plugin
     private ?CmsService $cmsService = null;
     private ?UploadPolicy $uploadPolicy = null;
     private ?MediaRepository $mediaRepository = null;
+    private ?MediaUsageRepository $mediaUsageRepository = null;
     private ?MediaService $mediaService = null;
     private ?MarketingProviderRegistry $marketingProviders = null;
     private ?MarketingEventRepository $marketingEventRepository = null;
@@ -1057,6 +1059,21 @@ final class Plugin
     }
 
     /**
+     * The reverse index behind `GET /media/{id}/usage` — roadmap §61.
+     *
+     * `$wpdb` because it reads four meta keys across every post type at once,
+     * two of them through a LIKE, which is not a `WP_Query`; `SettingsRepository`
+     * because the shop's logo is the one attachment reference that lives in an
+     * option rather than on a post.
+     */
+    public function mediaUsageRepository(): MediaUsageRepository
+    {
+        global $wpdb;
+
+        return $this->mediaUsageRepository ??= new MediaUsageRepository($wpdb, new SettingsRepository());
+    }
+
+    /**
      * Takes the rate limiter, which no other service does: an upload is the
      * one write whose cost is measured in megabytes and CPU rather than in
      * rows, so it carries a limit of its own on top of the namespace-wide one.
@@ -1065,6 +1082,7 @@ final class Plugin
     {
         return $this->mediaService ??= new MediaService(
             $this->mediaRepository(),
+            $this->mediaUsageRepository(),
             $this->uploadPolicy(),
             $this->rateLimiter(),
             $this->auditLogger(),

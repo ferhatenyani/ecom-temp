@@ -15,11 +15,12 @@ use WP_REST_Response;
 /**
  * Media endpoints — roadmap §61, docs/PLAN.md §24.
  *
- *   POST   /media          multipart upload
- *   GET    /media          list, search, filter by type
+ *   POST   /media              multipart upload
+ *   GET    /media              list, search, filter by type
  *   GET    /media/{id}
- *   PATCH  /media/{id}     alt text, title, caption
+ *   PATCH  /media/{id}         alt text, title, caption
  *   DELETE /media/{id}
+ *   GET    /media/{id}/usage   what holds this attachment id
  *
  * `POST /media` is the highest-risk route in this API — the only one that
  * writes a file a web server might later execute — and the rules that decide
@@ -79,6 +80,21 @@ final class MediaController extends AbstractController
             [
                 'methods' => 'DELETE',
                 'callback' => $this->handle([$this, 'destroy']),
+                'permission_callback' => $guard,
+                'args' => $this->idArg(),
+            ],
+        ]);
+
+        /*
+         * A read of its own rather than a field on `GET /media/{id}`: the panel
+         * wants it once, when a person opens the delete dialog, and every other
+         * reader of an attachment — the library grid, the picker — would pay
+         * for it on every row.
+         */
+        register_rest_route($this->restNamespace(), '/media/(?P<id>\d+)/usage', [
+            [
+                'methods' => 'GET',
+                'callback' => $this->handle([$this, 'usage']),
                 'permission_callback' => $guard,
                 'args' => $this->idArg(),
             ],
@@ -199,6 +215,13 @@ final class MediaController extends AbstractController
         return Response::success(MediaPresenter::toArray(
             $this->service->update((int) $request->get_param('id'), is_array($body) ? $body : [])
         ));
+    }
+
+    public function usage(WP_REST_Request $request): WP_REST_Response
+    {
+        return Response::success(
+            MediaPresenter::usage($this->service->usage((int) $request->get_param('id')))
+        );
     }
 
     public function destroy(WP_REST_Request $request): WP_REST_Response

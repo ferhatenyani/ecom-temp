@@ -22,7 +22,7 @@ use WP_Post;
  *           → move → strip metadata → register → audit
  * ```
  *
- * The capability is `ac_manage_content` on all five routes, and there is
+ * The capability is `ac_manage_content` on all six routes, and there is
  * deliberately no second, weaker one. **A Product Manager therefore cannot
  * upload**, only attach an image that already exists (roadmap §47c takes an
  * attachment id). That is a real gap and it is named rather than papered over:
@@ -36,6 +36,7 @@ final class MediaService
 {
     public function __construct(
         private readonly MediaRepository $repository,
+        private readonly MediaUsageRepository $usageRepository,
         private readonly UploadPolicy $policy,
         private readonly RateLimiter $rateLimiter,
         private readonly AuditLogger $audit,
@@ -136,15 +137,56 @@ final class MediaService
     }
 
     /**
-     * Delete, permanently.
+     * What holds this attachment id — roadmap §61.
      *
-     * Nothing here checks whether the image is in use. A product holds an
-     * attachment id and the presenters already answer `null` for one that has
-     * gone (`MediaPresenter::image()`), so a deleted image is a missing picture
-     * rather than a broken response — and a "you cannot delete this" that scans
-     * every product, variation, banner and page on every delete would be a
-     * table scan protecting against a recoverable mistake. The audit entry
-     * records who removed what.
+     * The check `delete()` deliberately does not run, moved to where it costs
+     * something once: the panel calls this when a human opens the delete
+     * dialog. One attachment, on demand, at the moment somebody is about to do
+     * something irreversible — not five queries on every delete, and not a loop
+     * over the library.
+     *
+     * It reports; it does not refuse. `delete()` stays unconditional, so a
+     * picture deliberately left unused is still deletable, and the reply
+     * carries `checked` and `incomplete` precisely so the panel can say *known*
+     * uses. See `MediaUsageRepository` for what those two lists mean.
+     *
+     * @return array{
+     *     references: list<array{kind: string, id: int, title: string, slot: string}>,
+     *     checked: list<string>,
+     *     incomplete: list<string>
+     * }
+     *
+     * @throws ApiException
+     */
+    public function usage(int $id): array
+    {
+        Permissions::assert(Capabilities::MANAGE_CONTENT);
+
+        $this->require($id);
+
+        return $this->usageRepository->find($id);
+    }
+
+    /**
+     * Delete, permanently and unconditionally.
+     *
+     * `MediaRepository::delete()` is `wp_delete_attachment($id, true)`: the
+     * trash is bypassed, the row goes, and the file and every generated size
+     * are unlinked from disk. **Nothing here is recoverable** — restoring the
+     * image means finding the original and uploading it again, and it comes
+     * back with a new id that nothing points at.
+     *
+     * Nothing here checks whether the image is in use, and that stays true. A
+     * scan on every delete would be five queries paid by every caller to guard
+     * a decision only one caller in a thousand gets wrong, and a hard refusal
+     * would make a deliberately-unused picture undeletable. `usage()` is where
+     * that check lives instead: the panel asks once, when a person opens the
+     * dialog, and shows them what they are about to break. The operator
+     * decides; this endpoint informs and records who removed what.
+     *
+     * The presenters already answer `null` for an id that has gone
+     * (`MediaPresenter::image()`), so a deleted image is a missing picture
+     * rather than a broken response.
      */
     public function delete(int $id): void
     {
