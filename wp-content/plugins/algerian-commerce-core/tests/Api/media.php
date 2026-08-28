@@ -168,6 +168,21 @@ function ac_attachment(string $filename): int
     return (int) $id;
 }
 
+/** Is one reference in a `GET /media/{id}/usage` body? */
+function ac_usage_has(array $body, string $kind, int $id, string $slot): bool
+{
+    foreach ($body['references'] ?? [] as $reference) {
+        if (($reference['kind'] ?? '') === $kind
+            && (int) ($reference['id'] ?? 0) === $id
+            && ($reference['slot'] ?? '') === $slot
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 $marketing = ac_user('ac_media_marketing', 'ac_marketing_manager');  // has ac_manage_content
 $product = ac_user('ac_media_product', 'ac_product_manager');        // the documented gap
 $support = ac_user('ac_media_support', 'ac_support_agent');
@@ -180,6 +195,7 @@ $routes = [
     'GET /media/{id}' => ['GET', '/media/1'],
     'PATCH /media/{id}' => ['PATCH', '/media/1'],
     'DELETE /media/{id}' => ['DELETE', '/media/1'],
+    'GET /media/{id}/usage' => ['GET', '/media/1/usage'],
 ];
 
 wp_set_current_user(0);
@@ -456,6 +472,259 @@ ac_check(
 ac_assert('the file is gone from disk', !is_file($doomedPath) ?: 'the file survived the delete');
 ac_check('GET the deleted item', ac_req('GET', "/media/{$doomed}"), 404);
 ac_check('DELETE it again', ac_req('DELETE', "/media/{$doomed}"), 404);
+
+echo PHP_EOL, "=== usage ===", PHP_EOL;
+
+/*
+ * `GET /media/{id}/usage` exists because DELETE is
+ * `wp_delete_attachment($id, true)` — the row goes, the file leaves the disk,
+ * and nothing about it is recoverable. The fixtures below put **one**
+ * attachment into every place this codebase can store an attachment id, so the
+ * endpoint is asserted against all five stores at once rather than one at a
+ * time; a store that stops being queried fails one assertion by name.
+ */
+$used = ac_attachment('ac-usage-used.jpg');
+$unused = ac_attachment('ac-usage-unused.jpg');
+ac_assert('two attachments for the usage fixtures', $used > 0 && $unused > 0 ?: 'fixtures missing');
+
+$usageProduct = new WC_Product_Simple();
+$usageProduct->set_name('AC usage probe');
+$usageProduct->set_regular_price('1000');
+$usageProduct->set_image_id($used);
+$usageProduct->set_gallery_image_ids([$used]);
+$usageProductId = (int) $usageProduct->save();
+
+/*
+ * The SEO override and the option set exactly as their own repositories write
+ * them: one scalar meta key (`SeoRepository::save()`), and one JSON document
+ * under a protected key (`OptionSetRepository::save()`, `wp_slash()` included
+ * because `update_post_meta()` unslashes what it is handed).
+ */
+update_post_meta($usageProductId, '_ac_seo_image_id', $used);
+
+$usageOptionSet = static fn (int $choiceImageId, array $foreign = []): string => wp_slash((string) wp_json_encode([
+    'groups' => [[
+        'id' => 'wrap',
+        'type' => 'choice',
+        'label' => 'Gift wrap',
+        'required' => false,
+        'min' => 0,
+        'max' => 1,
+        'choices' => [
+            ['id' => 'gold', 'label' => 'Or', 'price_delta' => '250', 'image_id' => $choiceImageId] + $foreign,
+        ],
+    ]],
+]));
+
+update_post_meta($usageProductId, '_ac_option_set', $usageOptionSet($used));
+
+// A variation's image is `_thumbnail_id` on the variation post — the same key
+// WooCommerce uses for the parent's featured image, which is why one query
+// answers both. Attributes are irrelevant to that and are left off.
+$usageVariable = new WC_Product_Variable();
+$usageVariable->set_name('AC usage probe variable');
+$usageVariableId = (int) $usageVariable->save();
+
+$usageVariation = new WC_Product_Variation();
+$usageVariation->set_parent_id($usageVariableId);
+$usageVariation->set_image_id($used);
+$usageVariationId = (int) $usageVariation->save();
+
+$usagePage = (int) wp_insert_post([
+    'post_title' => 'AC usage probe page',
+    'post_type' => 'page',
+    'post_status' => 'draft',
+]);
+set_post_thumbnail($usagePage, $used);
+update_post_meta($usagePage, '_ac_seo_image_id', $used);
+
+$usageBanner = (int) wp_insert_post([
+    'post_title' => 'AC usage probe banner',
+    'post_type' => AlgerianCommerce\CMS\ContentTypes::BANNER,
+    'post_status' => 'publish',
+]);
+set_post_thumbnail($usageBanner, $used);
+
+// The one reference that is not on a post. Read back and restored below.
+$settingsOption = AlgerianCommerce\Settings\SettingsRepository::OPTION;
+$settingsBefore = get_option($settingsOption, []);
+$settingsProbe = is_array($settingsBefore) ? $settingsBefore : [];
+$settingsProbe['store'] = array_merge(
+    is_array($settingsProbe['store'] ?? null) ? $settingsProbe['store'] : [],
+    ['logo_id' => $used]
+);
+update_option($settingsOption, $settingsProbe, false);
+
+ac_check(
+    'GET usage for an attachment in use',
+    ac_req('GET', "/media/{$used}/usage"),
+    200,
+    static function ($data) use (
+        $usageProductId,
+        $usageVariationId,
+        $usagePage,
+        $usageBanner
+    ): bool|string {
+        $body = $data['data'] ?? [];
+
+        $expected = [
+            ['product', $usageProductId, 'featured_image'],
+            ['product', $usageProductId, 'gallery'],
+            ['product', $usageProductId, 'option_choice_image'],
+            ['product', $usageProductId, 'seo_image'],
+            ['variation', $usageVariationId, 'featured_image'],
+            ['page', $usagePage, 'featured_image'],
+            ['page', $usagePage, 'seo_image'],
+            ['banner', $usageBanner, 'featured_image'],
+            // No row of its own: the shop's logo lives in an option, and the
+            // audit trail already spells a settings id `0`.
+            ['settings', 0, 'store_logo'],
+        ];
+
+        foreach ($expected as [$kind, $id, $slot]) {
+            if (!ac_usage_has($body, $kind, $id, $slot)) {
+                return "no {$kind} {$id} reported in {$slot}";
+            }
+        }
+
+        if (($body['total'] ?? -1) !== count($body['references'] ?? [])) {
+            return 'total does not count the references beside it';
+        }
+
+        foreach ($body['references'] as $reference) {
+            if (trim((string) ($reference['title'] ?? '')) === '') {
+                return 'a reference has no title to name it with';
+            }
+        }
+
+        return true;
+    }
+);
+
+/*
+ * `12` must not match `120`. The gallery is one comma-separated string and the
+ * option set is one JSON document, so SQL can only ever narrow — the split and
+ * the decode in `MediaUsageRepository` are what decide. Each pair below is a
+ * value that matches the SQL and not the meaning, then the same field holding
+ * the real reference, because a negative that would also pass against a broken
+ * query proves nothing.
+ */
+update_post_meta($usageProductId, '_product_image_gallery', "1{$used},{$used}9");
+ac_check(
+    'GET usage: a gallery that only contains the digits',
+    ac_req('GET', "/media/{$used}/usage"),
+    200,
+    static fn ($data): bool|string => ac_usage_has($data['data'] ?? [], 'product', $usageProductId, 'gallery')
+        ? 'a substring of another id was reported as a gallery entry'
+        : true
+);
+
+update_post_meta($usageProductId, '_product_image_gallery', (string) $used);
+ac_check(
+    'GET usage: the control, the same gallery holding the id',
+    ac_req('GET', "/media/{$used}/usage"),
+    200,
+    static fn ($data): bool|string => ac_usage_has($data['data'] ?? [], 'product', $usageProductId, 'gallery')
+        ? true
+        : 'the control did not report a gallery entry that is really there'
+);
+
+/*
+ * A key nothing in this plugin writes, carrying the exact bytes the LIKE looks
+ * for — `"image_id":<id>` — while the choice's own image is 0. `OptionSet` is
+ * deliberately lenient about a document another plugin has touched, so this is
+ * the shape a foreign write really produces. SQL returns the row; the decode
+ * is what refuses it.
+ */
+update_post_meta($usageProductId, '_ac_option_set', $usageOptionSet(0, ['meta' => ['image_id' => $used]]));
+ac_check(
+    'GET usage: an option set that only mentions the id elsewhere',
+    ac_req('GET', "/media/{$used}/usage"),
+    200,
+    static fn ($data): bool|string => ac_usage_has($data['data'] ?? [], 'product', $usageProductId, 'option_choice_image')
+        ? 'a foreign key in the document was read as a choice image'
+        : true
+);
+
+update_post_meta($usageProductId, '_ac_option_set', $usageOptionSet($used));
+ac_check(
+    'GET usage: the control, the same choice holding the id',
+    ac_req('GET', "/media/{$used}/usage"),
+    200,
+    static fn ($data): bool|string => ac_usage_has($data['data'] ?? [], 'product', $usageProductId, 'option_choice_image')
+        ? true
+        : 'the control did not report a choice image that is really there'
+);
+
+ac_check(
+    'GET usage for an attachment nothing uses',
+    ac_req('GET', "/media/{$unused}/usage"),
+    200,
+    static function ($data): bool|string {
+        $body = $data['data'] ?? [];
+
+        if (($body['total'] ?? -1) !== 0 || ($body['references'] ?? null) !== []) {
+            return 'something claims to use a freshly created attachment';
+        }
+
+        /*
+         * A `total` of 0 is only true of the places that were looked in, and
+         * this is the pair of lists that says which those are. The homepage
+         * document stores per-section `data` with no schema per type, so an id
+         * can sit inside it where nothing can find it — the endpoint has to
+         * name that rather than let 0 read as "no uses".
+         */
+        if (($body['checked'] ?? []) !== AlgerianCommerce\Media\MediaUsageRepository::SCOPES) {
+            return 'checked does not name the scopes the repository searches';
+        }
+
+        return in_array('homepage_section_data', $body['incomplete'] ?? [], true)
+            ? true
+            : 'incomplete does not name the homepage document';
+    }
+);
+
+// The positive control for both refusals below is the 200 above: the same route,
+// the same shape, an id it does resolve.
+ac_check(
+    'GET usage for an id that does not exist',
+    ac_req('GET', '/media/99999999/usage'),
+    404,
+    static fn ($data): bool => ($data['error']['code'] ?? '') === 'not_found'
+);
+
+/*
+ * A page is a post this endpoint happily reports as a *reference* — the 200
+ * above found this very id — and must refuse as a *subject*. The media library
+ * is not a way to read the posts table, and the control is what makes that
+ * distinction, rather than a missing row, the thing being asserted.
+ */
+ac_check(
+    'GET usage for a post id that is not an attachment',
+    ac_req('GET', "/media/{$usagePage}/usage"),
+    404,
+    static fn ($data): bool => ($data['error']['code'] ?? '') === 'not_found'
+);
+
+/*
+ * Everything above goes. Unlike the upload fixtures, which the header says are
+ * left for the next run, these are referenced by other rows — leaving them
+ * would leave the next run's library full of probe products pointing at probe
+ * images.
+ */
+update_option($settingsOption, $settingsBefore, false);
+wp_delete_post($usageVariationId, true);
+wp_delete_post($usageVariableId, true);
+wp_delete_post($usageProductId, true);
+wp_delete_post($usagePage, true);
+wp_delete_post($usageBanner, true);
+wp_delete_attachment($used, true);
+wp_delete_attachment($unused, true);
+
+ac_assert(
+    'the usage fixtures are gone',
+    get_post($usageProductId) === null && get_post($used) === null ?: 'a probe fixture survived'
+);
 
 echo PHP_EOL, "=== the audit trail ===", PHP_EOL;
 

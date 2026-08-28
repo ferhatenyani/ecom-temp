@@ -9,10 +9,13 @@ use WP_Post;
 /**
  * Attachment output shapes — roadmap §61, docs/PLAN.md §24.
  *
- * Two of them, deliberately. `toArray()` is the media library's own view, for
+ * Three of them, deliberately. `toArray()` is the media library's own view, for
  * `/media`; `image()` is the compact reference other content embeds — an id, a
  * URL, a thumbnail and the alt text, which is everything a storefront needs to
- * render an `<img>` and nothing it does not.
+ * render an `<img>` and nothing it does not; `usage()` is the mirror of
+ * `image()`, pointing the other way — the compact reference to whatever holds
+ * an attachment, which is everything the delete dialog needs to name it in a
+ * sentence and nothing it does not.
  */
 final class MediaPresenter
 {
@@ -72,6 +75,39 @@ final class MediaPresenter
             'src' => $src,
             'thumbnail' => wp_get_attachment_image_url($id, 'medium') ?: $src,
             'alt' => (string) get_post_meta($id, '_wp_attachment_image_alt', true),
+        ];
+    }
+
+    /**
+     * What holds an attachment, for `GET /media/{id}/usage`.
+     *
+     * Four fields per reference, the same discipline `image()` keeps: a `kind`
+     * and a `title` to name the thing, an `id` to link to it, and the `slot` it
+     * occupies. Nothing about the attachment itself — the caller asked about a
+     * specific id and already has it.
+     *
+     * `checked` and `incomplete` ride in `data` rather than `meta` because they
+     * are not envelope bookkeeping: they are the qualification on `total`
+     * without which it would be read as a guarantee. `total` counts references
+     * found in `checked`; `incomplete` names the places this answer does not
+     * cover, so a `total` of 0 reads as *no known uses* and never as *no uses*.
+     * A slot in both lists was searched and hit its bound — see
+     * `MediaUsageRepository::MAX_MATCHES`.
+     *
+     * @param array{
+     *     references: list<array{kind: string, id: int, title: string, slot: string}>,
+     *     checked: list<string>,
+     *     incomplete: list<string>
+     * } $usage
+     * @return array<string, mixed>
+     */
+    public static function usage(array $usage): array
+    {
+        return [
+            'total' => count($usage['references']),
+            'references' => $usage['references'],
+            'checked' => $usage['checked'],
+            'incomplete' => $usage['incomplete'],
         ];
     }
 
