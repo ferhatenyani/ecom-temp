@@ -457,6 +457,12 @@ $this->auditLogger->record('product.price_changed', 'product', $id, ['old' => 12
   secret ends up in an append-only table it can never be edited out of.
 - **Fields are truncated to their column widths.** MySQL in strict mode rejects an over-length value,
   which would turn a long SKU into a failed audit write on an otherwise successful operation.
+- **Anything in `metadata` whose length a caller controls is bounded by the service that records it,
+  and the bound announces itself.** `metadata` is `longtext`, so nothing downstream refuses a huge
+  row — it just becomes a trail nobody can read and nobody can prune per-row.
+  `OrderService::MAX_CANCEL_REASON` bounds a string and `OrderService::MAX_AUDITED_PRICES` bounds a
+  list, and the second writes `manual_prices_omitted` when it bites. A truncation that does not say
+  so is worse than no record: it reads as complete.
 - **A failed audit write logs an error but does not abort the operation.** An unwritable log table
   would otherwise take the whole API down; the health endpoint reports database problems separately.
 - **The IP is `REMOTE_ADDR` only.** `X-Forwarded-For` is client-controlled, and a forged address in an
@@ -791,11 +797,224 @@ move, but an order that is *born* cancelled records the calling-off of something
 `OrderStatus::CREATABLE` excludes both terminal statuses. Deriving one rule from the other is a bug
 the REST suite caught.
 
-### Prices come from the catalogue
+### Prices come from the catalogue, except when someone says otherwise
 
-`LineItemInput` has no price field and will not get one. A line is priced by `add_product()` from the
-product, and every monetary field on the order — `total`, `subtotal`, `discount_total`,
-`shipping_total`, `total_tax` — is read-only. A total a request can set is not a total.
+`LineItemInput` accepts a per-line `price`. It used to refuse one on the grounds that a
+client-supplied amount is never trustworthy, and that argument was sound but the gate was not: the
+same session can already invent a 100% coupon or rewrite an order's lines. A back-office order is
+placed by a person who has already agreed a number on the phone, so the refusal is replaced by the
+capability that was always there (`ac_manage_orders`), the `is_editable` gate on `line_items`, and
+an audit entry recording the catalogue price a manual price replaced. Zero is a legal price;
+negative is not, and neither is a price on a line that does not restate its own product and
+quantity — `line_items` replaces the whole set and cannot reprice one line in place.
+
+**The `is_editable` gate reaches less far than it sounds like, and a second gate finishes the job.**
+`is_editable` is WooCommerce's own rule — `pending` and `on-hold` — and not "the order has not moved
+stock": `on-hold` reduces stock *and* is editable. So `line_items` alone would leave an order holding
+units off the shelf repriceable, and `OrderService::guardManualPricesWritable()` is what closes that.
+A stated `price` on an order that is already holding stock is a 409; nothing else about the lines is.
+
+The rule to carry away is therefore two clauses, not one: **`is_editable` gates the order's money,
+and stock having moved additionally gates the price of the goods.** The quantities on that same
+stock-holding order are still writable and still move the total — see *Editing an order that already
+holds stock*, which is where both halves are spelled out with what each one leaves open.
+
+**The storefront is unchanged.** `Cart/LineInput` still refuses `price`, `line_total`,
+`line_subtotal`, `subtotal`, `total`, `discount`, `currency` and the option-price fields by name. A
+shopper never states an amount; an operator holding `ac_manage_orders` may.
+
+Every *total* on the order stays read-only — `total`, `subtotal`, `discount_total`, `shipping_total`,
+`total_tax`. A total a request can set is not a total. One order-level amount is settable and it is
+not one of those: `shipping_amount`, the delivery fee, two sections below.
+
+### The order total is derived, and nothing here sums it by hand
+
+A stated price reaches the line through `add_product()`'s `$args`, which override the
+catalogue-priced `subtotal`/`total` pair it would otherwise compute — `OrderRepository::lineTotals()`.
+Both are set to the same amount on purpose, and the alternative was measured rather than reasoned
+about. Setting only `total` satisfies the arithmetic and goes wrong in both directions: below the
+catalogue price it invents a discount (a kettle listed at 1 500, agreed at 1 200.50 ×2, reports
+`discount_total = 599` — `calculate_totals()` derives it as `cart_subtotal - cart_total`), and above
+it WooCommerce's own "subtotal cannot be less than total" clamp in
+`WC_Order_Item_Product::set_total()` silently raises the subtotal you passed. On a WooCommerce order
+`subtotal !== total` means the discount machinery ran, and that stays true here.
+
+The order's own money is then whatever `calculate_totals()` makes of the lines, called immediately
+after they are written. **There is no second sum in this plugin**, deliberately: WooCommerce already
+computes `sum(line totals) + fees + shipping_total + taxes`, and a copy of that would have to be kept
+in step with fees, coupons and rounding. `total`, `subtotal` and `shipping_total` remain read-only on
+the way in, so the recompute is the only thing that ever sets them.
+
+We recompute on every write that touches the lines, not because a client sends a stale total — ours
+never does. The reference shop recomputes for that reason and it shows: EL's `OrderService.update()`
+recalculates `itemsTotal.add(shippingCost)` only inside `if (orderDTO.getShippingCost() != null)`,
+commented as a defence against its admin app's `...fullOrder` spread. Change a line without touching
+shipping there and the stale total stands. A total that is derived on some paths is not derived.
+
+### Reading a manual price back
+
+`OrderPresenter::lineItems()` emits `price` — the amount a person typed, or `null` when the catalogue
+priced the line. It is recorded as `_ac_manual_price` item meta rather than inferred from the line's
+totals, because a line at 1 500 looks the same whether the catalogue said 1 500 or somebody typed it,
+and the panel has to tell "no override" from "overridden to the catalogue amount".
+
+This closes a data-loss path that existed between the two halves of the feature: while the write
+shape had a `price` and the read shape did not, GET → change the address → PATCH re-priced every
+hand-priced line from the catalogue, with no error and nothing in the payload to hint at it. Anything
+added to the order write shape has to reach the presenter in the same change.
+
+**On an order that is holding stock the field costs something back.** The echo is a statement, and
+nothing in this API can tell it from an amount somebody just typed — `line_items` carries no line
+identity, so there is no before/after pairing to compare against. So a whole-body PATCH of a
+stock-holding order with a hand-priced line is a 409, and restating the identical price is refused
+along with changing it. The client rule is the one already given for a committed order, reaching one
+status further: omit `line_items` from a whole-body PATCH unless you mean to rewrite the lines. A
+catalogue-priced line is unaffected either way, because `null` states nothing.
+
+### Every amount a person chose is in the audit trail
+
+This section used to be a note saying the audit was owed. It is written now, and it is the reason the
+price field is allowed to exist at all: a manual price is not prevented, it is **witnessed**, and a
+discount nobody can attribute is exactly what the old refusal existed to stop.
+
+`OrderService::snapshot()` carries two keys beyond the status, customer, total and line count it
+always did — `shipping_total`, and `manual_prices`, one row per amount somebody chose. `order.created`
+records it flat; `order.updated` records it on both halves of its `before`/`after` pair. Measured
+in-process, an order created with one hand-priced line and a stated fee:
+
+```json
+{
+  "status": "pending",
+  "customer_id": 0,
+  "total": "3751.01",
+  "items": 2,
+  "shipping_total": "450",
+  "manual_prices": [
+    { "type": "shipping", "charged": "450", "catalogue": null },
+    { "type": "line", "product_id": 96, "variation_id": 0,
+      "quantity": 2, "charged": "1200.505", "catalogue": "1500" }
+  ]
+}
+```
+
+That is a row copied out of `ac_audit_logs`, not a shape transcribed from source — the kettle lists
+at 1 500, the operator agreed 1 200.505 for two and 450 for delivery, and `tests/Api/orders.php`
+(*every manual price is audited*) is where the same facts are executable. `shipping_total` is `"450"`
+and not `"450.00"` for the same reason the amounts are unrounded: it is the prop as WooCommerce
+stores it, and formatting is `OrderPresenter`'s job.
+
+**Only lines a person priced appear.** A catalogue-priced line contributes no row, for the same
+reason the presenter emits `null` rather than the effective unit price: an audit in which every line
+carries a comparison is one in which the line that *is* a decision does not stand out. An order
+nobody hand-priced records `"manual_prices": []` — an empty list, never a missing key, because the
+trail is append-only and full of rows written before the key existed.
+
+**Amounts are recorded as they were stored, unrounded.** `1200.505` above reads back from
+`GET /orders/{id}` as `1200.51`; the record keeps what the operator actually typed. The presenter
+rounds for display and the audit must not adopt that rounding.
+
+**The catalogue price is frozen onto the line at write time**, as `_ac_catalogue_price` beside
+`_ac_manual_price`, and that is the load-bearing decision. A product's price moves, so reading the
+catalogue when the row is *read* answers "what does this cost today" and reading it on the order's
+next write answers "what did it cost the next time somebody edited this order". There is one instant
+at which "the catalogue price this manual price replaced" is a fact, and it is when
+`OrderRepository::replaceLineItems()` adds the line. Persisting it — rather than handing it up to the
+service — is also the only way the `before` half of an update can be true, since those lines were
+written by an earlier request and are destroyed by the one writing the record. The meta is the
+carrier; the append-only row is the record.
+
+The value is `WC_Product::get_price()` verbatim, sale price included: the exact value the manual
+price displaced, since `wc_get_price_excluding_tax()` falls back to it when no `price` argument is
+passed (`wc-product-functions.php:1604`, 11.0.1). Both sides are unit prices, so the discount is
+`(catalogue − charged) × quantity`.
+
+**`catalogue` is `null` in two cases and `type` tells them apart.** On a `shipping` row it is null
+*structurally* — delivery has no catalogue price, because §14's tariff is quoted from a cart and an
+order is not one, and inventing a baseline would make every stated fee read as a discount against a
+number nobody quoted. What the fee is compared against instead is `shipping_total` on the two halves
+of the pair, which is true for a quoted fee as well as a stated one. On a `line` row null means the
+catalogue price could not be captured: the product carried no price, or the line predates the key.
+
+**The row is bounded at twenty amounts** (`OrderService::MAX_AUDITED_PRICES`), because `line_items`
+has no cap, every line may state a price, and an update writes the list twice. Past twenty the record
+carries `"manual_prices_omitted": N` — a truncation that does not announce itself is a record that
+lies to the person reading it. Its absence asserts the list is whole. The delivery fee is asked for
+first and so is never the row dropped; the bound bites on product lines, and on the `after` side the
+omitted rows are still recoverable from the order's own item meta, while on the `before` side they
+are gone with the lines they described. A twenty-row record measures about 2 KB.
+
+**What it does not do is stop anything.** A price of nothing still succeeds and still ships. The
+record is only as good as somebody reading it — that is the trade the reversal made, deliberately.
+
+### A delivery fee is settable, and it is not `shipping_total`
+
+`shipping_amount` on `POST /orders` and `PATCH /orders/{id}` is one amount, the order's whole
+delivery charge. Before it, the only shipping line this shop could produce came from the checkout
+quote (`Cart/CheckoutService::createOrder()`), so an order placed on the phone could not charge for
+delivery at all.
+
+**`shipping_total` stays read-only, and lifting it out was never the option it looks like.** It is
+*derived*: `calculate_totals()` sums the order's shipping **line items** into `set_shipping_total()`
+(`abstract-wc-order.php:2163`, 11.0.1). A prop written by hand survives exactly until the next
+recompute, so a settable `shipping_total` would be a field that appears to work and stops working the
+next time anybody edits a line. The settable thing is therefore a line —
+`OrderRepository::replaceShippingLine()` writes a `WC_Order_Item_Shipping`, the same class the
+checkout writes — and the total follows with no arithmetic of ours, which is the same move the manual
+line price made.
+
+**How to tell the pair apart: send `shipping_amount`, read `shipping_total`.** They are the same money
+on every order this API writes, because the statement is collapsed to exactly one line. They differ on
+an order the storefront placed, where `shipping_total` is the §14 quote and `shipping_amount` is
+`null` — nobody stated it. `null` is not "no delivery charge"; a client that shows one number must
+show `shipping_total`.
+
+Not `shipping_cost`, because this API already publishes that key with the opposite meaning:
+`Analytics\RevenueReport::unavailable()` says *"What a courier charges the shop is not recorded …
+`shipping_revenue` above is the separate figure of what the customer was charged."* Cost is the shop's
+side; this is the customer's, and it is what `shipping_revenue` sums. `amount` is what the codebase
+already calls this quantity everywhere it was settable — a rule's `amount`, a quote's `amount`, and
+`$shipping['amount']` on the checkout's shipping line — and it leaves `method_id` free for item 2's
+`shipping_provider`.
+
+The line's `method_title` is `Delivery`, the same label `RateResolver::quote()` gives a quoted line, so
+a back-office order and a storefront order print the identical row on a packing slip. That the label
+does not distinguish them is deliberate — the customer agreed a delivery charge and how the shop
+arrived at it is bookkeeping — and it is why the distinction is recorded as `_ac_manual_price` item
+meta on the shipping line, the same key a manually priced product line carries.
+
+`0` is a stated amount and the only way to cancel a fee; `null` and `""` mean the request says nothing
+about delivery and leave the line alone, which is what makes the whole-body round trip safe. Refusals
+are keyed `shipping_amount` and use `line_items.{n}.price`'s three sentences word for word — `Must be
+an amount.`, `Cannot be negative.`, `Is implausibly large.` — with the ceiling inherited from
+`ShippingRuleInput::MAX_AMOUNT`, so an order cannot charge a fee no shipping rule could have quoted.
+
+**The recompute reaches it.** `OrderRepository::update()` used to call a plain `save()` when a payload
+carried no `line_items`; a fee-only PATCH would have written a shipping line and left `total` and
+`shipping_total` standing. The rule is now stated as a rule: any write that touches the lines *or* the
+fee ends at `calculate_totals()`, and only a write that touches neither takes the bare save. A fee in
+the same PATCH as a line edit shares that one recompute rather than triggering a second.
+
+**And it is gated.** `shipping_amount` needs `is_editable` exactly as `line_items` does, refused with
+its own 409 message naming the shipping amount. Read the two guards together and the rule is *money is
+gated, metadata is not*: an address, a phone and the payment method stay editable on a delivered COD
+order; the two things that move the order total do not. Ungated it would have been a hole through the
+guard beside it — a 1 DZD reprice refused, a 9 999 999 DZD delivery charge granted on the same order.
+WooCommerce's own admin agrees: *Add item(s)*, the control that reveals *Add shipping*, is behind
+`$order->is_editable()` (`html-order-items.php:315-321`). The cost is real and worth naming — a
+courier's fee settled after dispatch cannot be corrected in place, and the answer is a refund or a
+note rather than a rewritten invoice. EL takes the other branch and lets a delivered order's total
+move after the customer has paid it (`OrderService.java:342-351`).
+
+**And it is the only one of the two that step 6 did not narrow, which leaves a hole named here rather
+than discovered later.** On an `on-hold` order that is holding stock, a 1 DZD reprice on a line is
+refused and a 9 999 999 DZD delivery charge is granted — the mirror image of the hole this gate was
+written to close. It is left open deliberately: stock is a fact about *goods*, and delivery moves no
+units, allocates nothing, and is characteristically settled after the goods leave. And it is a
+smaller hole than the one above — that one reached `completed` and `refunded`, an order the customer
+has paid for and received; this one reaches a single status, on an order nobody has confirmed and no
+courier has collected, and every fee through it is still audited. Making the fee follow the price is a
+revision to *this* rule, which is why `guardShippingAmountWritable()` and `guardLineItemsWritable()`
+are six duplicated lines apart instead of one shared helper.
 
 Money is emitted as decimal strings. WooCommerce returns some totals as floats and others as
 strings; the presenter puts all of them through `wc_format_decimal()` so no amount picks up
@@ -826,8 +1045,155 @@ WooCommerce's own helper for adjusting a single line in place,
 `wc_maybe_adjust_line_item_product_stock()`, is not usable here — it lives in an admin-only file that
 is not loaded during a REST request.
 
+**What is refused on such an order is a stated price, and only that.**
+`OrderService::guardManualPricesWritable()` runs after the editability gate and turns a `price` on a
+stock-holding order into a 409 — `A manual price cannot be set on an order that is already holding
+stock.`, with `status`, `stock_reduced` and `lines`, and no `fields`. The payload is well formed and
+no amount would be accepted, so it is a state error, not a validation one; `lines` carries the
+zero-based indices that stated a price, because the operator's mistake is per line even though the
+reason is the order's.
+
+"Holding stock" is `OrderRepository::stockReduced()` — WooCommerce's own `get_stock_reduced()` flag
+off the data store — and never a list of status names. There is no such list that works: an order can
+sit in `on-hold`, a status that *does* reduce stock, holding nothing at all because it arrived there
+from `cancelled`. It is the same read `rewriteLineItems()` makes to decide whether to unwind the
+shelf, so the guard fires on exactly the writes that would otherwise have returned units, repriced
+them and taken them again.
+
+**What still gets through, so nobody reads this as more than it is.** The gate is on the price, not
+on the money:
+
+- **The quantity.** Four kettles at the catalogue's 1 500 become forty in one request; the total
+  moves by 54 000 DZD with no manual price anywhere near it.
+- **Dropping a hand-priced line.** Omitting it states no price, so nothing is refused, and the line's
+  money leaves with it.
+- **The delivery fee**, up to the ceiling — the asymmetry argued two sections above.
+- **Anything on an order holding no stock**, `pending` included, and every creatable status on
+  `POST /orders`. Creation is not a correction: the lines are written before the status is set, so
+  there is no order yet to be holding anything.
+
 Everything else — addresses, the customer note, the payment method — stays editable at any status,
 because a phone typo on a shipped COD order has to be fixable.
+
+### The PATCH refusals, measured
+
+Everything above this heading describes the route from its source. This section is the route
+**measured in-process via `rest_do_request()`** — `tests/Api/orders.php`, the section headed *the
+PATCH field contract, measured*, which is where these claims are executable rather than asserted in
+prose. The three stock-and-price rows below are measured in the same file under *amending an order
+that already holds stock* and *a hand-priced order that holds stock*, because a refusal that depends
+on the shelf needs an order that is actually holding units and the probe orders here are `pending`.
+
+**In-process is not the same as a signed HTTP request to a deployed instance.** Routing, the args
+schema, the permission callback, `OrderInput`, `AddressInput`, `LineItemInput`, the service guards,
+the repository and WooCommerce itself all run. Application Password authentication, nonce handling,
+the REST cookie and CORS layer and any reverse proxy do not, and nothing here says anything about
+them. The `http` stage of `scripts/test.sh` is where those live.
+
+An admin form binds an error to an input by its key, so the key strings are the contract:
+
+| Body | Status | `error.code` | `error.details` |
+| --- | --- | --- | --- |
+| `{"billing": {"first_name": "x"}}` | 200 | — | merges; the other ten fields survive |
+| `{"billing": {"country": "ZZ"}}` | **200** | — | accepted — the check is shape, not membership |
+| `{"billing": {"country": "Algeria"}}` | 400 | `invalid_request` | `fields["billing.country"]` |
+| `{"billing": {"email": "a@b.c"}}` | 400 | `invalid_request` | **none** — see below |
+| `{"billing": {"email": "nope"}}` | 400 | `invalid_request` | `fields["billing.email"]` |
+| `{"billing": "nope"}` | 400 | `invalid_request` | `fields["billing"]` |
+| `{"shipping": {"email": "a@b.co"}}` | 400 | `invalid_request` | `fields["shipping.email"]` — "Only a billing address carries an email." |
+| `{"line_items": […]}` on `pending`/`on-hold` | 200 | — | replaces the whole set, stock-holding or not |
+| `{"line_items": […]}` on anything else | 409 | `conflict` | `status`, `editable_in` — **no `fields`** |
+| a line stating a `price`, on an order **holding stock** | 409 | `conflict` | `status`, `stock_reduced`, `lines` — **no `fields`**; the message names the manual price, not the line items |
+| the same line with no `price`, or `price: null`/`""` | 200 | — | empty states nothing; the catalogue prices the line |
+| a whole-body PATCH of a hand-priced order holding stock | 409 | `conflict` | as above — the presenter's echoed `price` *is* a statement |
+| `{"line_items": []}` | 400 | `invalid_request` | `fields["line_items"]` |
+| `{"line_items": [{"id": N, "quantity": 9}]}` | 400 | `invalid_request` | `fields["line_items.0.product_id"]` |
+| a line naming a product that does not exist | 400 | `invalid_request` | `fields["line_items.1.product_id"]` |
+| `{"shipping_amount": "450"}` on `pending`/`on-hold` | 200 | — | replaces the shipping line; `shipping_total` and `total` follow |
+| `{"shipping_amount": "450"}` on anything else | 409 | `conflict` | `status`, `editable_in` — **no `fields`**; the message names the shipping amount, not the line items |
+| `{"shipping_amount": "-1"}` | 400 | `invalid_request` | `fields["shipping_amount"]` — "Cannot be negative." |
+| `{"shipping_amount": 0}` | 200 | — | a stated zero; the fee is cancelled and reads back `"0.00"` |
+| `{"shipping_amount": null}` alone | 400 | `invalid_request` | **none** — empty states nothing, so "No supported fields were provided." |
+| `{"shipping_total": "999", "shipping_amount": "250"}` | 200 | — | the total is dropped, the amount lands |
+| `{"payment_method": "cod", "payment_method_title": "…"}` | 200 | — | independent; neither requires the other |
+| `{"customer_note": "…"}` at 5 000 | 200 | — | — |
+| `{"customer_note": "…"}` at 5 001 | 400 | `invalid_request` | `fields["customer_note"]` |
+| `{"total": "1.00"}` alone | 400 | `invalid_request` | **none** — "No supported fields were provided." |
+| `{"total": "1.00", "customer_note": "…"}` | 200 | — | the total is dropped, the note lands |
+| an unknown key | 400 | `invalid_request` | `fields[<the key, under its prefix>]` — `wilaya`, `billing.wilaya`, `line_items.0.colour` |
+| an id that does not exist | 404 | `not_found` | none |
+
+Six things in there are worth stating outright, because five of them are not what the source reads
+like and the sixth is what a panel will hit on its first afternoon.
+
+**A partial address merges.** `applyProps()` walks only the keys the payload stated, one setter
+each, so an omitted field is never written. A client may send just what changed. Clearing is
+explicit: `null` (and `""`) writes an empty string.
+
+**`ZZ` is a valid country here.** `AddressInput::validateCountry()` tests `^[A-Z]{2}$` and nothing
+else — deliberately, since membership means `WC()->countries` and that class is pure. It catches
+`"Algeria"` where `"DZ"` belongs, which is the mistake that happens; it does not catch a two-letter
+string that is not a country. Nothing downstream should treat a stored `country` as validated. A
+lowercase code is accepted and upper-cased.
+
+**One refusal on this route carries no `details.fields` at all.** `AddressInput` validates email
+with `filter_var()` and WooCommerce validates it again with `is_email()`, and the two disagree —
+`a@b.c` and `a@[127.0.0.1]` pass the first and fail the second. Such an address clears validation,
+then `WC_Order::set_billing_email()` throws `WC_Data_Exception`, and `OrderService::save()`
+translates it with the exception's own message and an empty details array: `400`,
+`invalid_request`, `"Invalid billing email address"`, no `fields` key. A client binding on
+`fields["billing.email"]` renders nothing for that input. The PATCH applies nothing at all — a
+`customer_note` in the same body does not move — so it is a display gap, not a data one. That
+class's docblock calls the disagreement harmless; it is harmless to the data and not to the error
+shape.
+
+**A line `id` identifies nothing, and the ids churn.** `line_items` is a wholesale replacement:
+`READ_ONLY` drops `id`, `resolveLines()` pairs by array index, and the rows are re-created on every
+write that touches the key — an *identical* replace still returns new ids. So a client cannot aim
+an edit at one line, must send the complete intended set, and must not cache a line id across a
+write. A PATCH that omits `line_items` leaves the ids alone.
+
+**A read-only field is dropped, not refused — which makes a body of nothing but read-only fields
+indistinguishable from an empty one.** It gets `"No supported fields were provided."` with no
+`fields` key, rather than anything naming `total`. There is no per-field error to render for a
+read-only key, ever; that is the price of the whole-body PATCH the dropping exists to allow.
+
+**The whole-body round trip only works on an editable order.** `OrderInput`'s docblock says the read
+shape is droppable so a client can "GET an order, change one thing and PATCH the whole object back".
+That holds on `pending` and `on-hold`. On `processing`, `completed`, `cancelled`, `refunded` and
+`failed` the presenter's `line_items` is echoed back into the guard above and the request is a 409 —
+*even when the only field the operator changed was the note*. A client must omit `line_items` from a
+whole-body PATCH unless it means to rewrite the lines. It is the echo that fails, not the edit.
+
+**`shipping_amount` is the second field with that property, and it is easy to miss.** It is gated
+the same way, so a whole-body PATCH must omit it too — but *only when the order actually carries a
+stated fee*, because the presenter emits `null` for a fee the checkout quoted and `null` is dropped
+before it reaches the guard. So an order the storefront placed round-trips on a non-editable status
+once `line_items` is omitted, and a back-office order that was given a fee while it was pending does
+not. A client that strips `line_items` and stops there will meet a 409 naming the shipping amount on
+exactly the orders it created itself. Strip both. Everything else really is writable in every status,
+as the section above says.
+
+Smaller answers from the same run, recorded so nobody re-derives them:
+
+- **The status guard runs before the editability guard.** A body carrying both an illegal transition
+  and `line_items` reports the transition (`details.from`, `details.to`, `details.allowed`) and never
+  mentions the lines.
+- **Clearing `payment_method` clears `payment_method_title` with it** —
+  `WC_Abstract_Order::set_payment_method()` blanks both on an empty string — *unless* the same body
+  states a title, because the repository runs the method setter first. Otherwise the two are
+  independent in both directions.
+- **No gateway registry check.** `"not_a_gateway"` is stored as typed.
+- **`customer_id` is freely re-attributable** on an existing order, to any existing user or to `0`
+  for a guest. The only rule is that the user exists; a staff account is an acceptable value.
+- **Strings are stored and returned verbatim.** `<script>alert(1)</script>` round-trips unchanged
+  through `customer_note` and through address fields. The client escapes on render; nothing here
+  does it for them.
+- **A `customer_note` is trimmed before it is measured**, so surrounding whitespace never costs a
+  caller the end of a note that fits. Address fields cap at 200 characters, keyed `billing.city` and
+  so on.
+- **Every field-level refusal in a body arrives at once**, across all three depths, so a form can
+  render the lot in one pass rather than one round trip per mistake.
 
 ### Notes and the timeline
 
