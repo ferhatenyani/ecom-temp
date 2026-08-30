@@ -374,6 +374,43 @@ if ($orderId > 0) {
         'the shipping charge is a real line item',
         count($order->get_items('shipping')) === 1 ?: 'shipping items: ' . count($order->get_items('shipping'))
     );
+
+    /*
+     * Backend step 4 gave the *back office* a settable delivery fee, written as
+     * a shipping line the same way this one is. The storefront must be exactly
+     * as it was, and "exactly" is worth pinning rather than assuming: a
+     * shopper's payload has no `shipping_amount` and never will — what a
+     * customer pays is §14's tariff, which is the whole rule
+     * `Cart\LineInput` enforces for line prices — so the only thing that could
+     * have regressed here is the line itself.
+     *
+     * The distinguishing mark is the `_ac_manual_price` meta and nothing else.
+     * A quoted line carries none, which is what makes `OrderPresenter` report a
+     * checkout order's `shipping_amount` as null while `shipping_total` shows
+     * the money that was really charged. If a future change ever starts writing
+     * that meta here, every quoted fee in the order book begins reading as
+     * somebody's decision and `OrderService::manualPrices()` — which is what
+     * puts a stated fee into an `order.created` or `order.updated` row — can no
+     * longer tell the two apart.
+     */
+    $quotedLine = array_values($order->get_items('shipping'))[0] ?? null;
+
+    ac_assert(
+        'the quoted charge is not marked as stated by a person',
+        ($quotedLine !== null && $quotedLine->get_meta('_ac_manual_price', true) === '')
+            ?: 'a checkout quote must carry no manual-price meta'
+    );
+
+    $presented = \AlgerianCommerce\Orders\OrderPresenter::toArray($order);
+
+    ac_assert(
+        'so the order reports a shipping_total and no shipping_amount',
+        ($presented['shipping_amount'] === null && $presented['shipping_total'] === '450.00')
+            ?: 'presented as ' . wp_json_encode([
+                'shipping_amount' => $presented['shipping_amount'] ?? null,
+                'shipping_total' => $presented['shipping_total'] ?? null,
+            ])
+    );
     ac_assert(
         'the destination is recorded on the order',
         (int) $order->get_meta('_ac_wilaya_id') === 16 ?: 'wilaya meta was ' . var_export($order->get_meta('_ac_wilaya_id'), true)

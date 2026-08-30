@@ -200,10 +200,36 @@ ac_check('create with an unknown field', ac_req('POST', '/orders', [
     return isset($d['error']['details']['fields']['wilaya']) ?: 'expected wilaya to be unknown';
 });
 
-ac_check('create refusing a caller-supplied line price', ac_req('POST', '/orders', [
-    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => '0.01']],
+/*
+ * This block used to assert the opposite — that any caller-supplied price was
+ * refused. That rule is gone; a manual price is now allowed to a holder of
+ * `ac_manage_orders` and audited rather than prevented. What survives is the
+ * shape of the amount, so the refusals still worth having are the ones that
+ * would poison a total rather than record an unusual one. The manual price's
+ * own behaviour has its own section further down.
+ */
+ac_check('create refusing a negative line price', ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => '-1']],
 ]), 400, function ($d) {
-    return isset($d['error']['details']['fields']['line_items.0.price']) ?: 'expected the price to be refused';
+    return ($d['error']['details']['fields']['line_items.0.price'] ?? '') === 'Cannot be negative.'
+        ?: 'expected the negative price to be refused by name';
+});
+
+ac_check('create refusing an implausible line price', ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => '10000000.00']],
+]), 400, function ($d) {
+    return isset($d['error']['details']['fields']['line_items.0.price']) ?: 'expected the ceiling to hold';
+});
+
+// `line_items` replaces the whole set, so a price aimed at one existing line
+// by id cannot be honoured — and the refusal has to name `price`, the field
+// the caller came for, not only the two they thought they could omit.
+ac_check('create refusing a price that does not restate its line', ac_req('POST', '/orders', [
+    'line_items' => [['id' => 91, 'price' => '500']],
+]), 400, function ($d) {
+    $message = $d['error']['details']['fields']['line_items.0.price'] ?? '';
+
+    return str_contains($message, 'replaces the whole set') ?: 'expected the in-place reprice refusal';
 });
 
 ac_check('create with a product that does not exist', ac_req('POST', '/orders', [
@@ -320,7 +346,10 @@ ac_check('read a missing order', ac_req('GET', '/orders/99999999'), 404);
 ac_check('the line items came back in the write shape', ac_req('GET', "/orders/{$orderId}"), 200, function ($d) use ($kettleId) {
     $line = $d['data']['line_items'][0] ?? [];
 
-    foreach (['id', 'name', 'product_id', 'variation_id', 'quantity', 'sku', 'subtotal', 'total'] as $key) {
+    // `price` is in this list because the write shape has one. While it was
+    // not, GET → edit → PATCH re-priced every hand-priced line from the
+    // catalogue and lost the agreed amount with no error anywhere.
+    foreach (['id', 'name', 'product_id', 'variation_id', 'quantity', 'sku', 'price', 'subtotal', 'total'] as $key) {
         if (!array_key_exists($key, $line)) {
             return "line item is missing {$key}";
         }
@@ -498,6 +527,46 @@ ac_check('line items cannot be rewritten once past editable', ac_req('PATCH', "/
         ?: 'the refusal should name the status that blocked it';
 });
 
+// A manual price rides on `line_items` and inherits exactly its gate — no more
+// and no less. Refused here for the status, not for the price: the response
+// names the status, and no field-level price error is reported at all.
+ac_check('and a manual price inherits that refusal', ac_req('PATCH', "/orders/{$orderId}", [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => '1']],
+]), 409, function ($d) {
+    if (isset($d['error']['details']['fields'])) {
+        return 'a status refusal must not read as a validation error about the price';
+    }
+
+    return ($d['error']['details']['status'] ?? '') === 'processing' ?: 'the refusal should name the status';
+});
+
+/*
+ * The delivery fee is gated the same way, and reading the three checks in this
+ * section together is what shows the rule: **money is gated by `is_editable`,
+ * metadata is not.** An ungated fee would be a hole straight through the guard
+ * above it — refused a 1 DZD reprice on a line, granted any delivery charge up
+ * to the ceiling on the same order in the same request, because the repository
+ * writes the fee as a shipping line and calculate_totals() folds it into the
+ * order total either way.
+ *
+ * Its own message, not the line-items one: the caller has to be told which of
+ * the two things they sent was refused.
+ */
+ac_check('a delivery fee is refused once past editable too', ac_req('PATCH', "/orders/{$orderId}", [
+    'shipping_amount' => '450',
+]), 409, function ($d) {
+    if (isset($d['error']['details']['fields'])) {
+        return 'a status refusal must not read as a validation error about the amount';
+    }
+
+    if (!str_contains((string) ($d['error']['message'] ?? ''), 'shipping amount')) {
+        return 'the refusal should name the shipping amount, got ' . ($d['error']['message'] ?? '?');
+    }
+
+    return ($d['error']['details']['status'] ?? '') === 'processing'
+        ?: 'the refusal should name the status that blocked it';
+});
+
 ac_check('but the billing phone can still be corrected', ac_req('PATCH', "/orders/{$orderId}", [
     'billing' => ['phone' => '0660999888'],
 ]), 200, function ($d) {
@@ -595,6 +664,59 @@ ac_check('its lines can be amended', ac_req('PATCH', "/orders/{$holdId}", [
         ?: 'the amended line did not stick';
 });
 
+/*
+ * Backend step 6, and the sharpest sentence this section can produce: the
+ * quantity edit above went through on an order holding units off the shelf, and
+ * a *price* on that same order does not. Two gates, not one — the line-item gate
+ * is `is_editable` and unchanged, and `OrderService::guardManualPricesWritable()`
+ * sits behind it refusing an amount somebody typed once the stock has moved.
+ *
+ * Nothing in this block moves stock: the 409 is thrown before the repository
+ * runs. So the three ledger rows asserted further down are *also* the assertion
+ * that none of these refusals leaked through to a write.
+ */
+ac_check('but a manual price on the same order is refused', ac_req('PATCH', "/orders/{$holdId}", [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => '1200.50']],
+]), 409, function ($d) {
+    if (($d['error']['code'] ?? '') !== 'conflict') {
+        return 'code is ' . ($d['error']['code'] ?? '?');
+    }
+
+    if (($d['error']['message'] ?? '') !== 'A manual price cannot be set on an order that is already holding stock.') {
+        return 'message is ' . ($d['error']['message'] ?? '?');
+    }
+
+    // The order refused it, not the amount, so there is nothing for a form to
+    // redden — `fields` stays the validation channel it is everywhere else.
+    if (isset($d['error']['details']['fields'])) {
+        return 'a state refusal grew a fields key';
+    }
+
+    return (($d['error']['details']['status'] ?? '') === 'on-hold'
+        && ($d['error']['details']['stock_reduced'] ?? null) === true)
+        ?: 'details are ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+// The reason is the order's; the mistake is per line. So the refusal names the
+// indices that stated a price and only those, and a form bound per line can
+// still point at the boxes to clear.
+ac_check('and it names which lines stated one', ac_req('PATCH', "/orders/{$holdId}", [
+    'line_items' => [
+        ['product_id' => $kettleId, 'quantity' => 1, 'price' => '10'],
+        ['product_id' => $kettleId, 'quantity' => 1],
+        ['product_id' => $kettleId, 'quantity' => 1, 'price' => '0'],
+    ],
+]), 409, function ($d) {
+    return ($d['error']['details']['lines'] ?? null) === [0, 2]
+        ?: 'lines are ' . wp_json_encode($d['error']['details']['lines'] ?? null);
+});
+
+// Zero is the case the whole reversal was argued around — a real free line, not
+// an absent price — so it has to be refused here like any other stated amount.
+ac_check('a free line is a stated price like any other', ac_req('PATCH', "/orders/{$holdId}", [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => 0]],
+]), 409);
+
 ac_assert(
     'the shelf reflects the new quantity, not the old',
     (int) wc_get_product($kettleId)->get_stock_quantity() === 49 ?: 'kettle is at ' . wc_get_product($kettleId)->get_stock_quantity()
@@ -636,10 +758,124 @@ ac_assert('every row still balances', (function () use ($holdRows) {
     return true;
 })());
 
+/*
+ * The empty forms state nothing, and that is what keeps a catalogue-priced round
+ * trip working on exactly these orders: `OrderPresenter` emits `null` for every
+ * line nobody hand-priced, and a null must not read as a decision. Placed after
+ * the ledger arithmetic above because this one really does rewrite the lines,
+ * and so really does move the shelf twice.
+ */
+ac_check('an explicit null price is not a stated price', ac_req('PATCH', "/orders/{$holdId}", [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => null]],
+]), 200, function ($d) {
+    $line = $d['data']['line_items'][0] ?? [];
+
+    // `??` cannot express this check: the value under test *is* null, so a
+    // coalesce would fire on the very case that is supposed to pass.
+    if (!array_key_exists('price', $line)) {
+        return 'the line came back with no price key at all';
+    }
+
+    return $line['price'] === null ?: 'the line came back priced: ' . var_export($line['price'], true);
+});
+
 ac_check('cancelling it returns exactly what it held', ac_req('POST', "/orders/{$holdId}/cancel"), 200);
 
 ac_assert(
     'the kettle is whole again',
+    (int) wc_get_product($kettleId)->get_stock_quantity() === 50 ?: 'kettle is at ' . wc_get_product($kettleId)->get_stock_quantity()
+);
+
+echo PHP_EOL, "=== a hand-priced order that holds stock ===", PHP_EOL;
+
+/*
+ * The consequence a panel actually meets, and it is the presenter's doing.
+ * `OrderPresenter::lineItems()` emits `price` so a hand-priced line survives a
+ * GET → edit → PATCH cycle; on an order holding stock that same echo now
+ * *states* a price, and nothing in this API can tell an echo from a decision —
+ * `line_items` carries no line identity, so there is no before/after pairing to
+ * compare against either. Restating the identical amount is refused along with
+ * changing it, and has to be.
+ *
+ * Its own order, priced while `pending` and then moved to `on-hold`, because
+ * that is the only way to get an order that is both hand-priced and holding
+ * stock. It is cancelled at the end, so the shelf is left as this section found
+ * it.
+ */
+$echoed = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => '1200.50']],
+]);
+$echoedId = (int) ($echoed[1]['data']['id'] ?? 0);
+
+ac_check('an order can be hand-priced while it holds nothing', $echoed, 201, function ($d) {
+    return ($d['data']['line_items'][0]['price'] ?? null) === '1200.50'
+        ?: 'the price is ' . var_export($d['data']['line_items'][0]['price'] ?? null, true);
+});
+
+ac_check('and then put on hold, which takes the stock', ac_req('PATCH', "/orders/{$echoedId}", [
+    'status' => 'on-hold',
+]), 200, function ($d) {
+    return ($d['data']['stock_reduced'] ?? null) === true ?: 'on-hold should take stock';
+});
+
+[, $echoedFetched] = ac_req('GET', "/orders/{$echoedId}");
+$echoedBody = $echoedFetched['data'];
+$echoedBody['customer_note'] = 'Ring before delivery';
+
+ac_check('a whole-body PATCH is refused for the price it echoed back', ac_req('PATCH', "/orders/{$echoedId}", $echoedBody), 409, function ($d) {
+    if (($d['error']['details']['stock_reduced'] ?? null) !== true) {
+        return 'refused for something other than the stock: ' . wp_json_encode($d['error']['details'] ?? null);
+    }
+
+    return ($d['error']['details']['lines'] ?? null) === [0]
+        ?: 'lines are ' . wp_json_encode($d['error']['details']['lines'] ?? null);
+});
+
+unset($echoedBody['line_items']);
+
+ac_check('stripping line_items lets the note through', ac_req('PATCH', "/orders/{$echoedId}", $echoedBody), 200, function ($d) {
+    if (($d['data']['customer_note'] ?? '') !== 'Ring before delivery') {
+        return 'the note did not stick';
+    }
+
+    // And the agreed price is still on the order, untouched by the edit that
+    // could not restate it.
+    return ($d['data']['line_items'][0]['price'] ?? null) === '1200.50'
+        ?: 'the price moved: ' . var_export($d['data']['line_items'][0]['price'] ?? null, true);
+});
+
+/*
+ * What still gets through, asserted rather than only argued in a docblock. The
+ * gate is on the price, not on the money: the same stock-holding order takes a
+ * quantity of four at the catalogue's 1 500, moving its total further than any
+ * refusal above prevented. Anyone reading step 6 as "a stock-holding order's
+ * total is frozen" is reading it wrong, and this is where that is executable.
+ */
+ac_check('a quantity still moves the total on the same order', ac_req('PATCH', "/orders/{$echoedId}", [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 4]],
+]), 200, function ($d) {
+    return ($d['data']['total'] ?? '') === '6000.00' ?: 'total is ' . ($d['data']['total'] ?? '?');
+});
+
+/*
+ * And so does the delivery fee. `guardShippingAmountWritable()` is untouched by
+ * step 6 — deliberately, and it is the asymmetry both docblocks name out loud:
+ * on this one order a 1 DZD reprice is refused and the ceiling of a delivery
+ * charge is granted, the mirror image of the hole step 4 closed. Asserted rather
+ * than left to be discovered, because a hole nobody wrote down is the one that
+ * gets rediscovered as a bug.
+ */
+ac_check('and so does a delivery fee, right up to the ceiling', ac_req('PATCH', "/orders/{$echoedId}", [
+    'shipping_amount' => '9999999.99',
+]), 200, function ($d) {
+    return ($d['data']['shipping_total'] ?? '') === '9999999.99'
+        ?: 'shipping_total is ' . ($d['data']['shipping_total'] ?? '?');
+});
+
+ac_check('put the units back', ac_req('POST', "/orders/{$echoedId}/cancel"), 200);
+
+ac_assert(
+    'the shelf is whole again',
     (int) wc_get_product($kettleId)->get_stock_quantity() === 50 ?: 'kettle is at ' . wc_get_product($kettleId)->get_stock_quantity()
 );
 
@@ -790,6 +1026,1573 @@ ac_check('processing to completed', ac_req('PATCH', "/orders/{$secondId}", ['sta
 ac_check('a completed order cannot be cancelled', ac_req('POST', "/orders/{$secondId}/cancel"), 409);
 ac_check('but it can be refunded', ac_req('PATCH', "/orders/{$secondId}", ['status' => 'refunded']), 200);
 ac_check('and a refunded order goes nowhere', ac_req('PATCH', "/orders/{$secondId}", ['status' => 'completed']), 409);
+
+echo PHP_EOL, "=== manual prices and the recomputed total ===", PHP_EOL;
+
+/*
+ * Backend step 3: a stated price reaches the line, the order's money is
+ * recomputed from the lines, and the price reads back.
+ *
+ * Every order below is created `pending` on purpose. Pending moves no stock, so
+ * this section cannot disturb the shelf arithmetic the ledger sections above
+ * assert to the unit — and the questions here are about money, which does not
+ * need a stock transition to ask.
+ *
+ * The kettle lists at 1 500 and the mug at 300; both are set by ac_product()
+ * at the top of this file, so a change there is a change to the numbers below.
+ */
+$priced = ac_req('POST', '/orders', [
+    'line_items' => [
+        // Agreed on the phone at 1 200.50 rather than the catalogue's 1 500.
+        ['product_id' => $kettleId, 'quantity' => 2, 'price' => '1200.50'],
+        // The same order, priced normally. One order has to be able to carry
+        // both, or a single hand-priced line forces every line to be hand-typed.
+        ['product_id' => $mugId, 'quantity' => 3],
+    ],
+]);
+$pricedId = (int) ($priced[1]['data']['id'] ?? 0);
+
+ac_check('create with a manual price on one line', $priced, 201);
+
+ac_check('the total is the agreed money, not the catalogue money', [200, $priced[1]], 200, function ($d) {
+    // 2 x 1200.50 + 3 x 300 = 3301. The catalogue would have said 3900.
+    return ($d['data']['total'] ?? '') === '3301.00' ?: 'total is ' . ($d['data']['total'] ?? '?');
+});
+
+ac_check('the priced line carries the agreed money end to end', [200, $priced[1]], 200, function ($d) {
+    $line = $d['data']['line_items'][0] ?? [];
+
+    if (($line['total'] ?? '') !== '2401.00') {
+        return 'line total is ' . ($line['total'] ?? '?');
+    }
+
+    // Both, not just the total. A subtotal left at the catalogue amount would
+    // make the difference read as a discount somebody granted.
+    return ($line['subtotal'] ?? '') === '2401.00' ?: 'line subtotal is ' . ($line['subtotal'] ?? '?');
+});
+
+ac_check('and nothing reads as a discount', [200, $priced[1]], 200, function ($d) {
+    if (($d['data']['discount_total'] ?? '') !== '0.00') {
+        return 'discount_total is ' . ($d['data']['discount_total'] ?? '?');
+    }
+
+    // subtotal is the sum of the line subtotals, so it follows the agreed
+    // money too — 2401 + 900.
+    return ($d['data']['subtotal'] ?? '') === '3301.00' ?: 'subtotal is ' . ($d['data']['subtotal'] ?? '?');
+});
+
+ac_check('the priced line reads its price back', ac_req('GET', "/orders/{$pricedId}"), 200, function ($d) {
+    $lines = $d['data']['line_items'] ?? [];
+
+    if (($lines[0]['price'] ?? null) !== '1200.50') {
+        return 'the manual price came back as ' . var_export($lines[0]['price'] ?? null, true);
+    }
+
+    // The distinction the panel needs: null is "no override", and it is what
+    // the write side reads as "let the catalogue price this line". Tested with
+    // array_key_exists rather than `??`, which cannot tell an absent key from
+    // the null this assertion is entirely about.
+    if (!array_key_exists('price', $lines[1] ?? [])) {
+        return 'a catalogue-priced line emitted no price key at all';
+    }
+
+    return $lines[1]['price'] === null
+        ?: 'a catalogue-priced line should read back null, got ' . var_export($lines[1]['price'], true);
+});
+
+/*
+ * The data-loss path, asserted directly. GET the order, change one unrelated
+ * field, PATCH the whole body back — which is what every admin client does.
+ * Before the presenter emitted `price` this silently re-priced the kettle from
+ * the catalogue and moved the order from 3 301 to 3 900 with no error anywhere.
+ */
+[, $fetchedPriced] = ac_req('GET', "/orders/{$pricedId}");
+$pricedRoundTrip = $fetchedPriced['data'];
+$pricedRoundTrip['customer_note'] = 'Agreed 1200.50 with Karim';
+
+ac_check('a manual price survives a whole-body round trip', ac_req('PATCH', "/orders/{$pricedId}", $pricedRoundTrip), 200, function ($d) {
+    if (($d['data']['total'] ?? '') !== '3301.00') {
+        return 'the round trip re-priced the order to ' . ($d['data']['total'] ?? '?');
+    }
+
+    return ($d['data']['line_items'][0]['price'] ?? null) === '1200.50' ?: 'the price did not survive';
+});
+
+// And it has to be clearable, or a line priced by hand once is priced by hand
+// forever. Empty means "no manual price", which is the same thing the read
+// shape says about a line that never had one.
+ac_check('clearing the price hands the line back to the catalogue', ac_req('PATCH', "/orders/{$pricedId}", [
+    'line_items' => [
+        ['product_id' => $kettleId, 'quantity' => 2, 'price' => null],
+        ['product_id' => $mugId, 'quantity' => 3],
+    ],
+]), 200, function ($d) {
+    if (($d['data']['total'] ?? '') !== '3900.00') {
+        return 'the catalogue price did not come back: total is ' . ($d['data']['total'] ?? '?');
+    }
+
+    $line = $d['data']['line_items'][0] ?? [];
+
+    return (array_key_exists('price', $line) && $line['price'] === null)
+        ?: 'the price meta outlived the line: ' . var_export($line['price'] ?? 'missing', true);
+});
+
+/*
+ * Zero is a real price — a replacement, a promised gift — and it is precisely
+ * the case the old refusal existed to prevent. It has to be distinguishable
+ * from "no price stated", which is the whole reason the read shape uses null
+ * for absence rather than an amount.
+ */
+$free = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1, 'price' => '0']],
+]);
+
+ac_check('a free line is a price, not an absence', $free, 201, function ($d) {
+    if (($d['data']['total'] ?? '') !== '0.00') {
+        return 'total is ' . ($d['data']['total'] ?? '?');
+    }
+
+    return ($d['data']['line_items'][0]['price'] ?? null) === '0.00'
+        ?: 'a free line must read back as a price, got ' . var_export($d['data']['line_items'][0]['price'] ?? null, true);
+});
+
+/*
+ * Above the catalogue price. A negotiated number is not always a reduction — a
+ * rush job, an absorbed courier fee — and the order has to carry it without the
+ * arithmetic reading as something else. Paired with the assertion above that a
+ * price *below* catalogue leaves `discount_total` at zero, this is what pins
+ * the decision in `OrderRepository::lineTotals()` to set the line's subtotal as
+ * well as its total: setting only the total makes the below-catalogue case
+ * report a discount nobody granted, and lets WooCommerce's own "subtotal cannot
+ * be less than total" clamp rewrite the subtotal in this one.
+ */
+$premium = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => '2000']],
+]);
+
+ac_check('a price above the catalogue is not a negative discount', $premium, 201, function ($d) {
+    if (($d['data']['total'] ?? '') !== '2000.00') {
+        return 'total is ' . ($d['data']['total'] ?? '?');
+    }
+
+    return ($d['data']['discount_total'] ?? '') === '0.00'
+        ?: 'discount_total is ' . ($d['data']['discount_total'] ?? '?');
+});
+
+// A total is never stated. It is dropped rather than refused so a whole-body
+// PATCH works, and the recompute is what decides the number.
+ac_check('a stated total is ignored, not believed', ac_req('PATCH', "/orders/{$pricedId}", [
+    'total' => '1.00',
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 2, 'price' => '1000']],
+]), 200, function ($d) {
+    return ($d['data']['total'] ?? '') === '2000.00' ?: 'total is ' . ($d['data']['total'] ?? '?');
+});
+
+echo PHP_EOL, "=== a settable delivery fee ===", PHP_EOL;
+
+/*
+ * Backend step 4: an order can state what delivery costs.
+ *
+ * Until now the only shipping line this shop could produce came from the
+ * checkout quote (`Cart/CheckoutService::createOrder()`), so an order placed on
+ * the phone could not charge for delivery at all.
+ *
+ * The field is `shipping_amount` and **`shipping_total` is still read-only**,
+ * which is the pair every assertion below is really about. `shipping_total` is
+ * derived — `calculate_totals()` sums the order's shipping *line items* into it
+ * — so the settable thing is a line, not the total, and the total follows. Send
+ * `shipping_amount`, read `shipping_total`; on every order this API writes they
+ * are the same money, and the last block down here is the case where they are
+ * not.
+ *
+ * Every order in this section is `pending`, for the reason the manual-price
+ * section above gives: pending moves no stock, so none of this disturbs the
+ * shelf arithmetic the ledger sections assert to the unit. The mug lists at 300
+ * and the kettle at 1 500.
+ */
+
+/** How many shipping lines an order really carries, read from WooCommerce. */
+function ac_shipping_lines(int $orderId): int
+{
+    $order = wc_get_order($orderId);
+
+    return $order instanceof WC_Order ? count($order->get_items('shipping')) : -1;
+}
+
+$delivered = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 2]],
+    'shipping_amount' => '450',
+]);
+$deliveredId = (int) ($delivered[1]['data']['id'] ?? 0);
+
+ac_check('create with a delivery fee', $delivered, 201, function ($d) {
+    // 2 x 300 goods + 450 delivery. The fee is in the total because
+    // calculate_totals() found a shipping line, not because anything here added
+    // it up.
+    if (($d['data']['total'] ?? '') !== '1050.00') {
+        return 'total is ' . ($d['data']['total'] ?? '?');
+    }
+
+    return ($d['data']['shipping_total'] ?? '') === '450.00'
+        ?: 'shipping_total is ' . ($d['data']['shipping_total'] ?? '?');
+});
+
+ac_assert(
+    'the fee is a real shipping line, and there is one of it',
+    ac_shipping_lines($deliveredId) === 1 ?: 'shipping lines: ' . ac_shipping_lines($deliveredId)
+);
+
+ac_check('the read shape carries both halves of the pair', ac_req('GET', "/orders/{$deliveredId}"), 200, function ($d) {
+    if (!array_key_exists('shipping_amount', $d['data'] ?? [])) {
+        return 'the write shape has shipping_amount and the read shape must too';
+    }
+
+    return ($d['data']['shipping_amount'] ?? null) === '450.00'
+        ?: 'shipping_amount is ' . var_export($d['data']['shipping_amount'] ?? null, true);
+});
+
+/*
+ * The path that was broken before this step and is easy to break again.
+ * `OrderRepository::update()` recomputed only when the payload carried
+ * `line_items`; a PATCH stating just a fee took a plain save(), wrote a
+ * shipping line, and left `total` and `shipping_total` at their old values with
+ * no error anywhere — an order reading back with a delivery charge it was not
+ * charging for.
+ */
+ac_check('a fee-only PATCH recomputes the order total', ac_req('PATCH', "/orders/{$deliveredId}", [
+    'shipping_amount' => '500',
+]), 200, function ($d) {
+    if (($d['data']['total'] ?? '') !== '1100.00') {
+        return 'the total did not follow the fee: ' . ($d['data']['total'] ?? '?');
+    }
+
+    return ($d['data']['shipping_total'] ?? '') === '500.00'
+        ?: 'shipping_total is ' . ($d['data']['shipping_total'] ?? '?');
+});
+
+/*
+ * Replacement, not accumulation — the assertion this step exists to make.
+ * `replaceLineItems()` clears only `line_item` items, so a shipping line
+ * survives every line edit; a second statement left beside the first would
+ * double both `shipping_total` and the order total, with every number
+ * internally consistent and wrong.
+ */
+ac_assert(
+    'stating it twice left one shipping line, not two',
+    ac_shipping_lines($deliveredId) === 1 ?: 'shipping lines: ' . ac_shipping_lines($deliveredId)
+);
+
+ac_check('lines and the fee in one PATCH are one recompute', ac_req('PATCH', "/orders/{$deliveredId}", [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 1]],
+    'shipping_amount' => '500',
+]), 200, function ($d) {
+    // 1500 goods + 500 delivery. Both terms of the sum have moved in one
+    // request, and the order is never published at the intermediate value.
+    return ($d['data']['total'] ?? '') === '2000.00' ?: 'total is ' . ($d['data']['total'] ?? '?');
+});
+
+ac_assert(
+    'and replacing the lines did not strand a second fee',
+    ac_shipping_lines($deliveredId) === 1 ?: 'shipping lines: ' . ac_shipping_lines($deliveredId)
+);
+
+// The whole-body round trip, which is what every admin client does. A fee that
+// did not survive it would be lost by a client that only changed an address.
+[, $fetchedDelivered] = ac_req('GET', "/orders/{$deliveredId}");
+$deliveredRoundTrip = $fetchedDelivered['data'];
+$deliveredRoundTrip['customer_note'] = 'Delivery agreed at 500';
+
+ac_check('a stated fee survives a whole-body round trip', ac_req('PATCH', "/orders/{$deliveredId}", $deliveredRoundTrip), 200, function ($d) {
+    if (($d['data']['total'] ?? '') !== '2000.00') {
+        return 'the round trip moved the total to ' . ($d['data']['total'] ?? '?');
+    }
+
+    return ($d['data']['shipping_amount'] ?? null) === '500.00' ?: 'the fee did not survive';
+});
+
+ac_assert(
+    'and the round trip did not duplicate the line either',
+    ac_shipping_lines($deliveredId) === 1 ?: 'shipping lines: ' . ac_shipping_lines($deliveredId)
+);
+
+/*
+ * Zero is how a fee is cancelled, and it has to be a statement rather than an
+ * absence — the same distinction the manual-price section draws about a free
+ * line. If `0` meant "say nothing", an order charged for delivery once would be
+ * charged for it forever.
+ */
+ac_check('a zero fee is a statement, not an absence', ac_req('PATCH', "/orders/{$deliveredId}", [
+    'shipping_amount' => 0,
+]), 200, function ($d) {
+    if (($d['data']['total'] ?? '') !== '1500.00') {
+        return 'the fee did not come off the total: ' . ($d['data']['total'] ?? '?');
+    }
+
+    if (($d['data']['shipping_total'] ?? '') !== '0.00') {
+        return 'shipping_total is ' . ($d['data']['shipping_total'] ?? '?');
+    }
+
+    return ($d['data']['shipping_amount'] ?? null) === '0.00'
+        ?: 'a cancelled fee must read back as a stated zero, got '
+            . var_export($d['data']['shipping_amount'] ?? null, true);
+});
+
+// Empty means "this request says nothing about delivery", exactly as an empty
+// line price does — so a PATCH of nothing but an empty fee states nothing at
+// all, and gets the same 400 a body of only read-only fields gets.
+ac_check('an empty fee states nothing', ac_req('PATCH', "/orders/{$deliveredId}", [
+    'shipping_amount' => null,
+]), 400, function ($d) {
+    return !isset($d['error']['details']['fields'])
+        ?: 'an empty fee is not a validation error about a field';
+});
+
+/*
+ * A total is never stated, and `shipping_total` is a total. Dropped rather than
+ * refused, so the whole-body PATCH above works.
+ *
+ * The note rides along to pin one more thing about the fee-only branch: it ends
+ * at `calculate_totals()`, which saves, instead of the `save()` the other
+ * branches call. A property set by `applyProps()` has to survive that swap, and
+ * "the totals are right" would not have noticed if it did not.
+ */
+ac_check('a stated shipping_total is ignored, not believed', ac_req('PATCH', "/orders/{$deliveredId}", [
+    'shipping_total' => '999.00',
+    'shipping_amount' => '250',
+    'customer_note' => 'Delivery renegotiated to 250',
+]), 200, function ($d) {
+    if (($d['data']['customer_note'] ?? '') !== 'Delivery renegotiated to 250') {
+        return 'a field set alongside the fee did not survive the recompute save';
+    }
+
+    return ($d['data']['shipping_total'] ?? '') === '250.00'
+        ?: 'shipping_total is ' . ($d['data']['shipping_total'] ?? '?');
+});
+
+echo PHP_EOL, '--- a quoted fee is not a stated one ---', PHP_EOL;
+
+/*
+ * The one case where `shipping_amount` and `shipping_total` disagree, and the
+ * reason `shipping_amount` is null rather than an echo of the total.
+ *
+ * The shipping line here is written exactly as `Cart/CheckoutService::createOrder()`
+ * writes the §14 quote — same class, same `method_title`, same empty
+ * `method_id`. Nothing about the line distinguishes it from one this API wrote
+ * except the `_ac_manual_price` meta, which is the whole point: the amount says
+ * nothing (450 DZD looks the same whichever way it was arrived at) and neither
+ * does the label, which is deliberately identical so a customer's packing slip
+ * reads the same on both.
+ */
+$quoted = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+]);
+$quotedId = (int) ($quoted[1]['data']['id'] ?? 0);
+
+$quotedOrder = wc_get_order($quotedId);
+$quotedLine = new WC_Order_Item_Shipping();
+$quotedLine->set_method_title('Delivery');
+$quotedLine->set_method_id('');
+$quotedLine->set_total(450.0);
+$quotedOrder->add_item($quotedLine);
+$quotedOrder->calculate_totals();
+
+ac_check('a quoted fee is charged but not reported as stated', ac_req('GET', "/orders/{$quotedId}"), 200, function ($d) {
+    if (($d['data']['shipping_total'] ?? '') !== '450.00') {
+        return 'the quote is not on the order: shipping_total is ' . ($d['data']['shipping_total'] ?? '?');
+    }
+
+    if (($d['data']['total'] ?? '') !== '750.00') {
+        return 'total is ' . ($d['data']['total'] ?? '?');
+    }
+
+    // Tested with array_key_exists rather than `??`, which cannot tell an
+    // absent key from the null this assertion is entirely about.
+    if (!array_key_exists('shipping_amount', $d['data'] ?? [])) {
+        return 'shipping_amount must be emitted even when nobody stated one';
+    }
+
+    return $d['data']['shipping_amount'] === null
+        ?: 'a quoted fee must read back as null, got ' . var_export($d['data']['shipping_amount'], true);
+});
+
+// And the consequence that makes null the right value: PATCHing the fetched
+// body back sends `shipping_amount: null`, which must leave the shopper's
+// delivery charge alone rather than deleting it.
+[, $fetchedQuoted] = ac_req('GET', "/orders/{$quotedId}");
+$quotedRoundTrip = $fetchedQuoted['data'];
+$quotedRoundTrip['customer_note'] = 'Left with the concierge';
+
+ac_check('a whole-body PATCH does not delete a quoted fee', ac_req('PATCH', "/orders/{$quotedId}", $quotedRoundTrip), 200, function ($d) {
+    if (($d['data']['shipping_total'] ?? '') !== '450.00') {
+        return 'the quoted fee was destroyed by a round trip: ' . ($d['data']['shipping_total'] ?? '?');
+    }
+
+    return ($d['data']['total'] ?? '') === '750.00' ?: 'total is ' . ($d['data']['total'] ?? '?');
+});
+
+ac_assert(
+    'and the round trip did not add a line beside the quoted one',
+    ac_shipping_lines($quotedId) === 1 ?: 'shipping lines: ' . ac_shipping_lines($quotedId)
+);
+
+echo PHP_EOL, '--- the refusals ---', PHP_EOL;
+
+/*
+ * The same three sentences `line_items.{n}.price` refuses with, under the
+ * order's own key. The identity is the contract: a form that reddens one box
+ * with one wording and its neighbour with another is a form read twice.
+ */
+foreach ([
+    ['-1', 'Cannot be negative.', 'a negative fee'],
+    ['10000000.00', 'Is implausibly large.', 'a fee above the tariff ceiling'],
+    ['free', 'Must be an amount.', 'a fee that is not a number'],
+] as [$value, $message, $label]) {
+    ac_check("create refusing {$label}", ac_req('POST', '/orders', [
+        'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+        'shipping_amount' => $value,
+    ]), 400, function ($d) use ($message) {
+        return ($d['error']['details']['fields']['shipping_amount'] ?? '') === $message
+            ?: 'got ' . var_export($d['error']['details']['fields']['shipping_amount'] ?? null, true);
+    });
+
+    ac_check("update refusing {$label}", ac_req('PATCH', "/orders/{$deliveredId}", [
+        'shipping_amount' => $value,
+    ]), 400, function ($d) use ($message) {
+        return ($d['error']['details']['fields']['shipping_amount'] ?? '') === $message
+            ?: 'got ' . var_export($d['error']['details']['fields']['shipping_amount'] ?? null, true);
+    });
+}
+
+// A refused fee must not half-apply. The order is still worth what it was, and
+// still carries the one line it had.
+ac_check('a refused fee left the order alone', ac_req('GET', "/orders/{$deliveredId}"), 200, function ($d) {
+    return ($d['data']['shipping_total'] ?? '') === '250.00'
+        ?: 'shipping_total is ' . ($d['data']['shipping_total'] ?? '?');
+});
+
+echo PHP_EOL, '--- the whole-body round trip on a committed order ---', PHP_EOL;
+
+/*
+ * `shipping_amount` is the second field a whole-body PATCH has to strip once an
+ * order is no longer editable, and the two halves behave differently — which is
+ * the part a panel will not guess.
+ *
+ * The README already tells clients to omit `line_items` from a whole-body PATCH
+ * on a committed order, because the presenter echoes it back into the guard. A
+ * client that strips `line_items` and stops there meets a 409 naming the
+ * shipping amount on exactly the orders it created itself, and never on the
+ * ones the storefront placed — because a quoted fee reads back as `null`, which
+ * is dropped before it reaches any guard.
+ *
+ * Both orders leave `pending` here, which moves stock; every stock assertion in
+ * this suite is above the manual-price section, and both orders are a single
+ * mug.
+ */
+$committed = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+    'shipping_amount' => '200',
+]);
+$committedId = (int) ($committed[1]['data']['id'] ?? 0);
+
+ac_check('commit an order that carries a stated fee', ac_req('PATCH', "/orders/{$committedId}", [
+    'status' => 'processing',
+]), 200);
+
+[, $fetchedCommitted] = ac_req('GET', "/orders/{$committedId}");
+$committedBody = $fetchedCommitted['data'];
+$committedBody['customer_note'] = 'Ring twice';
+unset($committedBody['line_items']);
+
+ac_check('stripping line_items is not enough when a fee was stated', ac_req('PATCH', "/orders/{$committedId}", $committedBody), 409, function ($d) {
+    return str_contains((string) ($d['error']['message'] ?? ''), 'shipping amount')
+        ?: 'expected the shipping amount to be what refused it, got ' . ($d['error']['message'] ?? '?');
+});
+
+unset($committedBody['shipping_amount']);
+
+ac_check('stripping both lets the note through', ac_req('PATCH', "/orders/{$committedId}", $committedBody), 200, function ($d) {
+    if (($d['data']['customer_note'] ?? '') !== 'Ring twice') {
+        return 'the note did not stick';
+    }
+
+    // And the fee it could not restate is still on the order, untouched.
+    return ($d['data']['shipping_total'] ?? '') === '200.00'
+        ?: 'shipping_total is ' . ($d['data']['shipping_total'] ?? '?');
+});
+
+// The other half: a storefront order carries a quoted fee, the presenter emits
+// null for it, and null states nothing — so the same body that 409s above goes
+// through here with only `line_items` removed.
+ac_check('commit the quoted order too', ac_req('PATCH', "/orders/{$quotedId}", ['status' => 'processing']), 200);
+
+[, $fetchedQuotedCommitted] = ac_req('GET', "/orders/{$quotedId}");
+$quotedCommittedBody = $fetchedQuotedCommitted['data'];
+$quotedCommittedBody['customer_note'] = 'Left with the concierge';
+unset($quotedCommittedBody['line_items']);
+
+ac_check('a quoted fee never blocks the round trip', ac_req('PATCH', "/orders/{$quotedId}", $quotedCommittedBody), 200, function ($d) {
+    if (($d['data']['customer_note'] ?? '') !== 'Left with the concierge') {
+        return 'the note did not stick';
+    }
+
+    return ($d['data']['shipping_total'] ?? '') === '450.00'
+        ?: 'the quoted fee moved: ' . ($d['data']['shipping_total'] ?? '?');
+});
+
+echo PHP_EOL, "=== every manual price is audited ===", PHP_EOL;
+
+/*
+ * Backend step 5, and the reason the two steps above are allowed to exist.
+ *
+ * `LineItemInput` used to refuse a caller-supplied price outright, on the
+ * grounds that it lets anyone holding `ac_manage_orders` write an order at a
+ * price of nothing. That refusal is gone and **this record is what replaced
+ * it** — a price of nothing is no longer prevented, it is witnessed. So these
+ * assertions are not about a log being tidy: they are the entire remaining
+ * answer to the threat the old gate named, and a discount that reaches the
+ * order book without a row here is the failure the reversal was betting
+ * against.
+ *
+ * Read out of `ac_audit_logs` directly rather than through `GET /audit-logs`,
+ * because the question is what was *written*. The route has its own suite
+ * (tests/Api/audit.php) and its own §65 problem — a filter that does not filter
+ * — which is a different thing to be wrong about.
+ *
+ * Its own product, at 800, so that the block below can move a catalogue price
+ * mid-suite without touching a number any other section asserts.
+ */
+$reprice = ac_product('AC-ORD-AUDIT', '800', 60);
+$repriceId = $reprice->get_id();
+
+/** The metadata of an order's newest audit row for one action. */
+function ac_audit_meta(int $orderId, string $action): array
+{
+    global $wpdb;
+
+    $json = $wpdb->get_var(
+        $wpdb->prepare(
+            "SELECT metadata FROM {$wpdb->prefix}ac_audit_logs
+             WHERE resource_type = 'order' AND resource_id = %s AND action = %s
+             ORDER BY id DESC LIMIT 1",
+            (string) $orderId,
+            $action
+        )
+    );
+
+    $decoded = json_decode((string) $json, true);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+/** One row of a snapshot's `manual_prices`, by type and position. */
+function ac_priced(array $snapshot, int $index): array
+{
+    $rows = $snapshot['manual_prices'] ?? null;
+
+    return is_array($rows) && isset($rows[$index]) && is_array($rows[$index]) ? $rows[$index] : [];
+}
+
+$auditedCreate = ac_req('POST', '/orders', [
+    'line_items' => [
+        // Typed with three decimals on purpose. The store keeps two, so the
+        // presenter publishes 1200.51 — and the audit must not, because the
+        // record is of what a person wrote.
+        ['product_id' => $kettleId, 'quantity' => 2, 'price' => '1200.505'],
+        ['product_id' => $mugId, 'quantity' => 3],
+    ],
+    'shipping_amount' => '450',
+]);
+$auditedId = (int) ($auditedCreate[1]['data']['id'] ?? 0);
+
+ac_check('create an order with one hand price and a stated fee', $auditedCreate, 201);
+
+$created = ac_audit_meta($auditedId, 'order.created');
+
+// The four keys order.created has always carried. They now come from the same
+// snapshot() an update records, and a reader of the old shape must not break.
+ac_assert(
+    'order.created still carries the four fields it always did',
+    // 2 x 1200.505 + 3 x 300 + 450 delivery.
+    (($created['status'] ?? null) === 'pending'
+        && array_key_exists('customer_id', $created)
+        && (float) ($created['total'] ?? -1) === 3751.01
+        && ($created['items'] ?? null) === 2)
+        ?: 'got ' . wp_json_encode($created)
+);
+
+ac_assert(
+    'and the delivery charge, which it did not',
+    (float) ($created['shipping_total'] ?? -1) === 450.0
+        ?: 'shipping_total is ' . var_export($created['shipping_total'] ?? null, true)
+);
+
+/*
+ * Two amounts were chosen by a person on this order and three lines exist. The
+ * catalogue-priced mug contributes nothing, which is the assertion that keeps
+ * the record useful: an audit where every line carries a price and a comparison
+ * is an audit where the one line that *is* a decision does not stand out.
+ */
+ac_assert(
+    'the record names the two amounts a person chose, and only those',
+    count($created['manual_prices'] ?? []) === 2
+        ?: 'got ' . wp_json_encode($created['manual_prices'] ?? null)
+);
+
+ac_assert(
+    'the hand-priced line records what was typed and what it replaced',
+    (function () use ($created, $kettleId) {
+        $line = ac_priced($created, 1);
+
+        if (($line['type'] ?? null) !== 'line') {
+            return 'row 1 is ' . wp_json_encode($line);
+        }
+
+        // Unrounded. GET /orders publishes this line's price as 1200.51.
+        if (($line['charged'] ?? null) !== '1200.505') {
+            return 'charged is ' . var_export($line['charged'] ?? null, true);
+        }
+
+        if ((float) ($line['catalogue'] ?? -1) !== 1500.0) {
+            return 'catalogue is ' . var_export($line['catalogue'] ?? null, true);
+        }
+
+        // The ids and the quantity, so the discount is `(catalogue - charged) x
+        // quantity` and somebody can look the product up.
+        return (($line['product_id'] ?? 0) === $kettleId
+            && ($line['variation_id'] ?? null) === 0
+            && ($line['quantity'] ?? null) === 2)
+            ?: 'the line is not identified: ' . wp_json_encode($line);
+    })()
+);
+
+/*
+ * The fee's row says `catalogue: null`, and that null is structural rather than
+ * a gap: delivery has no catalogue price, because §14's tariff is quoted from a
+ * cart and an order is not one. `type` is what tells this null apart from a
+ * line whose catalogue price could not be captured — which is the whole reason
+ * every row carries a type.
+ */
+ac_assert(
+    'the stated fee is audited, and compares against nothing',
+    (function () use ($created) {
+        $fee = ac_priced($created, 0);
+
+        if (($fee['type'] ?? null) !== 'shipping') {
+            return 'row 0 is ' . wp_json_encode($fee);
+        }
+
+        if (($fee['charged'] ?? null) !== '450') {
+            return 'charged is ' . var_export($fee['charged'] ?? null, true);
+        }
+
+        return (array_key_exists('catalogue', $fee) && $fee['catalogue'] === null)
+            ?: 'a delivery fee must not be given an invented baseline: ' . wp_json_encode($fee);
+    })()
+);
+
+ac_assert(
+    'a complete list says so by carrying no omitted count',
+    !array_key_exists('manual_prices_omitted', $created)
+        ?: 'the record claimed a truncation that did not happen'
+);
+
+// An order nobody hand-priced records an empty list rather than no key. The
+// trail is append-only and full of rows written before this key existed; "there
+// were none" must not read the same as "nobody was looking".
+$plainCreate = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+]);
+$plainId = (int) ($plainCreate[1]['data']['id'] ?? 0);
+
+ac_check('create a wholly catalogue-priced order', $plainCreate, 201);
+
+ac_assert(
+    'it records an empty list, not a missing one',
+    (function () use ($plainId) {
+        $meta = ac_audit_meta($plainId, 'order.created');
+
+        return (array_key_exists('manual_prices', $meta) && $meta['manual_prices'] === [])
+            ?: 'got ' . wp_json_encode($meta['manual_prices'] ?? 'no key at all');
+    })()
+);
+
+echo PHP_EOL, '--- the before and after of a reprice ---', PHP_EOL;
+
+ac_check('reprice the line and restate the fee', ac_req('PATCH', "/orders/{$auditedId}", [
+    'line_items' => [
+        ['product_id' => $kettleId, 'quantity' => 2, 'price' => '900'],
+        ['product_id' => $mugId, 'quantity' => 3],
+    ],
+    'shipping_amount' => '600',
+]), 200);
+
+$updated = ac_audit_meta($auditedId, 'order.updated');
+
+ac_assert(
+    'the update records both halves',
+    (isset($updated['before']['manual_prices'], $updated['after']['manual_prices']))
+        ?: 'got ' . wp_json_encode($updated)
+);
+
+/*
+ * The `before` half is the one that could not exist without capturing the
+ * catalogue price at write time: these lines were destroyed by the very request
+ * that wrote this row — `replaceLineItems()` removes every line and re-adds the
+ * payload's — so nothing after the write could have read them.
+ */
+ac_assert(
+    'the before half still names the price that was replaced',
+    (function () use ($updated) {
+        $line = ac_priced($updated['before'] ?? [], 1);
+
+        return (($line['charged'] ?? null) === '1200.505' && (float) ($line['catalogue'] ?? -1) === 1500.0)
+            ?: 'before is ' . wp_json_encode($line);
+    })()
+);
+
+ac_assert(
+    'and the after half names the price that replaced it',
+    (function () use ($updated) {
+        $line = ac_priced($updated['after'] ?? [], 1);
+
+        return (($line['charged'] ?? null) === '900' && (float) ($line['catalogue'] ?? -1) === 1500.0)
+            ?: 'after is ' . wp_json_encode($line);
+    })()
+);
+
+/*
+ * The delivery fee's comparison, which is not a catalogue price and is not
+ * invented: the pair itself. `shipping_total` on both halves says what delivery
+ * was charging before this request and what it charges after — a number that is
+ * true for a quoted fee as well as a stated one, which no meta on the shipping
+ * line could be.
+ */
+ac_assert(
+    'the fee is compared against what delivery cost before it',
+    ((float) ($updated['before']['shipping_total'] ?? -1) === 450.0
+        && (float) ($updated['after']['shipping_total'] ?? -1) === 600.0
+        && (ac_priced($updated['before'] ?? [], 0)['charged'] ?? null) === '450'
+        && (ac_priced($updated['after'] ?? [], 0)['charged'] ?? null) === '600')
+        ?: 'got before ' . wp_json_encode($updated['before'] ?? null)
+            . ' after ' . wp_json_encode($updated['after'] ?? null)
+);
+
+echo PHP_EOL, '--- the catalogue price is frozen, not looked up ---', PHP_EOL;
+
+/*
+ * The assertion the whole step turns on.
+ *
+ * A product's price moves — a sale starts, a supplier puts the kettle up — so a
+ * catalogue price read when the audit row is *read* answers "what does this cost
+ * today", and one read on the order's next write answers "what did it cost the
+ * next time somebody edited this order". Neither is the question the record
+ * exists to answer. `OrderRepository::CATALOGUE_PRICE_META` freezes the number
+ * onto the line at the instant it is written, and this block is what proves the
+ * difference is real rather than argued.
+ */
+$frozen = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $repriceId, 'quantity' => 1, 'price' => '500']],
+]);
+$frozenId = (int) ($frozen[1]['data']['id'] ?? 0);
+
+ac_check('sell one at 500 while the catalogue says 800', $frozen, 201);
+
+ac_assert(
+    'the creation recorded the catalogue price of the day',
+    (float) (ac_priced(ac_audit_meta($frozenId, 'order.created'), 0)['catalogue'] ?? -1) === 800.0
+        ?: 'got ' . wp_json_encode(ac_audit_meta($frozenId, 'order.created')['manual_prices'] ?? null)
+);
+
+// The catalogue moves. Nothing about the order changes.
+$reprice->set_regular_price('950');
+$reprice->save();
+
+ac_assert(
+    'the catalogue really did move',
+    (float) wc_get_product($repriceId)->get_price() === 950.0
+        ?: 'the product is at ' . var_export(wc_get_product($repriceId)->get_price(), true)
+);
+
+ac_check('touch the order without touching its lines', ac_req('PATCH', "/orders/{$frozenId}", [
+    'customer_note' => 'Agreed 500 with Nadia on the 3rd',
+]), 200);
+
+$frozenUpdate = ac_audit_meta($frozenId, 'order.updated');
+
+/*
+ * Both halves report 800, the price that was actually replaced, and neither
+ * reports 950. A record that said 950 here would describe a 450 discount nobody
+ * granted, on a sale that happened when the gap was 300.
+ */
+ac_assert(
+    'the record still names the price that was really replaced',
+    ((float) (ac_priced($frozenUpdate['before'] ?? [], 0)['catalogue'] ?? -1) === 800.0
+        && (float) (ac_priced($frozenUpdate['after'] ?? [], 0)['catalogue'] ?? -1) === 800.0)
+        ?: 'got ' . wp_json_encode($frozenUpdate)
+);
+
+/*
+ * And the other direction, which is the same fact seen from the front: a line
+ * written *now* records the catalogue as it is now. The capture is at write
+ * time, so restating the identical manual price against a moved catalogue is a
+ * different record — and has to be, because it is a different decision.
+ */
+ac_check('restate the same price against the new catalogue', ac_req('PATCH', "/orders/{$frozenId}", [
+    'line_items' => [['product_id' => $repriceId, 'quantity' => 1, 'price' => '500']],
+]), 200);
+
+ac_assert(
+    'the rewritten line records the catalogue it was actually written against',
+    (function () use ($frozenId) {
+        $meta = ac_audit_meta($frozenId, 'order.updated');
+
+        if ((float) (ac_priced($meta['before'] ?? [], 0)['catalogue'] ?? -1) !== 800.0) {
+            return 'the before half moved: ' . wp_json_encode($meta['before'] ?? null);
+        }
+
+        return (float) (ac_priced($meta['after'] ?? [], 0)['catalogue'] ?? -1) === 950.0
+            ?: 'the after half is ' . wp_json_encode($meta['after'] ?? null);
+    })()
+);
+
+// Put the fixture back, so nothing downstream inherits a moved price.
+$reprice->set_regular_price('800');
+$reprice->save();
+
+echo PHP_EOL, '--- a quoted fee is not somebody\'s decision ---', PHP_EOL;
+
+/*
+ * The distinction the record has to keep, and the only thing that keeps it: a
+ * shipping line written by the checkout carries no `_ac_manual_price` meta, so
+ * it contributes no row — while `shipping_total` still reports the money the
+ * order is really charging. Emit the fee under both names and every §14 quote
+ * in the order book starts reading as a decision an operator made.
+ */
+$quotedAudit = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+]);
+$quotedAuditId = (int) ($quotedAudit[1]['data']['id'] ?? 0);
+
+$quotedAuditOrder = wc_get_order($quotedAuditId);
+$quotedAuditLine = new WC_Order_Item_Shipping();
+$quotedAuditLine->set_method_title('Delivery');
+$quotedAuditLine->set_method_id('');
+$quotedAuditLine->set_total(450.0);
+$quotedAuditOrder->add_item($quotedAuditLine);
+$quotedAuditOrder->calculate_totals();
+
+ac_check('touch an order the checkout charged for delivery', ac_req('PATCH', "/orders/{$quotedAuditId}", [
+    'customer_note' => 'Quoted at the till',
+]), 200);
+
+ac_assert(
+    'a quoted fee is reported as money, never as a decision',
+    (function () use ($quotedAuditId) {
+        $meta = ac_audit_meta($quotedAuditId, 'order.updated');
+
+        if (($meta['before']['manual_prices'] ?? null) !== []) {
+            return 'a quoted fee turned up as somebody\'s choice: '
+                . wp_json_encode($meta['before']['manual_prices'] ?? null);
+        }
+
+        return (float) ($meta['before']['shipping_total'] ?? -1) === 450.0
+            ?: 'shipping_total is ' . var_export($meta['before']['shipping_total'] ?? null, true);
+    })()
+);
+
+echo PHP_EOL, '--- the size bound, and how it announces itself ---', PHP_EOL;
+
+/*
+ * `line_items` has no cap on how many lines it carries, every one of them may
+ * state a price, and an update writes the list twice. `OrderService::MAX_AUDITED_PRICES`
+ * is 20; past it the record has to say what it left out, because a truncation
+ * that does not announce itself is a record that lies to the person reading it
+ * to establish what an operator did.
+ *
+ * Twenty-five lines and a fee is twenty-six chosen amounts. The fee is the row
+ * that must never be the one dropped — there is at most one of it and it is a
+ * decision of its own — which is why `manualPrices()` asks for the shipping
+ * item before the lines.
+ */
+$manyLines = [];
+
+for ($i = 0; $i < 25; $i++) {
+    $manyLines[] = ['product_id' => $repriceId, 'quantity' => 1, 'price' => (string) (100 + $i)];
+}
+
+$bulk = ac_req('POST', '/orders', ['line_items' => $manyLines, 'shipping_amount' => '700']);
+$bulkId = (int) ($bulk[1]['data']['id'] ?? 0);
+
+ac_check('create an order with twenty-five hand-priced lines', $bulk, 201);
+
+$bulkMeta = ac_audit_meta($bulkId, 'order.created');
+
+ac_assert(
+    'the row lists twenty and no more',
+    count($bulkMeta['manual_prices'] ?? []) === 20
+        ?: 'listed ' . count($bulkMeta['manual_prices'] ?? [])
+);
+
+ac_assert(
+    'and says how many it left out',
+    ($bulkMeta['manual_prices_omitted'] ?? null) === 6
+        ?: 'omitted count is ' . var_export($bulkMeta['manual_prices_omitted'] ?? null, true)
+);
+
+ac_assert(
+    'the one fee survived the bound; the lines are what it bit',
+    (function () use ($bulkMeta) {
+        $fee = ac_priced($bulkMeta, 0);
+
+        if (($fee['type'] ?? null) !== 'shipping' || ($fee['charged'] ?? null) !== '700') {
+            return 'the fee was dropped or displaced: ' . wp_json_encode($fee);
+        }
+
+        // 19 of the 25 lines, in payload order, so the count of omitted rows is
+        // the tail rather than an arbitrary sample.
+        return ((ac_priced($bulkMeta, 1)['charged'] ?? null) === '100'
+            && (ac_priced($bulkMeta, 19)['charged'] ?? null) === '118')
+            ?: 'the kept lines are not the first nineteen';
+    })()
+);
+
+echo PHP_EOL, "=== the PATCH field contract, measured ===", PHP_EOL;
+
+/*
+ * Item 1, backend step 1: the refusals this route actually returns.
+ *
+ * Everything ADMIN_PANEL.md and the panel's mock said about `PATCH /orders/{id}`
+ * covered `status` alone; `billing`, `shipping`, `line_items`, `payment_method`
+ * and `customer_note` were transcribed from source and never observed. This
+ * section observes them. The exact `details.fields` **key strings** are the
+ * point rather than the prose: they are what an edit form binds an error to,
+ * and a key that is one character off shows the operator nothing.
+ *
+ * **Measured in-process via rest_do_request()**, which is not the same thing as
+ * a signed HTTP request to the deployed instance. Routing, the args schema, the
+ * permission callback, OrderInput, AddressInput, LineItemInput, the service
+ * guards, the repository and WooCommerce itself all run; Application Password
+ * authentication, nonce handling, the REST cookie/CORS layer and any reverse
+ * proxy do not. Nothing below says anything about those.
+ *
+ * Its own product and its own orders, because the questions here are about
+ * fields rather than shelves. Every order is created `pending`, which moves no
+ * stock, and the three that must leave `pending` to be asked their question
+ * carry the probe product only — so the kettle and mug arithmetic the ledger
+ * sections above assert to the unit is untouched either way.
+ */
+$probe = ac_product('AC-ORD-PROBE', '100', 100000);
+$probeId = $probe->get_id();
+
+/** A pending order with every address field filled, so a probe can ask what survives. */
+function ac_probe_order(int $productId): int
+{
+    [, $data] = ac_req('POST', '/orders', [
+        'line_items' => [['product_id' => $productId, 'quantity' => 1]],
+        'billing' => [
+            'first_name' => 'Amina', 'last_name' => 'Belkacem', 'company' => 'Belkacem SARL',
+            'address_1' => '12 Rue Didouche', 'address_2' => 'Apt 4', 'city' => 'Alger',
+            'state' => 'Alger', 'postcode' => '16000', 'country' => 'DZ',
+            'phone' => '0550000000', 'email' => 'amina@example.test',
+        ],
+        'shipping' => [
+            'first_name' => 'Amina', 'last_name' => 'Belkacem', 'city' => 'Alger',
+            'state' => 'Alger', 'postcode' => '16000', 'country' => 'DZ', 'phone' => '0550000000',
+        ],
+        'payment_method' => 'cod',
+        'payment_method_title' => 'Cash on delivery',
+        'customer_note' => 'seeded',
+    ]);
+
+    return (int) ($data['data']['id'] ?? 0);
+}
+
+/** The one error key a refusal names, or a description of why that question has no answer. */
+function ac_field_error(array $data, string $key): string
+{
+    return $data['error']['details']['fields'][$key] ?? '';
+}
+
+/*
+ * The single most important answer for an edit form, so it goes first.
+ *
+ * A partial address **merges**. `OrderRepository::applyProps()` walks
+ * `AddressInput::$fields`, which holds only the keys the payload stated, and
+ * calls one setter per key — so a field the caller omitted is never written and
+ * survives. The form may therefore send only what changed; it does not have to
+ * echo the whole address back to avoid blanking it.
+ */
+$merge = ac_probe_order($probeId);
+
+ac_check('a partial billing merges rather than replaces', ac_req('PATCH', "/orders/{$merge}", [
+    'billing' => ['first_name' => 'Karim'],
+]), 200, function ($d) {
+    $billing = $d['data']['billing'] ?? [];
+
+    if (($billing['first_name'] ?? '') !== 'Karim') {
+        return 'the stated field did not land';
+    }
+
+    // Every other field, named one at a time: "the object is unchanged" is the
+    // claim a form is betting on, and a spot check of one neighbour would not
+    // catch a setter that blanked the rest.
+    foreach ([
+        'last_name' => 'Belkacem', 'company' => 'Belkacem SARL', 'address_1' => '12 Rue Didouche',
+        'address_2' => 'Apt 4', 'city' => 'Alger', 'state' => 'Alger', 'postcode' => '16000',
+        'country' => 'DZ', 'phone' => '0550000000', 'email' => 'amina@example.test',
+    ] as $field => $expected) {
+        if (($billing[$field] ?? null) !== $expected) {
+            return "billing.{$field} was blanked: " . var_export($billing[$field] ?? null, true);
+        }
+    }
+
+    return true;
+});
+
+ac_check('the sibling address is untouched too', ac_req('GET', "/orders/{$merge}"), 200, function ($d) {
+    return ($d['data']['shipping']['first_name'] ?? '') === 'Amina'
+        ?: 'a billing write reached the shipping address';
+});
+
+// Clearing is therefore explicit. null (and '') writes an empty string, which
+// is how a form deletes a company name it cannot omit its way out of.
+ac_check('null clears one field and only that field', ac_req('PATCH', "/orders/{$merge}", [
+    'billing' => ['company' => null],
+]), 200, function ($d) {
+    if (($d['data']['billing']['company'] ?? null) !== '') {
+        return 'company is ' . var_export($d['data']['billing']['company'] ?? null, true);
+    }
+
+    return ($d['data']['billing']['city'] ?? '') === 'Alger' ?: 'clearing one field cleared another';
+});
+
+// An empty object is a supported field, so it satisfies the "no supported
+// fields" check below while changing nothing.
+ac_check('an empty billing object is accepted and changes nothing', ac_req('PATCH', "/orders/{$merge}", [
+    'billing' => [],
+]), 200, function ($d) {
+    return ($d['data']['billing']['city'] ?? '') === 'Alger' ?: 'an empty object rewrote the address';
+});
+
+ac_check('a billing that is not an object is refused by prefix alone', ac_req('PATCH', "/orders/{$merge}", [
+    'billing' => 'nope',
+]), 400, function ($d) {
+    return ac_field_error($d, 'billing') === 'Must be an object of address fields.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+/*
+ * The country check is a **shape** check, and the probe that assumed otherwise
+ * was asking the wrong question. `ZZ` is not a country and is accepted: the
+ * rule is `^[A-Z]{2}$`, deliberately, because membership of the real list means
+ * WC()->countries and AddressInput is pure. What it catches is the mistake that
+ * happens — a country *name* where a code belongs.
+ *
+ * So a form cannot lean on this to validate a country. It refuses "Algeria" and
+ * accepts "ZZ", "XX" and "QQ" alike.
+ */
+ac_check('a two-letter non-country is accepted — the check is shape only', ac_req('PATCH', "/orders/{$merge}", [
+    'billing' => ['country' => 'ZZ'],
+]), 200, function ($d) {
+    return ($d['data']['billing']['country'] ?? '') === 'ZZ' ?: 'ZZ did not land';
+});
+
+ac_check('a country name is what the check refuses', ac_req('PATCH', "/orders/{$merge}", [
+    'billing' => ['country' => 'Algeria'],
+]), 400, function ($d) {
+    return ac_field_error($d, 'billing.country') === 'Must be a two-letter ISO country code, such as DZ.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+ac_check('a lowercase code is accepted and upper-cased', ac_req('PATCH', "/orders/{$merge}", [
+    'billing' => ['country' => 'dz'],
+]), 200, function ($d) {
+    return ($d['data']['billing']['country'] ?? '') === 'DZ' ?: 'got ' . ($d['data']['billing']['country'] ?? '?');
+});
+
+// Both prefixes report independently, so a form binding two country inputs gets
+// one error each rather than a single message about "the address".
+ac_check('both addresses refuse under their own prefix', ac_req('PATCH', "/orders/{$merge}", [
+    'billing' => ['country' => 'Algeria'],
+    'shipping' => ['country' => 'France'],
+]), 400, function ($d) {
+    return (ac_field_error($d, 'billing.country') !== '' && ac_field_error($d, 'shipping.country') !== '')
+        ?: 'got ' . wp_json_encode(array_keys($d['error']['details']['fields'] ?? []));
+});
+
+// The create-side finding, confirmed on the update side: shipping carries no
+// email, and it is named specifically rather than as an unknown field.
+ac_check('shipping still carries no email on update', ac_req('PATCH', "/orders/{$merge}", [
+    'shipping' => ['email' => 'a@b.co'],
+]), 400, function ($d) {
+    return ac_field_error($d, 'shipping.email') === 'Only a billing address carries an email.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+// Unknown fields are refused by name under the prefix they arrived on, at all
+// three depths. A form can therefore point at the input that produced one.
+ac_check('an unknown field is named at the top level', ac_req('PATCH', "/orders/{$merge}", [
+    'wilaya' => 16,
+]), 400, function ($d) {
+    return ac_field_error($d, 'wilaya') === 'Unknown field.' ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+ac_check('an unknown field is named under an address prefix', ac_req('PATCH', "/orders/{$merge}", [
+    'shipping' => ['wilaya' => 16],
+]), 400, function ($d) {
+    return ac_field_error($d, 'shipping.wilaya') === 'Unknown field.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+ac_check('an unknown field is named under a line index', ac_req('PATCH', "/orders/{$merge}", [
+    'line_items' => [['product_id' => $probeId, 'quantity' => 1, 'colour' => 'red']],
+]), 400, function ($d) {
+    return ac_field_error($d, 'line_items.0.colour') === 'Unknown field.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+/*
+ * The one refusal on this route that carries **no `details.fields` at all**, and
+ * the reason it is worth a test of its own.
+ *
+ * `AddressInput::validateEmail()` uses filter_var(), documented there as
+ * disagreeing with WordPress's is_email() "only on addresses neither a customer
+ * nor a courier will ever use". The disagreement is real and it is not
+ * harmless: `a@b.c` passes filter_var and fails is_email, so it clears
+ * validation and then `WC_Order::set_billing_email()` throws WC_Data_Exception,
+ * which `OrderService::save()` translates with the exception's own message and
+ * an empty details array. A form binding on `details.fields["billing.email"]`
+ * renders nothing at all for this input.
+ *
+ * The whole PATCH is refused, not half-applied — asserted below, because a
+ * failure between two setters is where a partial write would hide.
+ */
+$wcEmail = ac_probe_order($probeId);
+
+$wcRefusal = ac_check('a filter_var-valid address WooCommerce refuses has no field key', ac_req('PATCH', "/orders/{$wcEmail}", [
+    'customer_note' => 'changed alongside',
+    'billing' => ['email' => 'a@b.c'],
+]), 400, function ($d) {
+    if (($d['error']['code'] ?? '') !== 'invalid_request') {
+        return 'code is ' . ($d['error']['code'] ?? '?');
+    }
+
+    if (($d['error']['message'] ?? '') !== 'Invalid billing email address') {
+        return 'message is ' . ($d['error']['message'] ?? '?');
+    }
+
+    return ($d['error']['details']['fields'] ?? null) === null
+        ?: 'this refusal grew a field key: ' . wp_json_encode($d['error']['details']);
+});
+
+ac_check('and it applies nothing — the note in the same body did not move', ac_req('GET', "/orders/{$wcEmail}"), 200, function ($d) {
+    if (($d['data']['customer_note'] ?? '') !== 'seeded') {
+        return 'a refused PATCH still wrote the note: ' . ($d['data']['customer_note'] ?? '?');
+    }
+
+    return ($d['data']['billing']['email'] ?? '') === 'amina@example.test' ?: 'the email moved anyway';
+});
+
+// The malformed-by-both-rules case does get a field key, which is what makes
+// the one above easy to miss.
+ac_check('an address both rules reject is named normally', ac_req('PATCH', "/orders/{$wcEmail}", [
+    'billing' => ['email' => 'nope'],
+]), 400, function ($d) {
+    return ac_field_error($d, 'billing.email') === 'Must be a valid email address.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+/*
+ * `line_items` replaces the whole set, and a line `id` identifies nothing.
+ *
+ * Sending fewer lines than the order holds deletes the rest; the ids in the
+ * response are new rows every time, even when the payload restates the order
+ * exactly as it stands. So an admin client cannot use an id to aim an edit at
+ * one line, and must send the complete intended set or omit the key entirely.
+ */
+$lines = ac_probe_order($probeId);
+
+[, $linesBefore] = ac_req('GET', "/orders/{$lines}");
+$firstLineId = (int) ($linesBefore['data']['line_items'][0]['id'] ?? 0);
+
+ac_check('an id alone cannot aim at an existing line', ac_req('PATCH', "/orders/{$lines}", [
+    'line_items' => [['id' => $firstLineId, 'quantity' => 9]],
+]), 400, function ($d) {
+    return ac_field_error($d, 'line_items.0.product_id') === 'A product id is required.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+ac_check('a line omitted from the payload is removed', ac_req('PATCH', "/orders/{$lines}", [
+    'line_items' => [
+        ['product_id' => $probeId, 'quantity' => 3],
+        ['product_id' => $kettleId, 'quantity' => 1],
+    ],
+]), 200, function ($d) {
+    return count($d['data']['line_items'] ?? []) === 2 ?: 'expected two lines';
+});
+
+ac_check('sending one line back drops the other', ac_req('PATCH', "/orders/{$lines}", [
+    'line_items' => [['product_id' => $probeId, 'quantity' => 3]],
+]), 200, function ($d) {
+    return count($d['data']['line_items'] ?? []) === 1 ?: 'expected the kettle line to be gone';
+});
+
+// The identity question, asked directly: restate the order exactly as it stands
+// and the row is still replaced. Nothing a client stores about a line survives
+// a write that touches `line_items`.
+[, $idsBefore] = ac_req('GET', "/orders/{$lines}");
+ac_req('PATCH', "/orders/{$lines}", ['line_items' => [['product_id' => $probeId, 'quantity' => 3]]]);
+[, $idsAfter] = ac_req('GET', "/orders/{$lines}");
+
+ac_assert(
+    'an identical replace still issues new line ids',
+    ($idsBefore['data']['line_items'][0]['id'] ?? 0) !== ($idsAfter['data']['line_items'][0]['id'] ?? 0)
+        ?: 'the id survived, so something does pair the lines'
+);
+
+// And a PATCH that does not mention the lines leaves the ids alone, which is
+// what makes "omit the key" the safe default for a form editing anything else.
+ac_req('PATCH', "/orders/{$lines}", ['customer_note' => 'lines untouched']);
+[, $idsAfterNote] = ac_req('GET', "/orders/{$lines}");
+
+ac_assert(
+    'a PATCH that omits line_items preserves the ids',
+    ($idsAfter['data']['line_items'][0]['id'] ?? 0) === ($idsAfterNote['data']['line_items'][0]['id'] ?? -1)
+        ?: 'a note-only PATCH rewrote the lines'
+);
+
+ac_check('an empty list is refused, not read as "remove everything"', ac_req('PATCH', "/orders/{$lines}", [
+    'line_items' => [],
+]), 400, function ($d) {
+    return ac_field_error($d, 'line_items') === 'An order needs at least one line item.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+ac_check('a non-list is refused under the bare key', ac_req('PATCH', "/orders/{$lines}", [
+    'line_items' => ['product_id' => $probeId],
+]), 400, function ($d) {
+    return ac_field_error($d, 'line_items') === 'Must be an array of line items.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+// A product the catalogue does not have is caught in the repository rather than
+// in the pure input, and still arrives keyed by its index — so the two layers
+// are indistinguishable to a form, which is the point.
+ac_check('a missing product is named by its line index', ac_req('PATCH', "/orders/{$lines}", [
+    'line_items' => [
+        ['product_id' => $probeId, 'quantity' => 1],
+        ['product_id' => 99999999, 'quantity' => 1],
+    ],
+]), 400, function ($d) {
+    return ac_field_error($d, 'line_items.1.product_id') === 'No product with id 99999999.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+/*
+ * The `is_editable` refusal, and the shape of it: a 409 whose details are
+ * `status` and `editable_in` at the top of `details`, with **no `fields` key**.
+ * It is a state error rather than a field error, and a form has to render it as
+ * one — there is nothing to attach to an input.
+ */
+$committed = ac_probe_order($probeId);
+ac_check('the probe order reaches processing', ac_req('PATCH', "/orders/{$committed}", ['status' => 'processing']), 200);
+
+ac_check('line_items on a committed order is a 409 with no field key', ac_req('PATCH', "/orders/{$committed}", [
+    'line_items' => [['product_id' => $probeId, 'quantity' => 5]],
+]), 409, function ($d) {
+    if (($d['error']['code'] ?? '') !== 'conflict') {
+        return 'code is ' . ($d['error']['code'] ?? '?');
+    }
+
+    if (($d['error']['message'] ?? '') !== 'The line items of an order in this status cannot be changed.') {
+        return 'message is ' . ($d['error']['message'] ?? '?');
+    }
+
+    if (isset($d['error']['details']['fields'])) {
+        return 'a state refusal grew a fields key';
+    }
+
+    return (($d['error']['details']['status'] ?? '') === 'processing'
+        && ($d['error']['details']['editable_in'] ?? []) === ['pending', 'on-hold'])
+        ?: 'details are ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+ac_check('everything else stays writable on a committed order', ac_req('PATCH', "/orders/{$committed}", [
+    'billing' => ['city' => 'Oran'],
+    'customer_note' => 'Customer rang about the address',
+]), 200);
+
+/*
+ * The consequence that matters most to a panel, asserted rather than reasoned
+ * about. `OrderInput`'s docblock says the read shape is droppable so a client
+ * can "GET an order, change one thing and PATCH the whole object back". That
+ * holds on `pending` and `on-hold` and **fails on every other status**, because
+ * the presenter emits `line_items` and echoing it back trips the guard above —
+ * even when the only thing the operator changed was the note.
+ *
+ * So the edit form must omit `line_items` from a whole-body PATCH unless it
+ * means to rewrite the lines. That is a payload rule, not a display rule.
+ */
+[, $fetched] = ac_req('GET', "/orders/{$committed}");
+$wholeBody = $fetched['data'];
+$wholeBody['customer_note'] = 'Changed one field and sent it all back';
+
+ac_check('a whole-body round trip is refused on a committed order', ac_req('PATCH', "/orders/{$committed}", $wholeBody), 409, function ($d) {
+    return ($d['error']['details']['status'] ?? '') === 'processing'
+        ?: 'refused for something other than the line items';
+});
+
+unset($wholeBody['line_items']);
+
+ac_check('the same body without line_items is accepted', ac_req('PATCH', "/orders/{$committed}", $wholeBody), 200, function ($d) {
+    return ($d['data']['customer_note'] ?? '') === 'Changed one field and sent it all back'
+        ?: 'the note is ' . ($d['data']['customer_note'] ?? '?');
+});
+
+// The status guard is checked before the editability guard, so a body that
+// changes both reports the transition and never mentions the lines.
+ac_check('a transition refusal wins over the line-item refusal', ac_req('PATCH', "/orders/{$committed}", [
+    'status' => 'pending',
+    'line_items' => [['product_id' => $probeId, 'quantity' => 4]],
+]), 409, function ($d) {
+    return str_contains((string) ($d['error']['message'] ?? ''), 'cannot move from')
+        ?: 'got ' . ($d['error']['message'] ?? '?');
+});
+
+/*
+ * `payment_method` and `payment_method_title` move independently — with one
+ * asymmetry a form has to know about. Clearing the method clears the title as
+ * a side effect (WC_Abstract_Order::set_payment_method() blanks both on an
+ * empty string), unless the same body states a title, because the repository
+ * runs the method setter first and the title setter after it.
+ */
+$payment = ac_probe_order($probeId);
+
+ac_check('the method moves without its title', ac_req('PATCH', "/orders/{$payment}", [
+    'payment_method' => 'bacs',
+]), 200, function ($d) {
+    return (($d['data']['payment_method'] ?? '') === 'bacs'
+        && ($d['data']['payment_method_title'] ?? '') === 'Cash on delivery')
+        ?: 'got ' . wp_json_encode([$d['data']['payment_method'] ?? null, $d['data']['payment_method_title'] ?? null]);
+});
+
+ac_check('the title moves without its method', ac_req('PATCH', "/orders/{$payment}", [
+    'payment_method_title' => 'Virement bancaire',
+]), 200, function ($d) {
+    return (($d['data']['payment_method'] ?? '') === 'bacs'
+        && ($d['data']['payment_method_title'] ?? '') === 'Virement bancaire')
+        ?: 'got ' . wp_json_encode([$d['data']['payment_method'] ?? null, $d['data']['payment_method_title'] ?? null]);
+});
+
+ac_check('clearing the method also clears the title', ac_req('PATCH', "/orders/{$payment}", [
+    'payment_method' => '',
+]), 200, function ($d) {
+    return (($d['data']['payment_method'] ?? '?') === '' && ($d['data']['payment_method_title'] ?? '?') === '')
+        ?: 'the title survived: ' . wp_json_encode($d['data']['payment_method_title'] ?? null);
+});
+
+ac_check('unless the same body states one', ac_req('PATCH', "/orders/{$payment}", [
+    'payment_method' => '',
+    'payment_method_title' => 'A la livraison',
+]), 200, function ($d) {
+    return ($d['data']['payment_method_title'] ?? '') === 'A la livraison'
+        ?: 'the title is ' . ($d['data']['payment_method_title'] ?? '?');
+});
+
+// No gateway registry check. A slug no gateway answers to is stored as typed,
+// so a form offering a select is the only thing keeping the value meaningful.
+ac_check('an unregistered gateway slug is stored as typed', ac_req('PATCH', "/orders/{$payment}", [
+    'payment_method' => 'not_a_gateway',
+]), 200, function ($d) {
+    return ($d['data']['payment_method'] ?? '') === 'not_a_gateway' ?: 'the slug was rewritten';
+});
+
+ac_check('a non-string method is refused by name', ac_req('PATCH', "/orders/{$payment}", [
+    'payment_method' => ['cod'],
+]), 400, function ($d) {
+    return ac_field_error($d, 'payment_method') === 'Must be a string.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+/*
+ * `customer_note`: 5 000 characters, counted with mb_strlen after trimming, and
+ * refused by its own name. The three string fields share the cap.
+ */
+$note = ac_probe_order($probeId);
+
+ac_check('a 5000-character note is accepted', ac_req('PATCH', "/orders/{$note}", [
+    'customer_note' => str_repeat('a', 5000),
+]), 200, function ($d) {
+    return mb_strlen((string) ($d['data']['customer_note'] ?? '')) === 5000
+        ?: 'stored ' . mb_strlen((string) ($d['data']['customer_note'] ?? '')) . ' characters';
+});
+
+ac_check('5001 is refused under customer_note', ac_req('PATCH', "/orders/{$note}", [
+    'customer_note' => str_repeat('a', 5001),
+]), 400, function ($d) {
+    return ac_field_error($d, 'customer_note') === 'Must be at most 5000 characters.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+// Trimmed before it is counted, so surrounding whitespace never costs a caller
+// the last characters of a note that fits.
+ac_check('whitespace is trimmed before the cap is applied', ac_req('PATCH', "/orders/{$note}", [
+    'customer_note' => '  ' . str_repeat('b', 5000) . '  ',
+]), 200);
+
+ac_check('null empties the note', ac_req('PATCH', "/orders/{$note}", ['customer_note' => null]), 200, function ($d) {
+    return ($d['data']['customer_note'] ?? '?') === '' ?: 'got ' . var_export($d['data']['customer_note'] ?? null, true);
+});
+
+// Stored verbatim — no sanitizer runs on the way in or the way out. The panel
+// escapes on render; nothing here does it for them.
+ac_check('a note is stored and returned verbatim', ac_req('PATCH', "/orders/{$note}", [
+    'customer_note' => '<script>alert(1)</script> & "quoted"',
+]), 200, function ($d) {
+    return ($d['data']['customer_note'] ?? '') === '<script>alert(1)</script> & "quoted"'
+        ?: 'got ' . var_export($d['data']['customer_note'] ?? null, true);
+});
+
+ac_check('an address field is stored verbatim too', ac_req('PATCH', "/orders/{$note}", [
+    'billing' => ['first_name' => '<b>Amina</b>'],
+]), 200, function ($d) {
+    return ($d['data']['billing']['first_name'] ?? '') === '<b>Amina</b>'
+        ?: 'got ' . var_export($d['data']['billing']['first_name'] ?? null, true);
+});
+
+ac_check('an address field caps at 200 characters', ac_req('PATCH', "/orders/{$note}", [
+    'billing' => ['city' => str_repeat('x', 201)],
+]), 400, function ($d) {
+    return ac_field_error($d, 'billing.city') === 'Must be at most 200 characters.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+/*
+ * A read-only field is **dropped, not refused** — which means a body of nothing
+ * but read-only fields is indistinguishable from an empty body, and gets the
+ * empty-body refusal rather than anything naming `total`. That refusal carries
+ * no `details.fields` either.
+ *
+ * The distinction matters to a form: there is no per-field error to render for
+ * a read-only key, and a whole-body PATCH is exactly what this behaviour is for.
+ */
+$dropped = ac_probe_order($probeId);
+
+ac_check('a body of only read-only fields reads as an empty body', ac_req('PATCH', "/orders/{$dropped}", [
+    'id' => 1, 'number' => 'x', 'order_key' => 'x', 'created_via' => 'x', 'currency' => 'USD',
+    'version' => '1', 'discount_total' => '5', 'shipping_total' => '5', 'total_tax' => '5',
+    'total' => '1.00', 'subtotal' => '5', 'prices_include_tax' => true, 'payment_url' => 'x',
+    'is_editable' => false, 'needs_payment' => false, 'stock_reduced' => true, 'customer' => [],
+    'date_created' => 'x', 'date_modified' => 'x', 'date_paid' => 'x', 'date_completed' => 'x',
+]), 400, function ($d) {
+    if (($d['error']['message'] ?? '') !== 'No supported fields were provided.') {
+        return 'message is ' . ($d['error']['message'] ?? '?');
+    }
+
+    return !isset($d['error']['details']['fields']) ?: 'a dropped field produced a field error after all';
+});
+
+ac_check('and none of it landed', ac_req('GET', "/orders/{$dropped}"), 200, function ($d) {
+    return ($d['data']['total'] ?? '') === '100.00' ?: 'total is ' . ($d['data']['total'] ?? '?');
+});
+
+ac_check('a read-only field alongside a real one is simply ignored', ac_req('PATCH', "/orders/{$dropped}", [
+    'total' => '1.00',
+    'customer_note' => 'sent with a total alongside',
+]), 200, function ($d) {
+    return ($d['data']['total'] ?? '') === '100.00' ?: 'the stated total was believed: ' . ($d['data']['total'] ?? '?');
+});
+
+ac_check('an empty body is the same refusal', ac_req('PATCH', "/orders/{$dropped}", []), 400, function ($d) {
+    return ($d['error']['message'] ?? '') === 'No supported fields were provided.'
+        ?: 'got ' . ($d['error']['message'] ?? '?');
+});
+
+/*
+ * `customer_id` is editable on an existing order, in both directions, and the
+ * only thing checked is that the user exists. Re-attributing an order to a
+ * shop employee is accepted — there is no role or "is a customer" rule — so a
+ * form offering a customer picker is what keeps the value sensible.
+ */
+$owner = ac_probe_order($probeId);
+
+// Its own two users rather than the ones at the top of the file: the list
+// section above asserts that `$support` has no orders at all, and an
+// attribution left behind here would fail that assertion on the *next* run
+// rather than this one.
+$probeBuyer = ac_user('ac_ord_probe_buyer', 'customer');
+$probeStaff = ac_user('ac_ord_probe_staff', 'ac_order_manager');
+
+ac_check('an order can be re-attributed to a user', ac_req('PATCH', "/orders/{$owner}", [
+    'customer_id' => $probeBuyer,
+]), 200, function ($d) use ($probeBuyer) {
+    return ($d['data']['customer_id'] ?? null) === $probeBuyer ?: 'got ' . var_export($d['data']['customer_id'] ?? null, true);
+});
+
+ac_check('and back to a guest with 0', ac_req('PATCH', "/orders/{$owner}", ['customer_id' => 0]), 200, function ($d) {
+    return ($d['data']['customer_id'] ?? null) === 0 ?: 'got ' . var_export($d['data']['customer_id'] ?? null, true);
+});
+
+ac_check('a user that does not exist is refused by id', ac_req('PATCH', "/orders/{$owner}", [
+    'customer_id' => 99999999,
+]), 400, function ($d) {
+    return ac_field_error($d, 'customer_id') === 'No user with id 99999999.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+ac_check('a negative id is refused by shape', ac_req('PATCH', "/orders/{$owner}", [
+    'customer_id' => -1,
+]), 400, function ($d) {
+    return ac_field_error($d, 'customer_id') === 'Must be a user id, or 0 for a guest.'
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+// No role check: an order manager is a valid customer_id as far as this route
+// is concerned. Put back to a guest immediately afterwards, so the section
+// leaves no order attributed to anyone.
+ac_check('a staff user is an acceptable customer', ac_req('PATCH', "/orders/{$owner}", [
+    'customer_id' => $probeStaff,
+]), 200);
+
+ac_check('and the probe order is handed back to a guest', ac_req('PATCH', "/orders/{$owner}", [
+    'customer_id' => 0,
+]), 200);
+
+/*
+ * Every refusal in one body, because a form renders them all at once. The keys
+ * below are the complete vocabulary an edit form has to be able to bind to, and
+ * they arrive together rather than one per round trip.
+ */
+ac_check('every field-level refusal arrives in one response', ac_req('PATCH', "/orders/{$owner}", [
+    'billing' => ['country' => 'Algeria', 'email' => 'nope', 'wilaya' => 16],
+    'shipping' => ['email' => 'a@b.co', 'country' => 'France'],
+    'customer_id' => 'abc',
+    'status' => 'nonsense',
+    'customer_note' => str_repeat('a', 5001),
+    'unknown_top' => 1,
+    'line_items' => [['product_id' => 0, 'quantity' => 0]],
+]), 400, function ($d) {
+    $expected = [
+        'unknown_top', 'customer_note', 'status', 'customer_id', 'billing.wilaya', 'billing.email',
+        'billing.country', 'shipping.email', 'shipping.country', 'line_items.0.product_id',
+        'line_items.0.quantity',
+    ];
+
+    $actual = array_keys($d['error']['details']['fields'] ?? []);
+    sort($expected);
+    sort($actual);
+
+    return $expected === $actual ? true : 'got ' . wp_json_encode($actual);
+});
+
+// A 404 carries no details at all, so an id that has gone away is a page-level
+// error rather than anything a field can show.
+ac_check('a missing order is a bare 404', ac_req('PATCH', '/orders/99999999', [
+    'customer_note' => 'x',
+]), 404, function ($d) {
+    return (($d['error']['code'] ?? '') === 'not_found' && ($d['error']['details'] ?? null) === null)
+        ?: 'got ' . wp_json_encode($d['error'] ?? null);
+});
 
 echo PHP_EOL, "=== audit trail ===", PHP_EOL;
 

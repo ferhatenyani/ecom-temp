@@ -68,15 +68,160 @@ final class LineItemInputTest extends TestCase
     }
 
     /**
-     * `price` is dropped from a *read* shape by name, but a caller who sends
-     * one is trying to set it and must be told no rather than ignored.
+     * The reversal, asserted directly: this exact payload used to be refused
+     * with "Line prices come from the catalogue and cannot be set."
      */
-    public function testPriceIsRefusedWithAReasonRatherThanCalledUnknown(): void
+    public function testAManualPriceIsAcceptedAndKeptAsTheStringItArrivedAs(): void
     {
-        [, $errors] = $this->parse([['product_id' => 7, 'quantity' => 1, 'price' => '0.01']]);
+        [$items, $errors] = $this->parse([['product_id' => 7, 'quantity' => 1, 'price' => '0.01']]);
+
+        self::assertSame([], $errors);
+        self::assertSame('0.01', $items[0]->price);
+    }
+
+    /** A price is optional; a line without one is priced by the catalogue. */
+    public function testALineWithNoPriceCarriesNone(): void
+    {
+        [$items, $errors] = $this->parse([['product_id' => 7, 'quantity' => 1]]);
+
+        self::assertSame([], $errors);
+        self::assertNull($items[0]->price);
+    }
+
+    /**
+     * Zero is a price, not an absence. It is the case the old refusal existed
+     * to prevent — a free line — and it is now allowed on purpose, guarded by
+     * `ac_manage_orders` and the audit rather than by a 400.
+     */
+    public function testZeroIsAPriceAndNotAnEmptyValue(): void
+    {
+        foreach ([0, '0', 0.0, '0.00'] as $free) {
+            [$items, $errors] = $this->parse([['product_id' => 7, 'quantity' => 1, 'price' => $free]]);
+
+            self::assertSame([], $errors, var_export($free, true) . ' is a free line, not a missing price');
+            self::assertNotNull($items[0]->price, var_export($free, true) . ' must survive as a stated price');
+            self::assertSame(0.0, (float) $items[0]->price);
+        }
+    }
+
+    /**
+     * Clearing a manual price has to be expressible, or a line priced by hand
+     * once is priced by hand forever.
+     */
+    public function testAnEmptyPriceMeansNoManualPrice(): void
+    {
+        foreach ([null, ''] as $empty) {
+            [$items, $errors] = $this->parse([['product_id' => 7, 'quantity' => 1, 'price' => $empty]]);
+
+            self::assertSame([], $errors, var_export($empty, true) . ' should mean "no manual price"');
+            self::assertNull($items[0]->price);
+        }
+    }
+
+    public function testANegativePriceIsRefusedByName(): void
+    {
+        [$items, $errors] = $this->parse([['product_id' => 7, 'quantity' => 1, 'price' => '-1']]);
+
+        self::assertSame(['line_items.0.price' => 'Cannot be negative.'], $errors);
+        self::assertSame([], $items, 'a refused price must not survive as a catalogue-priced line');
+    }
+
+    public function testANonNumericPriceIsRefusedByName(): void
+    {
+        [, $errors] = $this->parse([['product_id' => 7, 'quantity' => 1, 'price' => 'free']]);
+
+        self::assertSame(['line_items.0.price' => 'Must be an amount.'], $errors);
+    }
+
+    /**
+     * An unbounded amount would reach the step-3 total recompute as INF, and
+     * `1e400` is how a JSON body produces one.
+     *
+     * @return array<string, array{0: mixed}>
+     */
+    public static function implausiblePriceProvider(): array
+    {
+        return [
+            'over the ceiling' => ['10000000.00'],
+            'json infinity' => [1e400],
+        ];
+    }
+
+    #[DataProvider('implausiblePriceProvider')]
+    public function testAnImplausiblyLargePriceIsRefusedByName(mixed $price): void
+    {
+        [, $errors] = $this->parse([['product_id' => 7, 'quantity' => 1, 'price' => $price]]);
+
+        self::assertSame(['line_items.0.price' => 'Is implausibly large.'], $errors);
+    }
+
+    /** The ceiling itself is a legal price — the refusal is above it, not at it. */
+    public function testTheCeilingItselfIsAccepted(): void
+    {
+        [$items, $errors] = $this->parse([['product_id' => 7, 'quantity' => 1, 'price' => '9999999.99']]);
+
+        self::assertSame([], $errors);
+        self::assertSame('9999999.99', $items[0]->price);
+    }
+
+    /**
+     * "A price on a line the caller did not otherwise change."
+     *
+     * `line_items` is a wholesale replacement — OrderRepository::replaceLineItems()
+     * deletes every line and re-adds the payload's — and the line `id` is
+     * dropped on write, so there is no way to reprice one existing line in
+     * place. A caller who tries gets told that about `price`, the field they
+     * came for, rather than only about the two fields they thought they could
+     * leave out.
+     */
+    public function testAPriceOnALineThatDoesNotRestateItselfIsRefusedByName(): void
+    {
+        [$items, $errors] = $this->parse([['id' => 91, 'price' => '500']]);
 
         self::assertArrayHasKey('line_items.0.price', $errors);
-        self::assertStringContainsString('catalogue', $errors['line_items.0.price']);
+        self::assertStringContainsString('replaces the whole set', $errors['line_items.0.price']);
+        self::assertSame([], $items);
+    }
+
+    /** Half a restatement is still not a restatement. */
+    public function testAPriceWithAProductButNoQuantityIsRefusedByName(): void
+    {
+        [, $errors] = $this->parse([['product_id' => 7, 'price' => '500']]);
+
+        self::assertArrayHasKey('line_items.0.price', $errors);
+        self::assertStringContainsString('product and quantity', $errors['line_items.0.price']);
+    }
+
+    /**
+     * A stated-but-invalid quantity is a quantity problem and gets one message.
+     * The price refusal is about a field the caller *omitted*, and firing both
+     * would blame the price for the quantity's mistake.
+     */
+    public function testAStatedButInvalidQuantityDoesNotAlsoBlameThePrice(): void
+    {
+        [, $errors] = $this->parse([['product_id' => 7, 'quantity' => 0, 'price' => '500']]);
+
+        self::assertArrayHasKey('line_items.0.quantity', $errors);
+        self::assertArrayNotHasKey('line_items.0.price', $errors);
+    }
+
+    /** The read shape still round trips, price or no price. */
+    public function testAPriceRidesAlongsideTheDroppedReadOnlyKeys(): void
+    {
+        [$items, $errors] = $this->parse([[
+            'id' => 91,
+            'name' => 'Blue kettle',
+            'sku' => 'KET-BLU',
+            'subtotal' => '3000.00',
+            'total' => '3000.00',
+            'product_id' => 7,
+            'variation_id' => 0,
+            'quantity' => 2,
+            'price' => '1200.50',
+        ]]);
+
+        self::assertSame([], $errors);
+        self::assertSame('1200.50', $items[0]->price);
     }
 
     public function testUnknownLineFieldsAreRejected(): void
