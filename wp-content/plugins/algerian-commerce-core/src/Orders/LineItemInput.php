@@ -77,28 +77,32 @@ namespace AlgerianCommerce\Orders;
  *    `on-hold` — and a price rides on `line_items`, so it inherits that reach.
  *    A `processing`, `completed`, `cancelled` or `refunded` order cannot be
  *    repriced at all.
- *  - **And, since backend step 6, a stock gate on the price alone.**
- *    `OrderService::guardManualPricesWritable()` refuses a stated `price` on an
- *    order that is already holding stock — `OrderRepository::stockReduced()`,
- *    WooCommerce's own flag, never a list of status names.
+ *    **`is_editable` reaches less far than it sounds like, and nothing narrows
+ *    it.** It is `pending` and `on-hold`, not "the order has not moved stock":
+ *    `on-hold` reduces stock *and* is editable, so an order holding units off
+ *    the shelf is repriceable. That is deliberate, and it is the whole of the
+ *    rule.
  *
- *    **This bullet used to say the opposite and the correction is the point.**
- *    It said the boundary was `is_editable` and not "the order has not moved
- *    stock", that an `on-hold` order holding units off the shelf was therefore
- *    still repriceable, and that closing that case was a later step's to
- *    decide. It was decided, and it is closed: on such an order a stated price
- *    is now a 409, and only the price is. Everything the old text said about
- *    `is_editable` reaching less far than it sounds like remains true of the
- *    *line-item* gate — quantities on a stock-holding order still go through,
- *    the repository still returns the units, replaces the lines and takes them
- *    again (`OrderRepository::rewriteLineItems()`) — so the two gates have to be
- *    read as two. What no longer rides along with that manoeuvre is an amount
- *    somebody typed.
+ *    **This bullet has now been written three ways and the third is the fix
+ *    round's, so read the history rather than trusting the sentence.** It first
+ *    said what the paragraph above says. Backend step 6 then reversed it and
+ *    added a second gate, `OrderService::guardManualPricesWritable()`, refusing
+ *    a stated price on a stock-holding order — a 409 naming
+ *    `OrderRepository::stockReduced()`, WooCommerce's own flag, never a list of
+ *    status names. The fix round's decision 1 removed that gate and restored
+ *    this text, and the reason is not that step 6 was wrong about the threat: it
+ *    is that the gate refused a price on an order whose *quantity* and *delivery
+ *    fee* it let through silently, so the same order took 54 000 DZD of extra
+ *    kettles and a delivery charge at the ceiling while a 1 DZD reprice was a
+ *    409. Three ways to move one total, two answers between them. The argument
+ *    in full, on both sides, is in `OrderService::snapshot()`.
  *
- *    Its own limits are named where it lives, and they are not small: a
- *    quantity can still move the same order's total by any amount, and the
- *    delivery fee is still writable there. Read that docblock before quoting
- *    this one as a guarantee about money.
+ *    So on a stock-holding order every one of the three now lands, the
+ *    repository still returns the units, replaces the lines and takes them
+ *    again (`OrderRepository::rewriteLineItems()`), and what makes that
+ *    supportable is the bullet above this one rather than a refusal. An
+ *    operator is warned before they type — `stock_reduced` is on the read shape
+ *    — and the write is recorded with that flag beside the amount.
  *
  * ## What the reversal costs
  *
@@ -113,13 +117,23 @@ namespace AlgerianCommerce\Orders;
  *     tell an echoed price from a typed one, so the audit, not this file, is
  *     what makes an accidental restatement visible.
  *
- *     Step 6's stock gate inherits that blindness and turns it into a refusal:
- *     on an order that is holding stock, a whole-body PATCH of an order with a
- *     hand-priced line is a 409, because the echo *states* a price and no layer
- *     can prove it was only an echo. Restating the identical amount is refused
- *     along with changing it. The client rule that answers it is the one the
- *     README already gives for a committed order — omit `line_items` unless you
- *     mean to rewrite the lines — now reaching one status further.
+ *     Step 6's stock gate inherited that blindness and turned it into a
+ *     refusal — a whole-body PATCH of a stock-holding order carrying a
+ *     hand-priced line was a 409, because the echo *states* a price and no
+ *     layer can prove it was only an echo, so restating the identical amount
+ *     was refused along with changing it. **That cost is gone with the gate**,
+ *     and it was the loudest thing the reversal bought: a panel can once again
+ *     GET an `on-hold` order, correct the customer note and PATCH the body
+ *     back. The client rule the README gives for a *committed* order — omit
+ *     `line_items` unless you mean to rewrite the lines — is unchanged and
+ *     reaches exactly as far as `is_editable` does.
+ *
+ *     What survives is the underlying blindness, and it is now visible in the
+ *     record instead of in a refusal: an echoed price and a typed one produce
+ *     the same `manual_prices` row, so a whole-body round trip on a stock-
+ *     holding order re-states the amount in the audit as though somebody had
+ *     just chosen it. `OrderService::snapshot()` keeps the before/after pair,
+ *     so the two are at least equal there, which is the tell.
  *  2. **The line's price and the line's totals can now disagree.** `subtotal`
  *     and `total` are dropped on write (see READ_ONLY) and both recomputed from
  *     `price × quantity` — backend step 3, applied in
