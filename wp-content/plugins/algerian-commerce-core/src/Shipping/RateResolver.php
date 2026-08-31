@@ -60,12 +60,20 @@ final class RateResolver
      * figure a shop means by "free delivery over 5000 DZD". Passing the order
      * total instead would let the delivery fee push a basket over its own
      * threshold, which is a loop with a customer inside it.
+     *
+     * `$deliveryType` is the journey the caller resolved this rule *for*, and
+     * is not the same thing as the rule's own: a rule with an empty delivery
+     * type prices every journey, and the quote it produces still priced exactly
+     * one of them. Optional because a caller holding a rule and no destination
+     * — an admin screen previewing a tariff row — has nothing true to put here,
+     * and `null` is how `RateQuote` spells that.
      */
     public static function quote(
         ShippingRule $rule,
         string $subtotal = '',
         int $decimals = 2,
-        string $currency = 'DZD'
+        string $currency = 'DZD',
+        ?string $deliveryType = null
     ): RateQuote {
         $free = self::qualifiesForFreeShipping($rule, $subtotal, $decimals);
 
@@ -76,7 +84,8 @@ final class RateResolver
             $currency,
             $rule->estimatedDays,
             RateQuote::SOURCE_RULES,
-            $free
+            $free,
+            $deliveryType
         );
     }
 

@@ -331,6 +331,39 @@ ac_assert(
         ?: 'subtotal was ' . var_export($quoted['data']['subtotal'] ?? null, true)
 );
 
+/*
+ * Backend step 2 made this route quote the couriers live as well as the tariff,
+ * and every row now says which of the two it came from.
+ *
+ * **On this install it can only ever say `rules`, and that is the finding
+ * rather than a weak test.** `ENABLE_YALIDINE` and `ENABLE_ZR_EXPRESS` are
+ * present and empty and their credentials cannot be produced locally, so the
+ * only courier `Plugin::shippingProviders()` registers is `ManualProvider`,
+ * which publishes no rate API at all (`ManualProvider::getShippingRates()`
+ * returns `[]` by design). The fallback is therefore the only branch a running
+ * stack reaches; the courier-answers branch lives in `ShopperRatesTest`, where
+ * a test double can stand in for a courier nobody here can switch on.
+ *
+ * The provider is asserted too, because it stopped being the empty string: a
+ * quote is resolved per *registered* courier now, so the name is one this shop
+ * could actually hand a parcel to.
+ */
+ac_assert(
+    'the quote says where its number came from',
+    (($quoted['data']['rates'][0]['source'] ?? '') === 'rules')
+        ?: 'source was ' . wp_json_encode($quoted['data']['rates'][0] ?? null)
+);
+ac_assert(
+    'and names a courier this shop actually has, not the empty fallback',
+    (($quoted['data']['rates'][0]['provider'] ?? '') === 'manual')
+        ?: 'provider was ' . var_export($quoted['data']['rates'][0]['provider'] ?? null, true)
+);
+ac_assert(
+    'a courier that is switched off cannot break the quote',
+    count($quoted['data']['rates'] ?? []) === 1
+        ?: 'expected exactly the one registered courier, got ' . wp_json_encode($quoted['data']['rates'] ?? null)
+);
+
 ac_check(
     'a checkout with no address is refused',
     ac_req('POST', '/checkout', ['wilaya_id' => 16], ['cart_token' => $token]),
@@ -343,6 +376,78 @@ ac_check(
         'billing' => ['first_name' => 'A', 'last_name' => 'B', 'address_1' => '1 rue', 'city' => 'Alger',
                       'country' => 'DZ', 'phone' => '0551020304', 'email' => 'a@example.test'],
         'wilaya_id' => 16, 'payment_method' => 'bitcoin',
+    ], ['cart_token' => $token]),
+    400
+);
+
+/*
+ * The shopper may now name a courier — backend step 2's third item.
+ *
+ * Two refusals, and they are different sentences on purpose. Only the first is
+ * reachable from a running install: telling *"this shop has no such courier"*
+ * apart from *"that courier does not reach there"* needs two registered
+ * couriers with only one of them quoting, and this install registers exactly
+ * one (`ManualProvider` — `ENABLE_YALIDINE` and `ENABLE_ZR_EXPRESS` are present
+ * and empty, and their credentials are issued by the couriers). The second
+ * branch is pinned in `ShopperRatesTest::testACourierWithNoRowCannotBeChosen()`,
+ * where a double can be a courier that quotes nothing.
+ *
+ * Both are keyed `shipping_provider` rather than `commune_id`, which is the
+ * distinction that matters to a form: the destination is fine, the choice is
+ * not.
+ */
+ac_check(
+    'a courier this shop does not have is refused',
+    ac_req('POST', '/checkout', [
+        'billing' => ['first_name' => 'A', 'last_name' => 'B', 'address_1' => '1 rue', 'city' => 'Alger',
+                      'country' => 'DZ', 'phone' => '0551020304', 'email' => 'a@example.test'],
+        'wilaya_id' => 16, 'shipping_provider' => 'yalidine',
+    ], ['cart_token' => $token]),
+    400,
+    static function (array $d): bool|string {
+        $field = $d['error']['details']['fields']['shipping_provider'] ?? null;
+
+        return (is_string($field) && str_contains($field, 'manual'))
+            ? true
+            : 'expected the serving couriers named under shipping_provider, got ' . wp_json_encode($d['error'] ?? null);
+    }
+);
+
+/*
+ * The registered set is never published here, and that is the reason this
+ * assertion exists rather than only the one above. `POST /checkout` is public
+ * — `CheckoutController::publicCheckout()` returns `__return_true` — while
+ * `GET /shipping/providers` is gated on `MANAGE_SHIPPING`. So the message may
+ * name the couriers that quoted, because `GET /checkout/shipping-rates` already
+ * showed this same caller exactly those, and may not carry the `available` key
+ * `ProviderRegistry::get()` would have attached.
+ */
+ac_check(
+    'and the refusal does not leak the shop courier configuration',
+    ac_req('POST', '/checkout', [
+        'billing' => ['first_name' => 'A', 'last_name' => 'B', 'address_1' => '1 rue', 'city' => 'Alger',
+                      'country' => 'DZ', 'phone' => '0551020304', 'email' => 'a@example.test'],
+        'wilaya_id' => 16, 'shipping_provider' => 'yalidine',
+    ], ['cart_token' => $token]),
+    400,
+    static fn (array $d): bool|string => !array_key_exists('available', $d['error']['details'] ?? [])
+        ? true
+        : 'the public route published the registry: ' . wp_json_encode($d['error']['details'])
+);
+
+/*
+ * Refused at the schema, before the service is entered at all. Provider names
+ * are lowercase slugs and the route declares the pattern `payment_method`
+ * declares, so a storefront sending a display name learns it here rather than
+ * getting "this shop does not ship with that courier" for a courier the shop
+ * does have.
+ */
+ac_check(
+    'a courier name in the wrong shape is refused by the route',
+    ac_req('POST', '/checkout', [
+        'billing' => ['first_name' => 'A', 'last_name' => 'B', 'address_1' => '1 rue', 'city' => 'Alger',
+                      'country' => 'DZ', 'phone' => '0551020304', 'email' => 'a@example.test'],
+        'wilaya_id' => 16, 'shipping_provider' => 'Yalidine Express',
     ], ['cart_token' => $token]),
     400
 );
@@ -411,6 +516,28 @@ if ($orderId > 0) {
                 'shipping_total' => $presented['shipping_total'] ?? null,
             ])
     );
+    /*
+     * The two labelling fields, on the order — the point of the whole exercise.
+     *
+     * An operator opening this order months from now has to be able to tell
+     * whether 450 was a courier's answer or a row in the tariff table, and the
+     * amount cannot tell them. `shipping_source` says which; the shipping
+     * line's `method_id` says whose. The second is asserted on the line rather
+     * than on the presented shape because the key that will surface it,
+     * `shipping_provider`, belongs to the write side that gives an operator a
+     * courier to choose — `OrderInput`'s docblock reserves the name.
+     */
+    ac_assert(
+        'the order records that its delivery fee came from the tariff',
+        ($presented['shipping_source'] ?? '?') === 'rules'
+            ?: 'shipping_source was ' . var_export($presented['shipping_source'] ?? null, true)
+    );
+    ac_assert(
+        'and the shipping line records which courier it is for',
+        ($quotedLine !== null && $quotedLine->get_method_id() === 'manual')
+            ?: 'method_id was ' . var_export($quotedLine?->get_method_id(), true)
+    );
+
     ac_assert(
         'the destination is recorded on the order',
         (int) $order->get_meta('_ac_wilaya_id') === 16 ?: 'wilaya meta was ' . var_export($order->get_meta('_ac_wilaya_id'), true)
@@ -448,6 +575,74 @@ ac_check(
     ], ['cart_token' => $token]),
     400
 );
+
+echo PHP_EOL, '--- the shopper names the courier ---', PHP_EOL;
+
+/*
+ * The same order, placed the other way: `shipping_provider` stated explicitly.
+ *
+ * **The assertion is that it is identical to the one above**, which is the half
+ * of backend step 2's third item that is easy to lose. The order placed with no
+ * `shipping_provider` a few dozen lines up charged 2450.00 against a `manual`
+ * shipping line sourced from `rules`; naming that same courier out loud must
+ * produce exactly that, because on this install `manual` *is* the cheapest row
+ * — it is the only row. The two paths meet at the same answer, which is what
+ * makes the field a choice among the shop's quotes rather than a second pricing
+ * mechanism.
+ *
+ * What this cannot show, and no test on a credential-less install can, is a
+ * chosen courier beating a cheaper one. That needs two quoting couriers and
+ * lives in `ShopperRatesTest::testAChosenCourierBeatsACheaperOne()`.
+ */
+ac_req('POST', '/cart/items', ['product_id' => $productId, 'quantity' => 2], ['cart_token' => $token]);
+
+$chosen = ac_check(
+    'a checkout with an explicit courier is placed',
+    ac_req('POST', '/checkout', [
+        'billing' => ['first_name' => 'Amina', 'last_name' => 'B', 'address_1' => '12 rue X', 'city' => 'Alger',
+                      'country' => 'DZ', 'phone' => '0551020304', 'email' => 'amina@example.test'],
+        'wilaya_id' => 16, 'commune_id' => 0, 'delivery_type' => 'home',
+        'shipping_provider' => 'manual',
+    ], ['cart_token' => $token]),
+    201,
+    static fn (array $d): bool|string => (int) ($d['data']['order']['id'] ?? 0) > 0 ? true : 'no order id'
+);
+
+$chosenId = (int) ($chosen['data']['order']['id'] ?? 0);
+
+if ($chosenId > 0) {
+    $chosenOrder = wc_get_order($chosenId);
+    $chosenLine = null;
+
+    foreach ($chosenOrder->get_items('shipping') as $item) {
+        $chosenLine = $item;
+        break;
+    }
+
+    ac_assert(
+        'naming the courier charges what the cheapest-wins path charged',
+        (string) wc_format_decimal($chosenOrder->get_total(), 2) === '2450.00'
+            ?: 'total was ' . $chosenOrder->get_total() . ' (expected the same 2450.00)'
+    );
+    ac_assert(
+        'and the chosen courier is the one written onto the line',
+        ($chosenLine !== null && $chosenLine->get_method_id() === 'manual')
+            ?: 'method_id was ' . var_export($chosenLine?->get_method_id(), true)
+    );
+    /*
+     * A choice does not make the number a courier's. `shipping_source` reports
+     * what priced the line, and on this install nothing but §14 can — see
+     * `OrderInput`'s table for why `rules` beside a named courier is the
+     * ordinary reading and not a contradiction.
+     */
+    ac_assert(
+        'choosing a courier does not change where the price came from',
+        ($chosenLine !== null && $chosenLine->get_meta('_ac_rate_source', true) === 'rules')
+            ?: 'rate source was ' . var_export($chosenLine?->get_meta('_ac_rate_source', true), true)
+    );
+
+    $chosenOrder->delete(true);
+}
 
 echo PHP_EOL, "── clear ──", PHP_EOL;
 

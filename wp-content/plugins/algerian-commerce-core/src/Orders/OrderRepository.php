@@ -280,15 +280,180 @@ final class OrderRepository
      * order book speaking two, which is the argument `Cart\CheckoutService::attachOptions()`
      * makes about freezing an option's label at the time of sale.
      *
-     * **`method_id` is left empty**, which is what `CheckoutService::createOrder()`
-     * already writes for a rule with no courier on it, so the value is not new
-     * to this order book. Empty rather than a marker like `ac_manual` because
-     * `method_id` is the courier slot and item 2's `shipping_provider` is going
-     * to land in it — occupying it now with a flag would mean item 2 has to
-     * evict the flag and find somewhere else for the fact it recorded. The fact
-     * lives in the meta instead, where item 2 does not have to think about it.
+     * **`method_id` now holds the courier, and item 2 is what filled it.** Two
+     * earlier revisions of this paragraph said the slot was left empty and
+     * explained at length why nothing should squat in it — first because that
+     * was all a back-office order could say, then because a storefront order
+     * had begun naming a courier there while this path still could not. Both
+     * are kept in the history rather than quietly overwritten, because the
+     * reasoning they gave is the reasoning that paid off: the slot was held
+     * open for `shipping_provider`, and `shipping_provider` arrived and took it
+     * without evicting anything.
+     *
+     * So the value written here is whatever the payload's `shipping_provider`
+     * named, and empty when it named nobody — a fee stated in the back office
+     * before anybody decided who delivers it, which remains a legitimate state
+     * and remains spelled `''`. Still not a marker like `ac_manual`: `manual`
+     * is a real registered courier (`Shipping\ManualProvider`), so a flag with
+     * that shape would be indistinguishable from an operator choosing in-house
+     * delivery, and "nobody has decided" and "we are driving it ourselves" are
+     * different facts about an order.
+     *
+     * The facts that are not about the courier still live in meta —
+     * `MANUAL_PRICE_META` and `RATE_SOURCE_META` — which is what left this slot
+     * free to be occupied by the one fact it is named for.
      */
     private const SHIPPING_LINE_TITLE = 'Delivery';
+
+    /**
+     * Which of the two sources priced a shipping line — `rules` or `provider`.
+     *
+     * ## The values are `RateQuote`'s, and are not new vocabulary
+     *
+     * `Shipping\RateQuote::SOURCE_RULES` and `::SOURCE_PROVIDER` are what
+     * `GET /shipping/rates` and `GET /checkout/shipping-rates` have always
+     * labelled a quote with. This stores the winning quote's own label
+     * unchanged, so "where did this number come from" has one answer spelled
+     * one way from the quote a shopper was shown through to the order they
+     * placed. Inventing a second pair of words for the order — the reference
+     * shop's `AUTOMATIC` / `FIXED` — would have meant a client translating
+     * between two vocabularies for one fact, and translating is where a
+     * mismatch hides.
+     *
+     * ## Why a rules quote is not "fixed"
+     *
+     * Worth saying because `FIXED` is the obvious import and it is wrong here.
+     * In the reference shop a fixed fee is a number on the *product*
+     * (`EL/api/…/service/DeliveryFeeCalculationService.java:169`, read from
+     * source). §14's tariff is not that: `Shipping\RateResolver` picks the
+     * narrowest rule of commune, wilaya, delivery type and courier, and the
+     * amount can be waived entirely by a free-shipping threshold. Calling that
+     * "fixed" describes almost nothing about it. `rules` says where to go and
+     * look, which is what an operator actually needs.
+     *
+     * ## Written by whoever prices the line, and only then
+     *
+     * A line with no such meta is one this key predates or one nobody priced
+     * through a quote — `OrderPresenter` reads that as `null`, the same way it
+     * reads an unstated `shipping_amount`, rather than guessing a source. A
+     * guess here would be worse than a silence: the whole reason the field
+     * exists is that the amount cannot tell you where it came from.
+     *
+     * Underscore-prefixed, for `MANUAL_PRICE_META`'s reason — WooCommerce does
+     * not render meta keys that begin with one, so this stays off the packing
+     * slip and out of the customer's email. It is bookkeeping for the shop, and
+     * a customer told their delivery fee came from `provider` learns nothing
+     * and wonders what the alternative was.
+     */
+    public const RATE_SOURCE_META = '_ac_rate_source';
+
+    /**
+     * Why the last confirmation of this order created no parcel — backend
+     * step 2, item 5.
+     *
+     * ## Defined here, written by `Shipping/`, and that is the settled shape
+     *
+     * `Shipping\ShipmentSubscriber` writes it and `Shipping\ShipmentFailure`
+     * decides what goes in it; this file owns nothing but the key and
+     * `OrderPresenter` reads it back. That is `RATE_SOURCE_META`'s arrangement
+     * exactly — declared in `Orders/`, written by `Cart\CheckoutService::createOrder()`
+     * — and it is the arrangement that keeps the dependency running one way.
+     * `Shipping/` already imports this class; nothing in `Orders/` imports
+     * `Shipping/`, and putting the constant on the other side of the boundary
+     * would be the change that made the two cyclic (docs/ARCHITECTURE.md §3).
+     *
+     * ## An order-level key, unlike its two neighbours
+     *
+     * `MANUAL_PRICE_META` and `RATE_SOURCE_META` both go on a *line item*,
+     * because both are facts about one shipping line. This is a fact about the
+     * order: it records that a confirmation happened and produced no parcel, and
+     * a confirmation is not a line. It would also be lost by the line rewrite
+     * that `replaceShippingLine()` performs on every restated fee, which is
+     * precisely the moment an operator is most likely to be correcting the thing
+     * that failed.
+     *
+     * ## One current value, not a history
+     *
+     * The key holds the most recent failure and is deleted the moment a parcel
+     * exists. That is deliberate and it is only defensible because the history
+     * is kept somewhere better: every attempt writes a `shipment.create_failed`
+     * audit row, and `ac_audit_logs` is the append-only store this plugin uses
+     * for "what has been done to this" — the same division of labour
+     * `Shipping\ShipmentRepository` describes for a parcel, where the row says
+     * where it is and the trail says what happened to it.
+     *
+     * ## Read-only on the wire
+     *
+     * `OrderPresenter` publishes it as `shipping_provider_error` and
+     * `OrderInput::READ_ONLY` drops it, for `shipping_source`'s reason: a caller
+     * who could state it could claim a courier had refused when none was asked.
+     * It is also a statement about the past, which the write side of this API
+     * never lets anybody make.
+     *
+     * Underscore-prefixed for `MANUAL_PRICE_META`'s reason, and here the
+     * argument is at its strongest: WooCommerce renders unprefixed meta on the
+     * packing slip and in the customer's email, and a customer must never be
+     * shown the sentence a courier used to refuse their address.
+     */
+    public const SHIPPING_ERROR_META = '_ac_shipping_error';
+
+    /**
+     * Where this order is going, by the ids of the §51 dataset — backend
+     * step 2.
+     *
+     * ## Three writers, one shape, and that is the whole reason these are
+     * constants
+     *
+     * `Cart\CheckoutService::createOrder()` wrote these three keys first, as
+     * string literals, with a comment saying why: *"kept with the order so a
+     * later shipment does not have to guess it back out of a free-text
+     * address"*. `Shipping\ShipmentSubscriber` then read them back, and
+     * declared its own private copies of the same three literals — its docblock
+     * called that *"one duplication too many"* out loud rather than pretending
+     * otherwise. This change adds the third writer, `applyProps()` below, on
+     * behalf of `POST /orders`.
+     *
+     * Three sites spelling one fact was the point at which the literals had to
+     * stop. Two writers producing two shapes for one fact is the failure this
+     * key exists to make impossible: `ShipmentSubscriber::destinationOf()` and
+     * `Shipping\ShipmentInput` must not need to know which door an order came
+     * through, and they only avoid needing to know while a storefront order and
+     * a back-office order are written **identically** — same keys, same casts,
+     * `(int)` for the ids and `(string)` for the journey.
+     *
+     * ## Declared in `Orders/`, written from `Cart/` and read from `Shipping/`
+     *
+     * `RATE_SOURCE_META`'s arrangement exactly, and `SHIPPING_ERROR_META`'s, and
+     * for their reason: both of those modules already import this class and
+     * nothing in `Orders/` imports either of them, so the constant lives on the
+     * side of the boundary that keeps the dependency running one way
+     * (docs/ARCHITECTURE.md §3). Putting it in `Shipping/` — where `Destination`
+     * lives and where it superficially belongs — is the change that would make
+     * the two cyclic.
+     *
+     * ## Order-level, like `SHIPPING_ERROR_META` and unlike the other two
+     *
+     * A destination is a fact about the order, not about a shipping line. It
+     * therefore survives `replaceShippingLine()`, which destroys and rebuilds
+     * the line on every restated fee — and that is load-bearing rather than
+     * incidental: *"the courier came back at 600, not 450"* is the most ordinary
+     * PATCH this route takes, and an address that evaporated when a price was
+     * corrected would break the confirmation dispatch in exactly the way
+     * `replaceShippingLine()` had to grow a `$provider` argument to stop.
+     *
+     * ## Not underscore-prefixed for a *new* reason
+     *
+     * The prefix is `MANUAL_PRICE_META`'s — WooCommerce does not render meta
+     * keys that begin with one, so these stay off the packing slip and out of
+     * the customer's email. Here that is close to a formality: the keys were
+     * spelled this way by `CheckoutService` before anything else existed, and
+     * they could not be renamed now without orphaning the destination of every
+     * order the storefront has ever placed. They are what they are because they
+     * are already in the database.
+     */
+    public const WILAYA_META = '_ac_wilaya_id';
+    public const COMMUNE_META = '_ac_commune_id';
+    public const DELIVERY_TYPE_META = '_ac_delivery_type';
 
     public function find(int $id): ?WC_Order
     {
@@ -397,7 +562,7 @@ final class OrderRepository
         $order->save();
 
         $this->replaceLineItems($order, $lines);
-        $this->applyShippingAmount($order, $input);
+        $this->applyShippingLine($order, $input);
         $order->calculate_totals();
 
         return $this->applyStatus($order, $input);
@@ -444,10 +609,34 @@ final class OrderRepository
         if ($lines !== null) {
             $this->rewriteLineItems($order, $lines, $input);
         } elseif ($input->has('shipping_amount')) {
-            $this->applyShippingAmount($order, $input);
+            $this->applyShippingLine($order, $input);
             // Saves, like every other call to it in this class.
             $order->calculate_totals();
         } else {
+            /*
+             * The bare branch, and it stayed bare on purpose when
+             * `shipping_provider` arrived.
+             *
+             * A courier's name is written here rather than in the branch above
+             * because it is not money: it changes no line total, so there is
+             * nothing for `calculate_totals()` to re-derive and every reason not
+             * to run it — see `applyShippingLine()`, which argues the whole
+             * case. `save()` persists the item through `save_items()`
+             * (`abstract-wc-order.php:255`), which is the same call that has
+             * always persisted the props `applyProps()` set just above.
+             *
+             * So the rule the three branches state together is now sharper than
+             * the two-branch version it grew from: **any write that touches the
+             * lines or the fee ends at `calculate_totals()`, and everything else
+             * ends at `save()`** — with `shipping_provider` on the second side,
+             * beside the address and the customer note.
+             *
+             * `applyShippingLine()` is called unconditionally and returns
+             * immediately when the payload states neither field, so this branch
+             * is still the plain save it reads as for every payload that has
+             * nothing to do with delivery.
+             */
+            $this->applyShippingLine($order, $input);
             $order->save();
         }
 
@@ -494,7 +683,7 @@ final class OrderRepository
         }
 
         $this->replaceLineItems($order, $lines);
-        $this->applyShippingAmount($order, $input);
+        $this->applyShippingLine($order, $input);
         // Saves, so the new lines are in the database before the re-reduction
         // below — and before any status transition can act on them.
         $order->calculate_totals();
@@ -695,7 +884,38 @@ final class OrderRepository
         return (bool) $store->get_stock_reduced($order->get_id());
     }
 
-    /** Everything except status and line items, both of which are ordered. */
+    /**
+     * Everything except status and line items, both of which are ordered.
+     *
+     * ## The destination joins this method and not `applyShippingLine()`
+     *
+     * It is order meta, so it belongs with the props rather than with the one
+     * shipping line — and the placement pays twice. `applyProps()` runs on
+     * **every** path: before the save in `create()`, and ahead of all three
+     * branches in `update()`, whichever way that method then decides to
+     * persist. So a payload carrying nothing but a corrected commune takes the
+     * bare `save()` and writes exactly one thing, while the same payload with a
+     * fee beside it lands in the same `calculate_totals()` as the fee. Neither
+     * needed a branch of its own, because a destination is not a term in any
+     * sum — `calculate_totals()` adds up shipping *line totals*
+     * (`abstract-wc-order.php:2158-2163`, the 11.0.1 compose.yaml pins) and
+     * order meta has never been in that arithmetic.
+     *
+     * Written exactly as `Cart\CheckoutService::createOrder()` writes it —
+     * same three keys, `(int)` for the two ids and `(string)` for the journey —
+     * which is the entire contract of `WILAYA_META` above. A storefront order
+     * and a phone order have to be indistinguishable to
+     * `Shipping\ShipmentSubscriber::destinationOf()`, and they are only
+     * indistinguishable while these two writers agree character for character.
+     *
+     * Each key is written only when the payload states it, which is this API's
+     * rule everywhere else — **a payload changes what it mentions**, the same
+     * sentence `replaceShippingLine()` argues from and the same reason the
+     * address loop above walks only the fields `AddressInput` kept. It is what
+     * lets an operator correct a commune without restating the wilaya, and
+     * `OrderService::guardDestinationResolves()` is what makes sure the pair
+     * they leave behind still names one place.
+     */
     private function applyProps(WC_Order $order, OrderInput $input): void
     {
         foreach (['payment_method' => 'set_payment_method',
@@ -721,6 +941,19 @@ final class OrderRepository
             foreach ($address->fields as $field => $value) {
                 $order->{"set_{$type}_{$field}"}($value);
             }
+        }
+
+        foreach ([
+            'wilaya_id' => self::WILAYA_META,
+            'commune_id' => self::COMMUNE_META,
+        ] as $field => $key) {
+            if ($input->has($field)) {
+                $order->update_meta_data($key, (int) $input->get($field));
+            }
+        }
+
+        if ($input->has('delivery_type')) {
+            $order->update_meta_data(self::DELIVERY_TYPE_META, (string) $input->get('delivery_type'));
         }
     }
 
@@ -830,14 +1063,114 @@ final class OrderRepository
      * `calculate_totals()`. That adjacency is the design: this method only
      * moves items, and the money is derived afterwards by the one call that
      * already derives it from the lines.
+     *
+     * ## Two fields, two branches, and why the second is not the first
+     *
+     * `shipping_provider` writes to the same shipping line and it was tempting
+     * to route it through `replaceShippingLine()` as well, one writer for one
+     * line. That is wrong, and the reason is worth the extra method.
+     *
+     * **Naming a courier moves no money.** `calculate_totals()` sums shipping
+     * *line totals* (`abstract-wc-order.php:2158-2163`, the 11.0.1
+     * compose.yaml pins); a `method_id` is not in that sum and never has been.
+     * So a payload that states only a courier changes nothing the order is
+     * worth, and it must not be made to look as if it might: routing it through
+     * the replace path would destroy and re-create the line, hand it a new item
+     * id, and oblige the caller to run `calculate_totals()` on an order that
+     * has no reason to recompute — which on a `completed` order is exactly the
+     * kind of quiet re-derivation `OrderService::guardShippingAmountWritable()`
+     * exists to keep away from committed money. Setting the field in place
+     * touches one column, keeps the item id, keeps every meta, and takes the
+     * plain `save()`.
+     *
+     * The branches are ordered rather than independent because a payload may
+     * state both, and then there is one line to write and the replace path
+     * writes it — carrying the courier into the line it builds. Running both
+     * would be a replace immediately followed by a mutation of what it built,
+     * which is the same answer reached twice.
      */
-    private function applyShippingAmount(WC_Order $order, OrderInput $input): void
+    private function applyShippingLine(WC_Order $order, OrderInput $input): void
     {
-        if (!$input->has('shipping_amount')) {
+        if ($input->has('shipping_amount')) {
+            self::replaceShippingLine(
+                $order,
+                (string) $input->get('shipping_amount'),
+                // Null is "this payload names no courier", which is a different
+                // statement from naming none — see replaceShippingLine(), where
+                // it means *keep whoever is already carrying it*.
+                $input->has('shipping_provider') ? (string) $input->get('shipping_provider') : null
+            );
+
             return;
         }
 
-        self::replaceShippingLine($order, (string) $input->get('shipping_amount'));
+        if ($input->has('shipping_provider')) {
+            self::assignShippingProvider($order, (string) $input->get('shipping_provider'));
+        }
+    }
+
+    /**
+     * Point the order's shipping line at a courier, without touching the money.
+     *
+     * ## In place, and what that buys
+     *
+     * `WC_Abstract_Order::save()` runs `save_items()` (`abstract-wc-order.php:255`),
+     * which calls `save()` on every item in every group it has loaded
+     * (`:352-361`) — both verified against the 11.0.1 compose.yaml pins. The
+     * `get_items('shipping')` below is what loads the group, so mutating the
+     * item here and letting the caller's `save()` run is a complete write. No
+     * `calculate_totals()` is needed or wanted: nothing in the sum moved.
+     *
+     * Every shipping line gets the courier, not just the first. An order this
+     * API wrote has exactly one — `replaceShippingLine()` collapses them, and
+     * argues why — but WooCommerce permits several and another surface may have
+     * left them. Naming a courier on one of three and leaving two pointing
+     * somewhere else would produce an order whose answer to "who is carrying
+     * this" depends on which line you read, and `OrderPresenter` reads the
+     * first. Writing all of them keeps the question single-valued.
+     *
+     * ## When there is no line at all, one is made
+     *
+     * This is the `POST /orders` case the whole field exists for: an order
+     * taken on the phone where the operator knows the courier and either has no
+     * delivery charge to state or has not been told it yet. Refusing here would
+     * make `shipping_provider` depend on `shipping_amount`, and the two are
+     * independent statements — see `OrderInput`'s docblock, which argues at
+     * length that neither validates the other.
+     *
+     * The new line's total is the order's *current* `shipping_total` rather
+     * than a bare zero. On every order that reaches this branch those are the
+     * same number, because an order with no shipping lines has nothing for
+     * `calculate_totals()` to have summed into that prop. It is written from
+     * the prop anyway so the line and the total cannot be made to disagree by
+     * an order that arrived here with a shipping total and no line to explain
+     * it — this method would otherwise be the thing that silently zeroed a
+     * delivery charge, on a request that said nothing about money at all.
+     *
+     * No `MANUAL_PRICE_META` goes on it, and that is the correct silence:
+     * nobody stated this amount, so `OrderPresenter::shippingAmount()` reports
+     * `null` and the order says a courier was named and no fee was. Nor a
+     * `RATE_SOURCE_META` — no quote produced the number, which is exactly what
+     * that field's `null` means.
+     */
+    private static function assignShippingProvider(WC_Order $order, string $provider): void
+    {
+        $items = $order->get_items('shipping');
+
+        if ($items === []) {
+            $item = new WC_Order_Item_Shipping();
+            $item->set_method_title(self::SHIPPING_LINE_TITLE);
+            $item->set_method_id($provider);
+            $item->set_total((float) $order->get_shipping_total());
+
+            $order->add_item($item);
+
+            return;
+        }
+
+        foreach ($items as $item) {
+            $item->set_method_id($provider);
+        }
     }
 
     /**
@@ -904,23 +1237,73 @@ final class OrderRepository
      * record says what delivery was charging before this request and what it
      * charges after — for a quoted fee as well as a stated one, which no meta on
      * this line could do.
+     *
+     * ## The courier survives a restated fee, and this is the bug that was not
+     *
+     * `$provider` is null when the payload named no courier, and then the
+     * courier already on the line is carried onto the new one. Writing `''`
+     * there instead — which is what this method did while `method_id` had
+     * nothing to hold — is the version that looks harmless and is not.
+     *
+     * Correcting a delivery charge is the single most ordinary PATCH this API
+     * takes: *the courier came back at 600, not 450.* Under a blind `''` that
+     * request would also, silently, un-assign the courier. On a storefront
+     * order that is a real loss, because `Cart\CheckoutService::createOrder()`
+     * now writes a registered courier's name there from the winning quote, and
+     * backend step 2's fifth item reads exactly that field to decide who to
+     * hand the parcel to on confirmation. The operator would fix a price and
+     * break a dispatch, with nothing in the response to say so.
+     *
+     * The rule that falls out is the one this API applies to every other field
+     * on a PATCH: **a payload changes what it mentions.** `applyProps()` walks
+     * only the keys the caller stated, one setter each; a restated fee is a
+     * statement about the fee.
+     *
+     * ## What does *not* survive it, and why that is the opposite decision
+     *
+     * `RATE_SOURCE_META` is deliberately not carried forward, and the asymmetry
+     * with `method_id` one line above is the point rather than an inconsistency.
+     * That field records **where this number came from**, so a number a person
+     * has just replaced by hand cannot keep the old one's provenance — the fee
+     * is now stated, and `OrderPresenter::shippingSource()`'s docblock says in
+     * terms what a stated fee reads: *"An order whose fee a person typed in the
+     * back office therefore reads `null` here and carries a `shipping_amount`
+     * instead."* Carrying it would let an order claim a courier quoted a figure
+     * no courier has ever seen, which is precisely why `shipping_source` is not
+     * settable by anyone.
+     *
+     * `method_id` is not about the number at all. It is about the van. Restating
+     * a price says nothing about who drives.
      */
-    private static function replaceShippingLine(WC_Order $order, string $amount): void
+    private static function replaceShippingLine(WC_Order $order, string $amount, ?string $provider = null): void
     {
+        /*
+         * Read before the removal loop rather than off `$existing` afterwards.
+         * `remove_item()` only queues the deletion — the object stays readable,
+         * which is what makes the tempting version work today — but a value
+         * this method depends on should not be read out of something it has
+         * already asked to be destroyed, and the first line is the one
+         * `OrderPresenter::shippingSource()` reads, so "first" has to mean the
+         * same thing in both places.
+         */
+        $carried = '';
+
         foreach ($order->get_items('shipping') as $existing) {
+            if ($carried === '') {
+                $carried = (string) $existing->get_method_id();
+            }
+
             $order->remove_item($existing->get_id());
         }
 
         $item = new WC_Order_Item_Shipping();
         $item->set_method_title(self::SHIPPING_LINE_TITLE);
         /*
-         * Stated rather than left to the constructor's default, because it is
-         * a decision and not an oversight: this is the courier slot, item 2's
-         * `shipping_provider` is what fills it, and until then a back-office
-         * order names no courier — exactly what `CheckoutService::createOrder()`
-         * already writes for a §14 rule with no provider on it.
+         * The courier this payload named, or the one already carrying it.
+         * Empty only when neither exists, which is the original back-office
+         * case: a fee stated before anybody has decided who delivers it.
          */
-        $item->set_method_id('');
+        $item->set_method_id($provider ?? $carried);
         $item->set_total((float) $amount);
         $item->update_meta_data(self::MANUAL_PRICE_META, $amount);
 

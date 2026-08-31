@@ -345,11 +345,17 @@ would mean the storefront proxying every quantity change with an admin credentia
 with the site salt, expires in 48 hours, and a forged one opens an *empty* cart rather than somebody
 else's. **`LineInput` accepts `product_id`, `variation_id` and `quantity` and refuses `price`,
 `line_total`, `subtotal`, `total`, `discount` and `currency` by name with a reason** — the
-`CustomerInput` device. Shipping comes from `RateResolver` against the destination and the free-shipping
-threshold is compared against the *cart's* subtotal, because a caller that could state its own subtotal
-could claim to have crossed one. **Checkout does not take the money**: it creates a `pending` order and
-returns `next: {action: create_payment, endpoint: /orders/{id}/payments}`, §58's existing route, because
-a payment that fails must not orphan an order that succeeded. `RateResolver` is used directly rather
+`CustomerInput` device. Shipping comes from `Shipping\ShopperRates` against the destination — **one row
+per registered courier: the courier's own live quote where it gives one, §14's tariff where it does
+not**, each row labelled `source: provider | rules` — and the free-shipping threshold is compared
+against the *cart's* subtotal, because a caller that could state its own subtotal could claim to have
+crossed one. A threshold that makes delivery free outranks a live courier quote: it is a promise to the
+customer, not a price. **A courier that is off, unreachable or throwing never breaks a quote** — it
+contributes no row and the tariff answers for it, which is the deliberate opposite of
+`ShippingService::rates()`, where a manager needs to see that a courier is refusing. **Checkout does not
+take the money**: it creates a `pending` order and returns
+`next: {action: create_payment, endpoint: /orders/{id}/payments}`, §58's existing route, because
+a payment that fails must not orphan an order that succeeded. `ShopperRates` is used directly rather
 than `ShippingService::rates()`, which asserts `ac_manage_shipping` — a shopper being quoted a delivery
 price is not reading the shop's shipping configuration.
 
@@ -712,6 +718,28 @@ ignores NULLs — so re-sending after a failed delivery still works. `ShipmentRe
 a MySQL `GET_LOCK` for the order across the whole of `ShippingService::create()`, courier call included,
 because the index would otherwise refuse the duplicate *row* only after the duplicate *parcel* was real.
 The lock is the defence; the index is the guarantee. Never reintroduce a bare read as the guard.
+
+**Confirmation creates the parcel, from a hook and not from `OrderService`.** `ShipmentSubscriber`
+listens on `woocommerce_order_status_processing` — `OrderStockSubscriber`'s and `CodSubscriber`'s
+argument, and it bites hardest here: an order reaches `processing` from `PATCH /orders/{id}`, from
+`POST /orders` (it is in `CREATABLE`), from wp-admin, from WP-CLI, from cron, and from
+`WC_Order::payment_complete()`, which picks the status itself, so a gateway confirming a payment
+confirms the order and nothing in `Orders/` chose it. It also keeps the arrow one-way — `Orders/`
+knows nothing about shipping. **It never throws**: two `catch (Throwable)`s, because WooCommerce's own
+net in `WC_Order::status_transition()` catches `Exception` only, publishes the message into an order
+note, and abandons every hook after the one that threw. The status is committed before the hook runs,
+so nothing can roll it back; what the catch protects is the request and the other subscribers. **It
+retries** on `liveForOrder() === null` — a refused parcel writes no row, so the next confirm tries
+again, and a cancelled or failed one no longer blocks (EL's `trackingNumber != null` blocks forever).
+The failure is stored, not returned: `_ac_shipping_error` on the order, published read-only as
+`shipping_provider_error` (`ShipmentFailure` decides what may be in it — never a raw `Throwable`
+message), plus a `shipment.create_failed` audit row per attempt. Tracking and label stay on the
+`ac_shipments` row and are read through `GET /orders/{id}/shipments`; they are deliberately not copied
+onto the order. **The automatic path needs `_ac_wilaya_id` / `_ac_commune_id`, which only the checkout
+writes** — `POST /orders` has no destination field, so a back-office order records the failure
+`order_destination_missing` and `POST /orders/{id}/shipments` is its way through. That route stays for
+five named reasons; see `ShippingService::create()`.
+
 Providers implement `Shipping\ShippingProviderInterface` and are registered in
 `Plugin::shippingProviders()`, which is the only place a courier's credentials and feature flag are read;
 `ManualProvider` (in-house delivery), `Integrations\Yalidine\YalidineProvider` and
@@ -767,7 +795,11 @@ means one genuinely arrived, and the markers come out then and not before.
 What the shop *charges* is separate from what a courier quotes: `ac_shipping_rates` (migration 005,
 `Schema::VERSION` is 6) holds the tariff, and `RateResolver` picks the narrowest matching rule — commune beats
 wilaya beats the national fallback, and rules are never added together. `GET /shipping/rates` returns both
-sources, each labelled. Deliberately not WooCommerce shipping zones: those key on postcodes, which the commune
+sources, each labelled; `GET /checkout/shipping-rates` returns one row per courier and labels it the same way,
+because a shopper can only be shown one price per courier. **Which of the two priced an order is frozen onto
+its shipping line** as `_ac_rate_source` and read back as `shipping_source` — an operator looking at an old
+order needs to know whether that number came from a courier or a rule, and the amount cannot tell them.
+Deliberately not WooCommerce shipping zones: those key on postcodes, which the commune
 dataset does not have.
 
 Geographic data is complete: **69 wilayas** (the 2019 reform's 58 plus the eleven former circonscriptions

@@ -318,6 +318,16 @@ final class ShippingController extends AbstractController
         return Response::success(self::present($this->service->forOrder((int) $request->get_param('id'))));
     }
 
+    /**
+     * Create a parcel by hand — the fallback, since backend step 2.
+     *
+     * Confirmation creates one on its own now (`ShipmentSubscriber`), which
+     * makes this the second way rather than the only way. It stays, and
+     * `ShippingService::create()` carries the five reasons — the order the
+     * courier refused, the order that never transitions, the re-send, the
+     * destination an order cannot record, and every field a parcel has that an
+     * order does not.
+     */
     public function store(WP_REST_Request $request): WP_REST_Response
     {
         return Response::success(

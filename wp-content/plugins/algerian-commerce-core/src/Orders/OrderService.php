@@ -7,9 +7,11 @@ namespace AlgerianCommerce\Orders;
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Audit\AuditLogger;
 use AlgerianCommerce\Audit\AuditRepository;
+use AlgerianCommerce\Geography\GeoRepository;
 use AlgerianCommerce\Inventory\MovementRepository;
 use AlgerianCommerce\Permissions\Capabilities;
 use AlgerianCommerce\Permissions\Permissions;
+use AlgerianCommerce\Shipping\ProviderRegistry;
 use WC_Data_Exception;
 use WC_Order;
 use WC_Order_Item_Product;
@@ -127,7 +129,41 @@ final class OrderService
          * with all three.
          */
         private readonly AuditRepository $auditLog,
-        private readonly MovementRepository $movements
+        private readonly MovementRepository $movements,
+        /*
+         * The couriers, and the only thing this class asks them: whether a name
+         * an operator typed is one of them. No rate is fetched and no shipment
+         * is created here — `Shipping\ShippingService` owns both — so the
+         * dependency is a membership test and nothing more.
+         *
+         * Optional for the reason `Cart\CheckoutService`'s registry is, with
+         * the same consequence stated rather than left to be discovered: a
+         * service built without one accepts any well-formed courier name,
+         * because there is nothing to check it against. `Plugin::orderService()`
+         * always passes one, so that is a test seam and not a configuration a
+         * shop can reach.
+         */
+        private readonly ?ProviderRegistry $providers = null,
+        /*
+         * The §51 geography, and the only thing this class asks it: whether the
+         * commune an operator picked is a real row of the wilaya beside it.
+         *
+         * A read-only reference dataset, so the new arrow this adds to the
+         * module map is the cheap kind — `Geography/` depends on nothing and
+         * has no opinion about orders, which is why `Shipping\ShippingService`
+         * already holds the identical dependency for the identical check
+         * (`validatedDestination()`). It is a lookup, not an orchestration:
+         * nothing here creates a parcel, quotes a rate or reads a courier's
+         * destination map.
+         *
+         * Optional and last, on `$providers`' rule and with the same
+         * consequence spelled out rather than discovered: a service built
+         * without one accepts any well-formed pair of ids, because there is
+         * nothing to check them against. `Plugin::orderService()` always passes
+         * one. The pair *coherence* check below runs either way, because that
+         * one needs no tables.
+         */
+        private readonly ?GeoRepository $geography = null
     ) {
     }
 
@@ -169,6 +205,11 @@ final class OrderService
                 'allowed' => OrderStatus::CREATABLE,
             ]);
         }
+
+        $this->guardShippingProviderKnown($input, null);
+        // Null for the same reason: a create has no stored destination to
+        // resolve a half-stated pair against, and nothing to restate.
+        $this->guardDestinationResolves($input, null);
 
         $order = $this->save(fn (): WC_Order => $this->repository->create($input));
 
@@ -219,6 +260,27 @@ final class OrderService
         if ($input->has('shipping_amount')) {
             $this->guardShippingAmountWritable($order);
         }
+
+        /*
+         * Not beside the guards above, and not conditional on `has()` either —
+         * the method makes both decisions itself, because for this field
+         * "should I run?" and "what do I check?" are the same question. See its
+         * docblock for why it is a *known-name* check and not a writability
+         * one: `shipping_provider` moves no money, so there is no `is_editable`
+         * gate here to sit under.
+         */
+        $this->guardShippingProviderKnown($input, $order);
+
+        /*
+         * Beside it and not among the guards above, for its neighbour's exact
+         * reason: the method decides for itself whether it should run, because
+         * a destination arrives in up to three keys and "is this payload
+         * talking about where the parcel goes" is not a question `has()` on any
+         * one of them answers. Like `shipping_provider` and unlike
+         * `shipping_amount`, there is no `is_editable` gate for it to sit
+         * under — see its docblock.
+         */
+        $this->guardDestinationResolves($input, $order);
 
         /*
          * Taken before the write, and now that the snapshot reads item meta
@@ -693,6 +755,306 @@ final class OrderService
             'The shipping amount of an order in this status cannot be changed.',
             ['status' => $order->get_status(), 'editable_in' => [OrderStatus::PENDING, OrderStatus::ON_HOLD]]
         );
+    }
+
+    /**
+     * The stated courier has to be one this shop has — and that is the only
+     * thing checked, at any status.
+     *
+     * ## There is no `is_editable` gate here, and that is a decision
+     *
+     * The method above states the rule this class enforces: **everything that
+     * moves the order total is gated by `is_editable`, and everything that does
+     * not is free at any status.** `shipping_provider` is unambiguously on the
+     * free side. It writes `method_id` on the shipping line, and
+     * `calculate_totals()` sums shipping *line totals*
+     * (`abstract-wc-order.php:2158-2163`, the 11.0.1 compose.yaml pins) — a
+     * `method_id` is not a term in that sum. Naming a courier cannot move a
+     * dinar, so gating it would be inventing a restriction rather than
+     * declining to invent an exemption, which is the distinction
+     * `guardShippingAmountWritable()` is careful to draw about its own gate.
+     *
+     * **And gating it would break the feature it exists for.** Backend step 2
+     * confirms an order and creates a parcel with the courier the order names;
+     * confirmation moves the order to `processing`, which is not editable. An
+     * `is_editable` gate would therefore make the courier unchangeable from the
+     * exact moment it starts to matter — and *"Yalidine refused this commune,
+     * send it with ZR Express"* is not a hypothetical, it is the retry path
+     * `BLOCKED.md` names as the thing that cannot be exercised until a courier
+     * can reject. That retry is a later sub-task's to build, and building it
+     * against a field it cannot write would be building it against nothing.
+     *
+     * The cost, named rather than hidden: on a `completed` order an operator
+     * can re-point the courier on a parcel that has already been delivered.
+     * That writes a label on a historical line; it does not re-route anything,
+     * because a shipment records the provider it was created with and
+     * `ProviderRegistry`'s docblock makes exactly that promise — *"A shipment
+     * always records the provider it was created with, so changing the default
+     * later never re-routes a parcel that already exists."* The `ac_shipments`
+     * row is untouched by this write, and the write is audited like every
+     * other.
+     *
+     * ## Membership, checked here because a pure validator cannot
+     *
+     * `OrderInput` normalizes the name and stops there, on
+     * `Shipping\ShipmentInput::fromPayload()`'s stated rule that a pure
+     * validator must not need a container. The registry check has to happen
+     * somewhere, and it has to happen at *write* time: backend step 2's fifth
+     * item hands this string to `ProviderRegistry::get()` to create the parcel,
+     * and an unregistered name discovered there is a 400 at confirmation — the
+     * worst possible moment, on a request the operator did not associate with
+     * the typo they made days earlier.
+     *
+     * ## Restating what the order already says can never fail
+     *
+     * The second branch is not a convenience. `OrderPresenter` emits
+     * `shipping_provider`, and `OrderInput`'s docblock promises the round trip
+     * that shape exists for: GET an order, change one thing, PATCH the whole
+     * object back. A shop that switches `ENABLE_YALIDINE` off has not made its
+     * historical Yalidine orders wrong — but under a registration check alone,
+     * every one of them would 400 on a PATCH that only touched the customer
+     * note, on a key the client echoed without meaning to. That is precisely
+     * the trap `shipping_source` avoided by being read-only, and a writable
+     * field has to avoid it another way.
+     *
+     * So the rule is: **you may name any courier this shop has, and you may
+     * always restate the one this order already names.** A no-op is not a
+     * change and must not be refused for one. It is genuinely a no-op —
+     * `OrderRepository::assignShippingProvider()` writes the same value back —
+     * so nothing is smuggled through the exemption; what it cannot do is name a
+     * *different* de-registered courier, which would be a change and is
+     * refused.
+     *
+     * On a create there is no order to restate, so registration is the whole
+     * test.
+     */
+    private function guardShippingProviderKnown(OrderInput $input, ?WC_Order $order): void
+    {
+        if (!$input->has('shipping_provider') || $this->providers === null) {
+            return;
+        }
+
+        $stated = (string) $input->get('shipping_provider');
+
+        if ($this->providers->has($stated)) {
+            return;
+        }
+
+        foreach ($order?->get_items('shipping') ?? [] as $item) {
+            if (strtolower(trim((string) $item->get_method_id())) === $stated) {
+                return;
+            }
+        }
+
+        throw ApiException::invalidRequest('The order data is invalid.', [
+            /*
+             * `fields`, keyed by the field name, because that is what every
+             * other refusal on this route hands a form — `OrderInput` builds
+             * its whole breakdown that way and a panel binds to it. The
+             * available list is inlined into the sentence rather than published
+             * beside it, which is `Cart\CheckoutService::requireProvider()`'s
+             * shape for the identical problem on `payment_method`.
+             *
+             * Naming every registered courier is safe *here* and is not on the
+             * checkout: this route asserts `Capabilities::MANAGE_ORDERS`, and
+             * `GET /shipping/providers` publishes the same list to
+             * `MANAGE_SHIPPING`. An operator who may enter orders may know
+             * which couriers the shop has — indeed they cannot choose one
+             * otherwise.
+             */
+            'fields' => [
+                'shipping_provider' => 'Available: ' . implode(', ', $this->providers->names()) . '.',
+            ],
+        ]);
+    }
+
+    /**
+     * The order must end up naming a wilaya and a commune that go together —
+     * and, like the courier above, at any status.
+     *
+     * ## What "the order must end up naming" means, and why it is not "the
+     * payload"
+     *
+     * The pair is resolved against the order before it is judged: a stated id
+     * wins, and an unstated one falls back to what the order already stores.
+     * That is not leniency, it is this API's own rule — **a payload changes
+     * what it mentions** — arriving at the one field where it has teeth.
+     * `OrderRepository::applyProps()` writes only the keys the caller sent, so
+     * a PATCH carrying `commune_id` alone leaves `_ac_wilaya_id` standing, and
+     * a guard that judged the payload in isolation would refuse the single most
+     * useful correction this route can make: *"same wilaya, wrong commune."*
+     *
+     * That correction is not hypothetical. `Shipping\ShipmentSubscriber`'s
+     * whole retry design rests on it — *"the next confirmation, after the
+     * operator has fixed the address or named a different courier, finds no
+     * live shipment and tries again"* — and a courier refusing a commune is one
+     * of the two ways to reach that state.
+     *
+     * ## Half a destination is refused, because half of one silently does
+     * nothing
+     *
+     * `ShipmentSubscriber::destinationOf()` returns null unless **both** ids are
+     * at least 1, so an order carrying a wilaya and no commune is addressed
+     * exactly as well as an order carrying neither: it confirms, creates no
+     * parcel, and records `order_destination_missing`. Accepting that write
+     * would ship a field that appears to work and does nothing — the failure
+     * `OrderInput`'s docblock refuses for `shipping_total` in almost the same
+     * words — and the operator would find out days later from an error naming a
+     * thing they thought they had entered.
+     *
+     * The two sentences are `Shipping\ShippingRuleInput`'s, which has faced
+     * this on the tariff side and answers *"Required when the rule names a
+     * commune."* Here it is the order that names one.
+     *
+     * ## The commune is looked up and the wilaya is not
+     *
+     * One query answers both questions, because a commune row carries its
+     * `wilaya_id`: if the commune exists and points at the wilaya the order
+     * names, that wilaya exists by construction. `ShippingService::validatedDestination()`
+     * makes exactly this trade for exactly this pair, and its docblock gives
+     * the reason the pair is checked rather than each half — *"a commune id
+     * from the right dropdown and a wilaya id left over from the previous
+     * selection is the mistake an address form actually makes, and it routes a
+     * parcel to a commune of the same name in another wilaya — of which Algeria
+     * has several."*
+     *
+     * Both refusals are copied from that method verbatim, `commune_wilaya_id`
+     * included. A panel that renders one sentence when a parcel is refused and
+     * a different sentence when the order that would have carried it is refused
+     * is a panel the operator has to read twice, and the envelope message
+     * differs only because it is this route's — `The order data is invalid.`,
+     * which is what `OrderInput` and every other refusal here already say.
+     *
+     * ## Restating what the order already names can never fail
+     *
+     * `guardShippingProviderKnown()`'s second branch, for its reason, and the
+     * two are best read as one rule: **you may name any destination that
+     * resolves, and you may always restate the one this order already names.**
+     *
+     * The trap it avoids is the same trap. `OrderPresenter` emits all three
+     * keys, so a client that GETs an order, changes the customer note and
+     * PATCHes the whole body back sends this pair without meaning to. Almost
+     * always it resolves and nothing happens. The exception is an order that
+     * arrived carrying a pair that does not resolve — which this API cannot
+     * write, but `POST /checkout` can, because `Cart\CheckoutService::destination()`
+     * validates the delivery type and takes the two ids on trust. Under a check
+     * with no exemption, every such order would 400 on a PATCH that only
+     * touched a note, on keys the client echoed.
+     *
+     * Nothing is smuggled through it: the exemption is granted only when the
+     * resolved pair is *identical* to the stored pair, so it is a genuine
+     * no-op, and changing either half re-validates both. The order stays
+     * unshippable and says so where it should — `ShippingService::validatedDestination()`
+     * refuses it at confirmation and `ShipmentSubscriber` records the reason on
+     * the order.
+     *
+     * ## No `is_editable` gate, and that is the same decision as the courier's
+     *
+     * `guardShippingAmountWritable()` states the rule this class enforces:
+     * everything that moves the order total is gated by `is_editable`,
+     * everything else is free at any status. A wilaya id and a commune id are
+     * order meta; `calculate_totals()` sums shipping *line totals*
+     * (`abstract-wc-order.php:2158-2163`, the 11.0.1 compose.yaml pins), and
+     * meta has never been a term in that sum. Saying where a parcel goes cannot
+     * move a dinar.
+     *
+     * **And a gate here would make the retry unreachable**, which is the
+     * stronger half. Both ways an order earns a `shipping_provider_error` — the
+     * missing destination and the commune a courier refused — are recorded at
+     * `processing`, which is not editable. Gating the destination would freeze
+     * it at the exact moment it starts to matter, and the field would be
+     * writable only while nothing had yet gone wrong. That is the argument
+     * `guardShippingProviderKnown()` makes for the courier, and the destination
+     * is the other half of the same fix: *"Yalidine refused this commune"* is
+     * answered either by a different courier or by the right commune.
+     *
+     * The cost is the courier's cost, named rather than hidden: on a `completed`
+     * order an operator can rewrite the destination of a parcel that has already
+     * been delivered. It re-routes nothing — the `ac_shipments` row records the
+     * destination it was created with and is untouched by this write — and the
+     * write is audited like every other.
+     */
+    private function guardDestinationResolves(OrderInput $input, ?WC_Order $order): void
+    {
+        if (!$input->has('wilaya_id') && !$input->has('commune_id')) {
+            /*
+             * `delivery_type` is deliberately not a reason to run. It is a
+             * journey rather than a place, it needs no pair and no lookup, and
+             * `destinationOf()` never reads it unless both ids are present — so
+             * an order that states only a desk collection has said something
+             * harmless and true about an address it may not have yet.
+             */
+            return;
+        }
+
+        $storedWilaya = self::storedId($order, OrderRepository::WILAYA_META);
+        $storedCommune = self::storedId($order, OrderRepository::COMMUNE_META);
+
+        $wilayaId = $input->has('wilaya_id') ? (int) $input->get('wilaya_id') : $storedWilaya;
+        $communeId = $input->has('commune_id') ? (int) $input->get('commune_id') : $storedCommune;
+
+        if ($wilayaId < 1) {
+            throw ApiException::invalidRequest('The order data is invalid.', [
+                'fields' => ['wilaya_id' => 'Required when the order names a commune.'],
+            ]);
+        }
+
+        if ($communeId < 1) {
+            throw ApiException::invalidRequest('The order data is invalid.', [
+                'fields' => ['commune_id' => 'Required when the order names a wilaya.'],
+            ]);
+        }
+
+        // The restatement exemption, and the completeness check above runs
+        // ahead of it on purpose: a half destination is refused even when it is
+        // what the order already stores, because this API never wrote that
+        // state and cannot address it either.
+        if ($wilayaId === $storedWilaya && $communeId === $storedCommune) {
+            return;
+        }
+
+        if ($this->geography === null) {
+            return;
+        }
+
+        $commune = $this->geography->findCommune($communeId);
+
+        if ($commune === null) {
+            throw ApiException::invalidRequest('The order data is invalid.', [
+                'fields' => ['commune_id' => "No commune with id {$communeId}."],
+            ]);
+        }
+
+        if ((int) $commune['wilaya_id'] !== $wilayaId) {
+            throw ApiException::invalidRequest('The order data is invalid.', [
+                'fields' => ['wilaya_id' => 'That commune belongs to a different wilaya.'],
+                // Beside the field rather than inside the sentence, exactly as
+                // `ShippingService::validatedDestination()` publishes it: a
+                // panel that knows which wilaya the commune *does* belong to
+                // can offer to move the selection instead of clearing it.
+                'commune_wilaya_id' => (int) $commune['wilaya_id'],
+            ]);
+        }
+    }
+
+    /**
+     * One of the two destination ids as the order currently stores it, or 0.
+     *
+     * `get_meta()` returns `''` for a key never written, and order meta is a
+     * public store where another plugin may have left a word — the care
+     * `OrderPresenter::manualPrice()` takes for the same reason. Anything that
+     * is not a positive integer is 0 here, which is the same reading
+     * `ShipmentSubscriber::destinationOf()` gives it: no destination.
+     */
+    private static function storedId(?WC_Order $order, string $key): int
+    {
+        if (!$order instanceof WC_Order) {
+            return 0;
+        }
+
+        $stored = (int) $order->get_meta($key, true);
+
+        return $stored > 0 ? $stored : 0;
     }
 
     /**

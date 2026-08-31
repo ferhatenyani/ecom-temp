@@ -345,6 +345,14 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
      * carries the service name, and a manager choosing between "he collects it"
      * and "we deliver it" is exactly the comparison this endpoint exists for.
      *
+     * Each quote now also carries `deliveryType`, which changes nothing here —
+     * still four — and is what lets a caller that must charge *one* number pick
+     * the right one. `Shipping\ShopperRates` is that caller: a shopper who chose
+     * home delivery must not be quoted the stop-desk price simply because it is
+     * the cheapest of the four. The alternative was for that code to match
+     * `_desk` against the service name, which would be this adapter's spelling
+     * leaking into shared code.
+     *
      * An unconfigured or unmapped shop gets an empty list, not an exception:
      * `ShippingService::rates()` quotes every configured courier in one call,
      * and one shop's missing origin wilaya must not take the whole price list
@@ -386,12 +394,19 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
 
         $quotes = [];
 
+        /*
+         * The third element is the journey the price is for, and it is stated
+         * rather than left to be read out of the service name. All four are
+         * still returned — see the docblock — so a caller that wants only the
+         * one the shopper asked for filters on `RateQuote::coversDeliveryType()`
+         * instead of matching `_desk` against a string this adapter owns.
+         */
         foreach ([
-            'express_home' => 'Yalidine Express — home delivery',
-            'express_desk' => 'Yalidine Express — stop desk',
-            'economic_home' => 'Yalidine Economic — home delivery',
-            'economic_desk' => 'Yalidine Economic — stop desk',
-        ] as $service => $label) {
+            'express_home' => ['Yalidine Express — home delivery', Destination::HOME],
+            'express_desk' => ['Yalidine Express — stop desk', Destination::DESK],
+            'economic_home' => ['Yalidine Economic — home delivery', Destination::HOME],
+            'economic_desk' => ['Yalidine Economic — stop desk', Destination::DESK],
+        ] as $service => [$label, $deliveryType]) {
             $amount = $commune[$service] ?? null;
 
             // Absent means Yalidine does not offer that service there — a
@@ -407,7 +422,9 @@ final class YalidineProvider implements ShippingProviderInterface, DestinationCa
                 number_format((float) $amount, 2, '.', ''),
                 'DZD',
                 null,
-                RateQuote::SOURCE_PROVIDER
+                RateQuote::SOURCE_PROVIDER,
+                false,
+                $deliveryType
             );
         }
 
