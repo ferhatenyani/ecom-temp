@@ -6,12 +6,15 @@ namespace AlgerianCommerce\Cart;
 
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Core\Logger;
+use AlgerianCommerce\Orders\OrderRepository;
 use AlgerianCommerce\Payments\PaymentProviderRegistry;
 use AlgerianCommerce\Products\OptionSelection;
 use AlgerianCommerce\Products\OptionSetRepository;
 use AlgerianCommerce\Shipping\Destination;
+use AlgerianCommerce\Shipping\ProviderRegistry;
 use AlgerianCommerce\Shipping\RateResolver;
 use AlgerianCommerce\Shipping\ShippingRuleRepository;
+use AlgerianCommerce\Shipping\ShopperRates;
 use AlgerianCommerce\Tracking\TrackingController;
 use AlgerianCommerce\Tracking\TrackingLink;
 use WC_Cart;
@@ -30,18 +33,12 @@ use WP_REST_Request;
  * ## What it deliberately does not use
  *
  * **Not `ShippingService::rates()`**, which asserts `ac_manage_shipping` — a
- * staff capability that a shopper will never hold. The tariff itself is
- * `RateResolver`, which is pure and takes rules plus a destination; going
- * through the staff service would mean either widening that capability or
- * handing the storefront an admin credential, and §44 forbids the second.
- * A shopper being quoted a delivery price is not reading the shop's shipping
- * configuration.
- *
- * **Not a courier's live quote.** `ShippingProviderInterface::getShippingRates()`
- * asks Yalidine or ZR Express what *they* would charge, which is a fact about
- * the shop's costs and not about the customer's bill. What a customer pays is
- * `ac_shipping_rates` (§14) and nothing else — CLAUDE.md: "What the shop
- * *charges* is separate from what a courier quotes."
+ * staff capability that a shopper will never hold. Going through the staff
+ * service would mean either widening that capability or handing the storefront
+ * an admin credential, and §44 forbids the second. A shopper being quoted a
+ * delivery price is not reading the shop's shipping configuration. The pricing
+ * itself is `Shipping\ShopperRates`, which is pure and takes the couriers, the
+ * rules and a destination.
  *
  * **Not WooCommerce's `WC_Checkout`.** It is built around form posts, nonces
  * and `wp_safe_redirect()`, which is the half that never runs headless — the
@@ -49,11 +46,59 @@ use WP_REST_Request;
  * which `CartService` already uses, and order creation, which is
  * `wc_create_order()` plus WooCommerce's own CRUD here.
  *
+ * ## A courier's live quote *is* now part of the customer's bill
+ *
+ * This class used to say the opposite, in a paragraph that has been removed
+ * rather than quietly edited, because a reader who remembers it deserves to
+ * know it was overturned on purpose. It said: `getShippingRates()` is a fact
+ * about the shop's costs, what a customer pays is `ac_shipping_rates` and
+ * nothing else, and it cited CLAUDE.md — *"What the shop charges is separate
+ * from what a courier quotes."*
+ *
+ * That sentence is still true and still the rule. What was wrong was the
+ * conclusion drawn from it: that the two numbers being different things means a
+ * courier's number may never reach a bill. Under §14 alone a shop can only
+ * charge what somebody typed into a tariff table, which is why
+ * `GET /checkout/shipping-rates` could not change with the commune unless an
+ * operator had priced that commune by hand — 1 541 of them. Asking the courier
+ * is how a delivery charge becomes the price of the actual journey.
+ *
+ * The separation is kept where it does the work, in `ShopperRates`: the two
+ * sources never merge, exactly one of them produces each row, and every row is
+ * **labelled** with which — so the order can record whether a number came from
+ * a courier or a rule, and nobody has to guess afterwards. CLAUDE.md's own next
+ * sentence is that `GET /shipping/rates` returns both sources *each labelled*;
+ * this is the same discipline applied on the checkout side, where a shopper can
+ * only be shown one number per courier.
+ *
+ * The one thing a courier may not outrank is a free-delivery threshold, which
+ * is a promise to the customer rather than a price — `ShopperRates` argues it.
+ *
+ * ## And the shopper may now say which courier
+ *
+ * `POST /checkout` takes an optional `shipping_provider`. It is a *choice among
+ * the quotes this shop just published*, never a price and never a courier the
+ * shop does not have — see `requireShippingQuote()`, which owns the whole
+ * argument about what "a courier that serves this destination" resolves to and
+ * why a missing row gets two different refusals.
+ *
+ * **Absent means exactly what it meant before the field existed**, which is the
+ * one property this change could not be allowed to cost: the cheapest row wins,
+ * with the same tie-break, so a storefront that has never heard of the field
+ * places the order it placed yesterday. That is not a claim about intent — it
+ * is the empty-string branch of `ShopperRates::choose()`, carrying the sort
+ * that used to live in this class unmodified.
+ *
+ * The field is on `POST /checkout` and deliberately not on
+ * `GET /checkout/shipping-rates`. That route's entire job is to return every
+ * row so the storefront can render the choice; filtering it to one would be
+ * asking the shopper to choose from a list of one.
+ *
  * ## The rule
  *
  * Everything a caller sends is a request. The address is theirs to state; the
  * **prices are not**. Line prices come from the cart, which re-reads the
- * catalogue; the shipping cost comes from `RateResolver` against the
+ * catalogue; the shipping cost comes from `ShopperRates` against the
  * destination the caller named, never from a `shipping_total` in the payload;
  * and the payment method must be one `Plugin::paymentProviders()` actually
  * registered, so a disabled gateway cannot be selected by naming it.
@@ -72,7 +117,16 @@ final class CheckoutService
          * checkout built without it simply returns no `tracking` block, which is
          * what §59b did.
          */
-        private readonly ?TrackingLink $tracking = null
+        private readonly ?TrackingLink $tracking = null,
+        /*
+         * The couriers, for their live rates. Optional for the same reason
+         * `$tracking` is and with the same consequence spelled out: a checkout
+         * built without a registry quotes the §14 tariff alone, which is what
+         * this class did before couriers were asked. `Plugin::checkoutService()`
+         * always passes one, so that path is a test seam rather than a
+         * configuration a shop can end up in by accident.
+         */
+        private readonly ?ProviderRegistry $providers = null
     ) {
     }
 
@@ -113,7 +167,8 @@ final class CheckoutService
      * @param array{
      *     billing: array<string, string>, shipping: array<string, string>,
      *     wilaya_id: int, commune_id: int, delivery_type: string,
-     *     payment_method: string, customer_note: string
+     *     payment_method: string, customer_note: string,
+     *     shipping_provider?: string
      * } $input
      * @return array<string, mixed>
      */
@@ -159,7 +214,19 @@ final class CheckoutService
         // method for why the WooCommerce one is permanently false here and what
         // it cost to find out.
         if (CartService::needsShipping($cart)) {
-            $shipping = $this->requireShippingQuote($destination, $subtotal);
+            /*
+             * The shopper's courier, or '' for "you pick". Read with `??` and
+             * cast rather than assumed present, because `place()` is called
+             * directly by tests and by `Plugin`'s wiring as well as by the
+             * route that defaults it, and an array key that only exists when
+             * one particular caller supplies it is a notice waiting for the
+             * other one.
+             */
+            $shipping = $this->requireShippingQuote(
+                $destination,
+                $subtotal,
+                (string) ($input['shipping_provider'] ?? '')
+            );
         }
 
         $order = $this->createOrder($cart, $input, $shipping);
@@ -350,8 +417,29 @@ final class CheckoutService
         if ($shipping !== null) {
             $item = new \WC_Order_Item_Shipping();
             $item->set_method_title((string) $shipping['label']);
+            // The courier this line is for. Now always a registered provider's
+            // name rather than the empty string the rules-derived fallback used
+            // to produce — this is the second half of the labelling pair, and
+            // "which courier" is unanswerable while it says nothing.
             $item->set_method_id((string) $shipping['provider']);
             $item->set_total((float) $shipping['amount']);
+
+            /*
+             * Which of the two sources priced this line — the first half of the
+             * pair, and the reason it is written at all: months later an
+             * operator looking at this order has to be able to tell whether 550
+             * was a courier's answer or a row somebody typed into the tariff
+             * table, and the amount cannot tell them.
+             *
+             * Frozen onto the line rather than recomputed on read, for the
+             * reason `OrderRepository::CATALOGUE_PRICE_META` gives about a
+             * catalogue price: re-resolving it later answers "where would this
+             * number come from today", which is a different question and drifts
+             * the moment a courier is switched on, a tariff row is edited or a
+             * destination mapping is synced.
+             */
+            $item->add_meta_data(OrderRepository::RATE_SOURCE_META, (string) $shipping['source']);
+
             $order->add_item($item);
         }
 
@@ -363,13 +451,26 @@ final class CheckoutService
             $order->set_customer_note($input['customer_note']);
         }
 
-        // The destination the tariff was quoted against, kept with the order so
-        // a later shipment does not have to guess it back out of a free-text
-        // address — which is precisely the guess `Shipping\ShipmentInput`
-        // refuses to make.
-        $order->update_meta_data('_ac_wilaya_id', (int) $input['wilaya_id']);
-        $order->update_meta_data('_ac_commune_id', (int) $input['commune_id']);
-        $order->update_meta_data('_ac_delivery_type', (string) $input['delivery_type']);
+        /*
+         * The destination the tariff was quoted against, kept with the order so
+         * a later shipment does not have to guess it back out of a free-text
+         * address — which is precisely the guess `Shipping\ShipmentInput`
+         * refuses to make.
+         *
+         * The three keys were literals here, and are now
+         * `OrderRepository`'s constants — the values are unchanged and the
+         * storage is byte for byte what it was, so every order this checkout
+         * has ever placed still reads back. What changed is that
+         * `POST /orders` learned to write a destination too, and a fact with
+         * two writers cannot be spelled in two places: see `WILAYA_META`, which
+         * argues why identical shape between this method and
+         * `OrderRepository::applyProps()` is the whole reason
+         * `Shipping\ShipmentSubscriber` need not know which door an order came
+         * through.
+         */
+        $order->update_meta_data(OrderRepository::WILAYA_META, (int) $input['wilaya_id']);
+        $order->update_meta_data(OrderRepository::COMMUNE_META, (int) $input['commune_id']);
+        $order->update_meta_data(OrderRepository::DELIVERY_TYPE_META, (string) $input['delivery_type']);
 
         if (is_user_logged_in()) {
             $order->set_customer_id(get_current_user_id());
@@ -382,10 +483,81 @@ final class CheckoutService
     }
 
     /**
+     * The quote the shopper chose, or the cheapest — backend step 2.
+     *
+     * The seam this replaces was documented here in full: the rows are already
+     * one per courier and already carry the `provider` they belong to, so
+     * honouring a choice is selecting the matching row rather than sorting.
+     * That prediction held exactly, and the selection itself is
+     * `Shipping\ShopperRates::choose()` — pure, so the branch where a shopper
+     * picks a courier that is *not* the cheapest can be tested on an install
+     * where no courier can be switched on. What is left here is the part that
+     * needs the registry: turning "no row" into the right refusal.
+     *
+     * Nothing else moved. The label pair written in `createOrder()` is read off
+     * whichever row wins, so an order records where its number came from
+     * whether the shopper picked it or the sort did.
+     *
+     * ## Three refusals, not one, because they have three different fixes
+     *
+     * All three are 400s, and a storefront that collapsed them would be logging
+     * "checkout failed" for a shop that is misconfigured, a build that is
+     * stale, and a customer who changed their mind — three problems with
+     * nothing in common.
+     *
+     *  - **Nobody delivers there.** Keyed `commune_id`, because the destination
+     *    is what is wrong. Unchanged from before this method took a choice.
+     *  - **This shop has no such courier.** Keyed `shipping_provider`. The name
+     *    is not one `Plugin::shippingProviders()` registered, so it is wrong for
+     *    every destination and every basket — a stale storefront build, or a
+     *    hand-made request. A shopper cannot fix this; a developer can.
+     *  - **That courier does not reach there.** Also keyed `shipping_provider`.
+     *    The courier is real and simply has no price for this journey. The
+     *    normal way to arrive here is a shopper who picked a courier and then
+     *    changed wilaya, and the fix is for the storefront to re-quote.
+     *
+     * ## "The providers that actually serve the destination" is the row list
+     *
+     * The step asks for the choice to be validated against the providers that
+     * serve the destination, and the definition that resolves to is: **a
+     * courier serves this destination if and only if it produced a row.**
+     *
+     * The tempting alternative — ask the adapter whether it maps this commune —
+     * is wrong in the direction that matters most on this install.
+     * `ManualProvider::getShippingRates()` returns `[]` by design, because
+     * in-house delivery publishes no rate API at all; under that definition the
+     * one courier a credential-less shop actually has would be unchoosable
+     * everywhere, while §14 prices it perfectly well. `ShopperRates` already
+     * put the tariff behind every courier for exactly this reason, and a row is
+     * the result of that whole precedence — courier, then tariff, free delivery
+     * above both. A row is a price the shopper can be charged, and being
+     * charged is what choosing a courier means here.
+     *
+     * It is also the only definition that cannot contradict the screen. The row
+     * list is what `GET /checkout/shipping-rates` published a moment ago, so
+     * the radio buttons and this validation are the same list by construction,
+     * and a shopper can never be refused for choosing something the shop just
+     * offered them. Any second source of truth would eventually disagree with
+     * the first, and it would disagree at the checkout.
+     *
+     * ## Why `ProviderRegistry::get()`'s own 400 is not reused
+     *
+     * It exists and it refuses an unregistered name already, and it is wrong
+     * here three times over: it keys the failure `provider` rather than
+     * `shipping_provider`, so a panel binding on the field name gets nothing;
+     * it says *"The shipment data is invalid."*, which is a sentence about a
+     * different route; and it publishes `available` — **every registered
+     * courier** — which on this public endpoint would hand an anonymous caller
+     * the shop's courier configuration. `GET /shipping/providers` is gated on
+     * `Capabilities::MANAGE_SHIPPING` precisely because that list is staff
+     * knowledge. What is safe to name here is the serving set, because
+     * `GET /checkout/shipping-rates` already publishes it to the same caller.
+     *
      * @return array<string, mixed>
-     * @throws ApiException 400 when this shop does not deliver there
+     * @throws ApiException 400 when this shop does not deliver there, or the
+     *                      chosen courier is not one that can carry it
      */
-    private function requireShippingQuote(Destination $destination, string $subtotal): array
+    private function requireShippingQuote(Destination $destination, string $subtotal, string $chosen = ''): array
     {
         $quotes = $this->quotes($destination, $subtotal);
 
@@ -395,16 +567,65 @@ final class CheckoutService
             ]);
         }
 
-        // The cheapest, deterministically. A checkout that has to pick for the
-        // customer picks the one they would have.
-        usort($quotes, static fn (array $a, array $b): int => ($a['amount'] <=> $b['amount'])
-            ?: strcmp((string) $a['provider'], (string) $b['provider']));
+        $quote = ShopperRates::choose($quotes, $chosen);
 
-        return $quotes[0];
+        if ($quote !== null) {
+            return $quote;
+        }
+
+        /*
+         * Named back to the caller, capped, and only after the choice has
+         * already been refused — echoing a caller's own string is how the
+         * message says which value was rejected when a form posted several, and
+         * `ProviderRegistry::get()` does the same. The cap is because this
+         * route is public: `sanitize_text_field()` strips tags but does not
+         * shorten, and an error message is not a place to reflect a kilobyte.
+         */
+        $named = mb_substr($chosen, 0, 40);
+
+        // Registered but rowless, or never registered at all. With no registry
+        // — the test seam in this class's constructor — only the second
+        // sentence can be told truthfully, because there is nothing to ask.
+        $known = $this->providers !== null && $this->providers->has($chosen);
+
+        throw ApiException::invalidRequest(
+            $known
+                ? 'That courier does not deliver to that destination.'
+                : 'This shop does not ship with that courier.',
+            [
+                'fields' => [
+                    'shipping_provider' => sprintf(
+                        $known
+                            ? '"%s" has no price for that destination. Available here: %s.'
+                            : '"%s" is not a courier this shop has. Available here: %s.',
+                        $named,
+                        implode(', ', array_map(
+                            static fn (array $quote): string => (string) ($quote['provider'] ?? ''),
+                            $quotes
+                        ))
+                    ),
+                ],
+            ]
+        );
     }
 
     /**
-     * The shop's own tariff for a destination, per registered courier.
+     * What delivery costs here, per registered courier.
+     *
+     * The blending — courier first, tariff behind it, free delivery above both,
+     * and no exception allowed out — is `Shipping\ShopperRates`, which is pure
+     * and therefore testable against a courier that cannot be switched on. That
+     * is not a stylistic preference: with `ENABLE_YALIDINE` and
+     * `ENABLE_ZR_EXPRESS` off and their credentials unissued, the only courier
+     * this install can register is `ManualProvider`, which publishes no rates at
+     * all. Every branch that involves a courier *answering* is reachable only
+     * through a test double, and a double cannot be injected into a REST request
+     * — so the logic had to live somewhere a unit test can hold it directly.
+     *
+     * With no registry this is the §14 tariff alone, and the empty-string
+     * fallback provider that used to head the list is gone with it — see
+     * `ShopperRates::forDestination()` for why a quote has to name a courier
+     * that exists.
      *
      * @return list<array<string, mixed>>
      */
@@ -413,42 +634,26 @@ final class CheckoutService
         $rules = $this->rules->active();
         $decimals = wc_get_price_decimals();
         $currency = get_woocommerce_currency();
-        $quotes = [];
 
-        foreach ($this->shippingProviderNames() as $provider) {
-            $rule = RateResolver::resolve($rules, $destination, $provider);
+        if ($this->providers === null) {
+            $rule = RateResolver::resolve($rules, $destination, '');
 
-            if ($rule !== null) {
-                $quotes[] = ['provider' => $provider]
-                    + RateResolver::quote($rule, $subtotal, $decimals, $currency)->toArray();
-            }
+            return $rule === null ? [] : [
+                ['provider' => '']
+                    + RateResolver::quote($rule, $subtotal, $decimals, $currency, $destination->deliveryType)
+                        ->toArray(),
+            ];
         }
 
-        return $quotes;
-    }
-
-    /**
-     * Which couriers a rule may name.
-     *
-     * A rule with an empty provider is the national fallback and applies to
-     * every courier, so the list has to include the empty string or a shop that
-     * has only written fallback rules quotes nothing.
-     *
-     * @return list<string>
-     */
-    private function shippingProviderNames(): array
-    {
-        $names = [''];
-
-        foreach ($this->rules->active() as $rule) {
-            $provider = trim((string) $rule->provider);
-
-            if ($provider !== '' && !in_array($provider, $names, true)) {
-                $names[] = $provider;
-            }
-        }
-
-        return $names;
+        return ShopperRates::forDestination(
+            $this->providers,
+            $rules,
+            $destination,
+            $subtotal,
+            $decimals,
+            $currency,
+            $this->logger
+        );
     }
 
     /** @throws ApiException 400 when the method is not one this shop offers */

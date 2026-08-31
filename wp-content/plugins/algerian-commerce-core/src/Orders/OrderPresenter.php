@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace AlgerianCommerce\Orders;
 
+use AlgerianCommerce\Shipping\Destination;
+use AlgerianCommerce\Shipping\RateQuote;
+use AlgerianCommerce\Shipping\ShipmentFailure;
 use WC_Order;
 use WC_Order_Item;
 use WC_Order_Item_Product;
@@ -41,6 +44,17 @@ use WC_Order_Item_Product;
  */
 final class OrderPresenter
 {
+    /**
+     * The only two answers `shipping_source` can give.
+     *
+     * Taken from `RateQuote` rather than written out again, so the value a
+     * shopper was shown on a quote and the value their order reports cannot
+     * drift apart by one of them being renamed.
+     *
+     * @var list<string>
+     */
+    private const SHIPPING_SOURCES = [RateQuote::SOURCE_RULES, RateQuote::SOURCE_PROVIDER];
+
     /** @return array<string, mixed> */
     public static function toArray(WC_Order $order): array
     {
@@ -66,6 +80,17 @@ final class OrderPresenter
             // is what the order works out.
             'shipping_amount' => self::shippingAmount($order),
             'shipping_total' => self::money($order->get_shipping_total()),
+            'shipping_source' => self::shippingSource($order),
+            'shipping_provider' => self::shippingProvider($order),
+            'shipping_provider_error' => self::shippingProviderError($order),
+            // Where the parcel goes, in `Shipping\Destination::toArray()`'s
+            // order and at the end of the delivery cluster. Top-level rather
+            // than inside `shipping`, because that object is WooCommerce's
+            // address and these are §51 row ids — `OrderInput`'s docblock draws
+            // the line and gives the reader the tell: `_id` means a row.
+            'wilaya_id' => self::destinationId($order, OrderRepository::WILAYA_META),
+            'commune_id' => self::destinationId($order, OrderRepository::COMMUNE_META),
+            'delivery_type' => self::deliveryType($order),
             'total_tax' => self::money($order->get_total_tax()),
             'subtotal' => self::money($order->get_subtotal()),
             'total' => self::money($order->get_total()),
@@ -300,6 +325,262 @@ final class OrderPresenter
         }
 
         return null;
+    }
+
+    /**
+     * Where this order's delivery charge came from — `rules`, `provider`, null.
+     *
+     * ## Read-only, and the one field here that is about the past
+     *
+     * Every other key in this shape describes the order as it stands. This one
+     * describes a decision taken once, at the moment the order was placed, and
+     * it is deliberately not re-derivable: quote the same basket to the same
+     * commune tomorrow and the answer can differ, because a courier was
+     * switched on, a destination mapping was synced, or somebody edited a
+     * tariff row. An operator asking "was this 550 a courier's price or ours?"
+     * is asking about the day it was charged, so the answer is frozen on the
+     * line by `Cart\CheckoutService::createOrder()` and merely read here.
+     *
+     * There is no matching write field, and that is not an oversight — it is
+     * the same line `shipping_amount` draws from the other side. A caller may
+     * *state* a delivery charge; nobody may state where a number came from,
+     * because that would be stating that a courier said something. An order
+     * whose fee a person typed in the back office therefore reads `null` here
+     * and carries a `shipping_amount` instead, and the pair is legible: the
+     * amount says a human decided it, this says no quote did.
+     *
+     * ## Why not the reference shop's two fields
+     *
+     * `EL/api/…/domain/Order.java:118` carries `deliveryFeeMethod` (`AUTOMATIC`
+     * / `FIXED`) and `deliveryFeeProvider` beside it. Both facts belong on our
+     * order too, and both are here — but under this codebase's own names and in
+     * the places it already keeps them:
+     *
+     *  - The **method** is this field, named `shipping_source` to sit with
+     *    `shipping_amount` and `shipping_total`, and carrying `RateQuote`'s two
+     *    existing values rather than a second vocabulary. `OrderRepository::RATE_SOURCE_META`
+     *    argues the naming at length — briefly: this API says *shipping* in
+     *    every money key and reserves *delivery* for `delivery_type`, which is
+     *    a different axis entirely; "method" here already means
+     *    `payment_method` and WooCommerce's own `method_id`; and a §14 rule is
+     *    not "fixed".
+     *  - The **provider** is the shipping line's `method_id`, which
+     *    `createOrder()` has always written from the winning quote and which
+     *    now always names a registered courier. It is surfaced as
+     *    `shipping_provider` by `shippingProvider()` below — the key this
+     *    paragraph reserved, arriving with the write side that gives an
+     *    operator a courier to choose, which is why it was worth waiting for
+     *    rather than publishing a read-only copy whose shape would then have
+     *    constrained the change that had to live with it.
+     *
+     * The loop and `is_string()` are `shippingAmount()`'s, for its reasons: an
+     * order can carry more than one shipping line, `get_meta()` returns `''`
+     * for a key never written, and item meta is a public store another plugin
+     * can write to. The value is checked against the two the quote can actually
+     * have rather than published as found — this field's whole worth is that a
+     * client may branch on it, and a third word arriving from somewhere else
+     * would be a branch nobody wrote.
+     */
+    private static function shippingSource(WC_Order $order): ?string
+    {
+        foreach ($order->get_items('shipping') as $item) {
+            $stored = $item->get_meta(OrderRepository::RATE_SOURCE_META, true);
+
+            if (is_string($stored) && in_array($stored, self::SHIPPING_SOURCES, true)) {
+                return $stored;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Which courier is carrying this order — a registry name, or null.
+     *
+     * The field the paragraph above deferred, arriving with the write side it
+     * was waiting for. It is the shipping line's `method_id`:
+     * `Cart\CheckoutService::createOrder()` writes the winning quote's courier
+     * there, `OrderRepository::replaceShippingLine()` and
+     * `assignShippingProvider()` write the one an operator stated, and there is
+     * no second copy anywhere to drift from it.
+     *
+     * ## Not to be confused with the key immediately above it
+     *
+     * `shipping_source` can literally be the string `provider`, and this field
+     * is called `shipping_provider`, so the collision has to be met head-on
+     * once. **`shipping_source` is about the price; this is about the parcel.**
+     * `shipping_source: "provider"` says a courier's API produced the fee;
+     * `shipping_provider: "yalidine"` says Yalidine is carrying the box. The
+     * pair `{"shipping_source": "rules", "shipping_provider": "yalidine"}` is
+     * not a contradiction and is in fact the ordinary reading on any install
+     * whose couriers have no destination mapping yet: the shop's §14 tariff
+     * priced the journey because Yalidine had nothing to quote, and Yalidine
+     * carries it anyway. `OrderInput`'s docblock carries the full argument and
+     * the table.
+     *
+     * ## Null rather than `''`, for the round trip
+     *
+     * An empty `method_id` is a real stored state with a meaning —
+     * `OrderRepository::SHIPPING_LINE_TITLE` argues it: a fee stated in the
+     * back office before anybody decided who delivers it — and it is published
+     * as `null` rather than `""` so that it matches `shipping_amount`'s
+     * treatment of an unstated fee. That is not cosmetic. `shipping_provider`
+     * is **writable**, unlike `shipping_source`, so a client PATCHing back a
+     * body it just read sends this value; `OrderInput` drops `null` and `""`
+     * alike, so either spelling would round-trip safely, but only `null` says
+     * *nobody has been named* in the same word the rest of this shape uses for
+     * it. An order with no shipping line at all reads `null` for the same
+     * reason and by the same path.
+     *
+     * The loop is `shippingSource()`'s and `shippingAmount()`'s, for their
+     * reason: an order can carry more than one shipping line. The **first
+     * non-empty** one wins rather than simply the first, which is the one
+     * divergence — an order whose first line is a bare fee and whose second
+     * names a courier is a shape this API never writes
+     * (`replaceShippingLine()` collapses them to one), and answering `null` for
+     * it would hide a courier the order plainly names. There is no value
+     * whitelist here as there is on `shipping_source`, and that is deliberate:
+     * the set of valid couriers is runtime state, orders outlive the
+     * registrations that made them, and an order placed with a courier the shop
+     * has since switched off must still say who took the parcel.
+     */
+    private static function shippingProvider(WC_Order $order): ?string
+    {
+        foreach ($order->get_items('shipping') as $item) {
+            $stored = trim((string) $item->get_method_id());
+
+            if ($stored !== '') {
+                return $stored;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Why the last confirmation of this order created no parcel, or null.
+     *
+     * ## The field an operator needs and the reference shop does not have
+     *
+     * Backend step 2's item 5 asks for EL's `shippingProviderError`, which
+     * `OrderService.java:380` sets on the response DTO of the request that
+     * confirmed the order. Ours is on the order instead, and the difference is
+     * forced rather than chosen: `Shipping\ShipmentSubscriber` runs on a
+     * WooCommerce status transition, which happens from wp-admin, WP-CLI, cron
+     * and payment gateways as well as from `PATCH /orders/{id}`, so most
+     * confirmations have no response to carry anything.
+     *
+     * Being stored is the better half of that trade, and EL's own admin app is
+     * the evidence: it never reads `shippingProviderError` at all
+     * (`EL/el-admin-app/src/pages/Orders.jsx::handleUpdateStatus`, read from
+     * source — it infers a failure from the absence of a tracking number and
+     * shows a fixed sentence instead, discarding the courier's reason). A field
+     * that lives for one HTTP response is a field a panel has to catch in the
+     * air; this one is still there tomorrow, on a `GET`, for an operator who was
+     * not the person who confirmed the order.
+     *
+     * ## Where the parcel itself is, since it is deliberately not here
+     *
+     * Item 5 says to store the tracking number and label URL on the order too,
+     * and they are not on this shape. They are on the shipment, which is a row
+     * of `ac_shipments` published by `GET /orders/{id}/shipments` — the
+     * `tracking_number` field, and the label under `metadata`, where
+     * `YalidineProvider::createShipment()` puts it. Copying either onto the
+     * order would create a second copy that can disagree with the first, which
+     * is the thing `shippingProvider()` above congratulates itself on avoiding;
+     * and the label specifically may not be copied, because `ShipmentResult`'s
+     * docblock forbids core code reading a key out of a provider's metadata —
+     * *"nothing in the core may read a key out of it, or the abstraction has
+     * leaked"*. A shipment row is already the answer to "where is this parcel".
+     *
+     * A failure has no such row — a refused parcel is never written, since
+     * `ShippingService::createClaimed()` calls the courier before it inserts
+     * anything — which is exactly why the failure needs a home here and the
+     * success does not.
+     *
+     * ## Read-only, like `shipping_source` and for its reason
+     *
+     * `OrderInput::READ_ONLY` drops it. A caller who could state this could
+     * claim a courier had refused an address when no courier was ever asked.
+     *
+     * The shape is `ShipmentFailure::toArray()`'s and the parsing is its
+     * `fromMeta()`, which returns null for anything it did not write — order
+     * meta is a public store, the argument `manualPrice()` makes above about
+     * another plugin leaving a word under our key.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function shippingProviderError(WC_Order $order): ?array
+    {
+        $failure = ShipmentFailure::fromMeta($order->get_meta(OrderRepository::SHIPPING_ERROR_META, true));
+
+        return $failure?->toArray();
+    }
+
+    /**
+     * One half of the destination, or null when the order has none.
+     *
+     * ## `null` rather than `0`, and the round trip is why
+     *
+     * `get_meta()` returns `''` for a key never written and `(int) ''` is 0, so
+     * 0 is what the storage says about an order nobody has addressed. It is not
+     * what the wire should say. `OrderInput` refuses `0` outright — *"there is
+     * no commune 0"* — so publishing it would emit a value this API's own write
+     * side rejects, and every whole-body PATCH of an unaddressed order would
+     * 400 on two keys the client echoed without touching. `null` is what the
+     * rest of this shape already uses for "nobody has said": `shipping_amount`
+     * for an unstated fee, `shipping_provider` for an unnamed courier,
+     * `shipping_source` for a number no quote produced.
+     *
+     * Anything not a positive integer reads null for the same reason, and for
+     * `manualPrice()`'s: order meta is a public store and another plugin could
+     * have left a word under a key of ours. That is also exactly how
+     * `Shipping\ShipmentSubscriber::destinationOf()` reads it — below 1 is no
+     * destination — so the order that reads `null` here is the order that gets
+     * `order_destination_missing` there, and the panel showing an empty picker
+     * is showing the truth.
+     */
+    private static function destinationId(WC_Order $order, string $key): ?int
+    {
+        $stored = (int) $order->get_meta($key, true);
+
+        return $stored > 0 ? $stored : null;
+    }
+
+    /**
+     * `home`, `desk`, or null when the order does not say.
+     *
+     * ## Whitelisted, like `shipping_source` and unlike `shipping_provider`
+     *
+     * The three read-back fields divide on one question — is the set of legal
+     * values a fact about this codebase, or runtime state? A courier name is
+     * runtime state, so `shippingProvider()` publishes whatever it finds and
+     * argues at length that it must, because orders outlive the registrations
+     * that made them. A delivery type is not: `Destination::DELIVERY_TYPES` is
+     * a constant, and the same constant is what `OrderInput` validates a write
+     * against. So an unrecognised stored value reads `null` here — the value
+     * this shape uses for "nobody said" — rather than being echoed onto the
+     * wire where it would fail this API's own write validation and break the
+     * round trip on a key the client never touched.
+     *
+     * That is not theoretical tidiness. The meta is writable by wp-admin, by
+     * WP-CLI and by any other plugin, and `ShipmentSubscriber::destinationOf()`
+     * already treats an unrecognised value as `home` rather than trusting it.
+     * Reading it the same way here keeps one answer to "which journey is this"
+     * on both sides of the wire.
+     *
+     * **Null does not mean the parcel has no journey.** It means this order
+     * states none, and an order that states none is delivered to the door:
+     * `destinationOf()` owns that default and this file deliberately does not
+     * repeat it — `OrderInput`'s docblock argues why one fact must not have two
+     * defaults. So a panel rendering this into a picker should show the control
+     * at `home` and remember that the order itself is silent.
+     */
+    private static function deliveryType(WC_Order $order): ?string
+    {
+        $stored = strtolower(trim((string) $order->get_meta(OrderRepository::DELIVERY_TYPE_META, true)));
+
+        return Destination::isKnownDeliveryType($stored) ? $stored : null;
     }
 
     /**

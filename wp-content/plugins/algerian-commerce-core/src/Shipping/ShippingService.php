@@ -208,7 +208,46 @@ final class ShippingService
     }
 
     /**
-     * Hand an order's parcel to a courier.
+     * Hand an order's parcel to a courier, by hand — `POST /orders/{id}/shipments`.
+     *
+     * ## This route stays, and step 2 is the reason it had to be argued for
+     *
+     * Backend step 2 makes confirmation create the parcel by itself
+     * (`ShipmentSubscriber`), which demotes this route from *the* way a parcel
+     * is created to *the other* way. Item 6 of that step says to keep it, and
+     * keeping something is a decision that rots unless the reason is written
+     * next to it. There are five, and each is a case the automatic path cannot
+     * reach even in principle:
+     *
+     *  - **The order the automatic step refused.** A courier that rejects a
+     *    commune leaves no shipment row at all — the provider is called before
+     *    anything is written, which is `createClaimed()`'s deliberate ordering —
+     *    so the operator has an order with a recorded failure and no parcel.
+     *    Confirming again is one way back and it needs the order to leave
+     *    `processing` first; this route is the way back that does not.
+     *  - **The order that never transitions.** A shop that ships from `on-hold`,
+     *    or that dispatches an order already sitting in `processing`, fires no
+     *    transition and therefore no hook. Nothing is wrong with that shop.
+     *  - **The re-send.** A parcel that failed to deliver is finished, so the
+     *    live-shipment rule permits a second — but the order is already
+     *    `processing` and will not transition into it again, so the automatic
+     *    path will never run for it. Every re-send in this system comes through
+     *    here.
+     *  - **The destination the order does not carry.** `ShipmentInput` takes a
+     *    wilaya and a commune by id and refuses to guess them from a free-text
+     *    address, and `POST /orders` has no field that writes them, so a
+     *    back-office order has none to be confirmed with. This is the route that
+     *    takes the two ids.
+     *  - **Everything the order cannot say.** A desk collection on an order
+     *    quoted for home delivery, a recipient who is not the buyer, a phone
+     *    number for the neighbour who will actually be in. All are fields here
+     *    and none of them exists on an order.
+     *
+     * The shop running in-house delivery is *not* on that list, which is worth
+     * saying because item 6 names it: `ManualProvider::createShipment()` is pure
+     * and cannot fail, so a `manual` order confirmed with a destination gets its
+     * parcel automatically like any other. It needs this route for the five
+     * reasons above and for no reason peculiar to itself.
      *
      * @param array<string, mixed> $payload
      */
@@ -216,6 +255,42 @@ final class ShippingService
     {
         Permissions::assert(Capabilities::MANAGE_SHIPPING);
 
+        return $this->createFor($orderId, $payload);
+    }
+
+    /**
+     * The same thing, for the confirmation hook — backend step 2, item 5.
+     *
+     * **No permission check, and that is correct here**, for the reason
+     * `handleWebhook()` gives above: there is no user. A status transition
+     * arrives from cron, from WP-CLI, from a payment gateway completing a
+     * payment and from wp-admin, and `Permissions::assert()` throws
+     * `unauthenticated` for the first three — so calling `create()` from the
+     * hook would mean a shop's parcels being created only when a signed-in
+     * human happened to be the one who moved the order. That is not a security
+     * boundary being crossed, it is one being applied to the wrong actor.
+     *
+     * What replaces it is that nothing here is caller-supplied. The order id
+     * comes from WooCommerce's own transition, the courier is read off the
+     * order, and the destination is read off the order's meta;
+     * `ShipmentSubscriber` builds the payload and no request touches it.
+     *
+     * Every other rule is unchanged and deliberately shared rather than
+     * re-stated: the same claim, the same one-live-shipment guard, the same
+     * destination validation, the same audit row. A second code path that
+     * created parcels under slightly different rules is precisely how a shop
+     * ends up with two vans.
+     *
+     * @param array<string, mixed> $payload
+     */
+    public function createOnConfirmation(int $orderId, array $payload): Shipment
+    {
+        return $this->createFor($orderId, $payload);
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function createFor(int $orderId, array $payload): Shipment
+    {
         $order = $this->requireOrder($orderId);
         $input = ShipmentInput::fromPayload($payload);
         $provider = $this->providers->get($input->provider);
@@ -459,7 +534,7 @@ final class ShippingService
 
             if ($rule !== null) {
                 $quotes[] = ['provider' => $name]
-                    + RateResolver::quote($rule, $subtotal, $decimals, $currency)->toArray();
+                    + RateResolver::quote($rule, $subtotal, $decimals, $currency, $destination->deliveryType)->toArray();
             }
 
             foreach ($this->providers->get($name)->getShippingRates($destination) as $quote) {

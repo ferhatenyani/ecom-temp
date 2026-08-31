@@ -132,6 +132,7 @@ use AlgerianCommerce\Shipping\ManualProvider;
 use AlgerianCommerce\Shipping\ProviderRegistry;
 use AlgerianCommerce\Shipping\ShipmentPoller;
 use AlgerianCommerce\Shipping\ShipmentRepository;
+use AlgerianCommerce\Shipping\ShipmentSubscriber;
 use AlgerianCommerce\Shipping\ShippingController;
 use AlgerianCommerce\Shipping\ShippingRuleRepository;
 use AlgerianCommerce\Shipping\ShippingService;
@@ -240,6 +241,7 @@ final class Plugin
     private ?CustomerRepository $customerRepository = null;
     private ?CustomerService $customerService = null;
     private ?ShipmentRepository $shipmentRepository = null;
+    private ?ShipmentSubscriber $shipmentSubscriber = null;
     private ?ShippingRuleRepository $shippingRuleRepository = null;
     private ?ProviderRegistry $shippingProviders = null;
     private ?ShippingService $shippingService = null;
@@ -345,6 +347,17 @@ final class Plugin
          * calling customers about cancelled orders is the failure this stops.
          */
         $this->codSubscriber()->register();
+        /*
+         * Backend step 2, item 5. Not tied to the REST API either, and this one
+         * least of all: an order reaches `processing` from wp-admin, from
+         * WP-CLI, from cron, and — the case that decides it — from
+         * `WC_Order::payment_complete()`, where a gateway confirming a payment
+         * confirms the order and nothing in `Orders/` chose the status. A
+         * parcel created only on our own PATCH would mean a shop whose
+         * paid-online orders never reach a courier. See ShipmentSubscriber,
+         * which also explains why it can never throw.
+         */
+        $this->shipmentSubscriber()->register();
         /*
          * Also not tied to the REST API: a post type has to exist on every
          * request, or WP_Query returns nothing and the editor screens are
@@ -1016,8 +1029,9 @@ final class Plugin
      * Checkout — roadmap §59b.
      *
      * The one service that needs §14's rules and §58's payment registry at
-     * once. It takes the rule *repository* rather than ShippingService, which
-     * asserts a staff capability a shopper will never hold.
+     * once. It takes the rule *repository* and the provider *registry* rather
+     * than ShippingService, which asserts a staff capability a shopper will
+     * never hold.
      */
     public function checkoutService(): CheckoutService
     {
@@ -1030,7 +1044,13 @@ final class Plugin
             $this->optionSetRepository(),
             // Roadmap §84: the checkout response carries the tracking token,
             // because this is the last moment the caller is provably the buyer.
-            $this->trackingLink()
+            $this->trackingLink(),
+            // The same registry the admin rate route quotes from, so a shopper
+            // and a manager are asking the same couriers. Which couriers those
+            // are is decided in one place — shippingProviders() — and a shop
+            // with no credentials still gets ManualProvider, so the storefront
+            // never sees an empty registry.
+            $this->shippingProviders()
         );
     }
 
@@ -1305,6 +1325,25 @@ final class Plugin
             $this->auditLogger(),
             $this->shippingRuleRepository(),
             $this->webhookEventRepository(),
+            $this->logger()
+        );
+    }
+
+    /**
+     * The confirmation hook — backend step 2, item 5.
+     *
+     * Built from the same `shippingService()` the route uses, deliberately: one
+     * set of shipping rules, one claim, one audit row, whether the parcel was
+     * asked for by an operator or by a status change. A second service
+     * configured differently is how a shop ends up with two vans.
+     */
+    public function shipmentSubscriber(): ShipmentSubscriber
+    {
+        return $this->shipmentSubscriber ??= new ShipmentSubscriber(
+            $this->shippingService(),
+            $this->orderRepository(),
+            $this->shipmentRepository(),
+            $this->auditLogger(),
             $this->logger()
         );
     }
@@ -1593,7 +1632,18 @@ final class Plugin
             $this->orderRepository(),
             $this->auditLogger(),
             $this->auditRepository(),
-            $this->movementRepository()
+            $this->movementRepository(),
+            // The same registry the checkout and the admin rate route use, so
+            // the courier an operator may name on a back-office order is one
+            // the shop can actually hand a parcel to — and the same list on all
+            // three surfaces. Membership is all this service asks it for.
+            $this->shippingProviders(),
+            // The same §51 dataset `ShippingService` validates a parcel's
+            // destination against, so the commune an operator picks on the
+            // order and the commune they pick on the parcel are checked by one
+            // set of rows — and refused with one sentence. A lookup only:
+            // nothing here quotes a rate or reads a courier's map.
+            $this->geoRepository()
         );
     }
 

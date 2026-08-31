@@ -534,7 +534,13 @@ final class ZRExpressProvider implements ShippingProviderInterface, DestinationC
                 number_format((float) $amount, 2, '.', ''),
                 'DZD',
                 null,
-                RateQuote::SOURCE_PROVIDER
+                RateQuote::SOURCE_PROVIDER,
+                false,
+                // Stated, though this adapter has already filtered to the
+                // journey that was asked for: leaving it null would work here
+                // and would mean the one adapter that *does* filter is the one
+                // that says nothing about what it filtered to.
+                $destination->deliveryType
             );
         }
 

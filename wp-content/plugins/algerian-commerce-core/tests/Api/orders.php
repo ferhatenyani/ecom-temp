@@ -1375,13 +1375,19 @@ echo PHP_EOL, '--- a quoted fee is not a stated one ---', PHP_EOL;
  * The one case where `shipping_amount` and `shipping_total` disagree, and the
  * reason `shipping_amount` is null rather than an echo of the total.
  *
- * The shipping line here is written exactly as `Cart/CheckoutService::createOrder()`
- * writes the §14 quote — same class, same `method_title`, same empty
- * `method_id`. Nothing about the line distinguishes it from one this API wrote
- * except the `_ac_manual_price` meta, which is the whole point: the amount says
+ * The shipping line here is written the way `Cart/CheckoutService::createOrder()`
+ * writes the §14 quote — same class, same `method_title` — and the distinguishing
+ * mark is the `_ac_manual_price` meta, which is the whole point: the amount says
  * nothing (450 DZD looks the same whichever way it was arrived at) and neither
  * does the label, which is deliberately identical so a customer's packing slip
  * reads the same on both.
+ *
+ * `method_id` is left empty here, and since backend step 2 that is no longer
+ * "the same as a checkout line": a storefront order now names the registered
+ * courier it was quoted for, because `Shipping\ShopperRates` resolves per
+ * provider and there is no nameless one left. Empty is the back office's value
+ * — a fee stated before any courier was chosen — which is exactly what this
+ * fixture is standing in for.
  */
 $quoted = ac_req('POST', '/orders', [
     'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
@@ -1956,6 +1962,541 @@ ac_assert(
     })()
 );
 
+echo PHP_EOL, '--- which courier carries a back-office order ---', PHP_EOL;
+
+/*
+ * Backend step 2's fourth item: `shipping_provider` on `POST /orders`.
+ *
+ * An order taken on the phone has no cart and no §51 destination — `OrderInput`
+ * has no `wilaya_id` and never will, because turning a free-text `city` into a
+ * commune is the fuzzy match `Shipping\ShipmentInput` refuses by name. So
+ * "which couriers serve this destination" is a question that cannot be asked
+ * here, and the check is **registration only**: the courier must be one
+ * `Plugin::shippingProviders()` has, because backend step 2's fifth item hands
+ * this exact string to `ProviderRegistry::get()` when it creates the parcel.
+ *
+ * That is deliberately weaker than `POST /checkout`, which validates against
+ * the couriers that actually quoted. The two routes are answering different
+ * questions: the checkout refuses what it cannot *charge*, this refuses what it
+ * cannot *ship with*. Being stricter here would also make the field unusable on
+ * this install — with `sync-destinations` unrun no courier serves anywhere, and
+ * an operator would be unable to record a courier at all.
+ */
+$courierOrder = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+    'shipping_amount' => '450',
+    'shipping_provider' => 'manual',
+]);
+$courierId = (int) ($courierOrder[1]['data']['id'] ?? 0);
+
+ac_check('an order can state its courier and its fee together', $courierOrder, 201, function ($d) {
+    // '450.00' rather than the '450' that was typed: `shippingAmount()` puts a
+    // stated fee through `money()` exactly as it does a derived one, so the two
+    // keys are comparable at a glance. The unrounded string a person actually
+    // wrote is what the audit keeps — see `OrderService::snapshot()`.
+    return (($d['data']['shipping_provider'] ?? null) === 'manual'
+        && ($d['data']['shipping_amount'] ?? null) === '450.00'
+        && ($d['data']['shipping_total'] ?? null) === '450.00')
+        ?: 'got ' . wp_json_encode([
+            'shipping_provider' => $d['data']['shipping_provider'] ?? null,
+            'shipping_amount' => $d['data']['shipping_amount'] ?? null,
+            'shipping_total' => $d['data']['shipping_total'] ?? null,
+        ]);
+});
+
+/*
+ * The pair a reader has to be able to tell apart, on one order.
+ *
+ * `shipping_source` is null — nobody quoted this, a person typed it — while
+ * `shipping_provider` names a courier. That combination is the whole argument
+ * in `OrderInput`'s docblock made concrete: one field is about the price, the
+ * other is about the parcel, and neither implies the other.
+ */
+ac_assert(
+    'a stated fee has no source even when it has a courier',
+    // `array_key_exists` rather than `??`, which cannot tell an absent key from
+    // the null this assertion is entirely about — the same care the
+    // `shipping_source` probes below take, and for the same reason.
+    (array_key_exists('shipping_source', $courierOrder[1]['data'] ?? [])
+        && $courierOrder[1]['data']['shipping_source'] === null)
+        ?: 'shipping_source was ' . var_export($courierOrder[1]['data']['shipping_source'] ?? 'absent', true)
+);
+
+ac_check('an unregistered courier is refused', ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+    'shipping_provider' => 'yalidine',
+]), 400, function ($d) {
+    $field = $d['error']['details']['fields']['shipping_provider'] ?? null;
+
+    // The registered set *is* named here, unlike on the public checkout: this
+    // route asserts `ac_manage_orders`, and an operator who may enter orders
+    // may know which couriers the shop has.
+    return (is_string($field) && str_contains($field, 'manual'))
+        ?: 'got ' . wp_json_encode($d['error'] ?? null);
+});
+
+/*
+ * A courier with no fee beside it, which is the case the field exists for: the
+ * operator knows who is collecting and has not been told the price.
+ *
+ * `OrderRepository::assignShippingProvider()` creates the shipping line for it,
+ * and the line carries no `_ac_manual_price` — so `shipping_amount` reads null,
+ * `shipping_total` reads 0.00, and the order says a courier was named and no
+ * fee was. Nothing invents a quote to fill the gap, and nothing may: there is
+ * no destination to quote against, `getShippingRates()` returns `[]` for every
+ * destination on this install anyway, and putting a live courier call inside an
+ * order write would make the back office depend on a courier's API being up
+ * while an operator is on the phone.
+ */
+$courierOnly = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+    'shipping_provider' => 'manual',
+]);
+$courierOnlyId = (int) ($courierOnly[1]['data']['id'] ?? 0);
+
+ac_check('a courier can be named with no fee at all', $courierOnly, 201, function ($d) {
+    return (($d['data']['shipping_provider'] ?? null) === 'manual'
+        && ($d['data']['shipping_amount'] ?? null) === null
+        && ($d['data']['shipping_total'] ?? null) === '0.00')
+        ?: 'got ' . wp_json_encode([
+            'shipping_provider' => $d['data']['shipping_provider'] ?? null,
+            'shipping_amount' => $d['data']['shipping_amount'] ?? null,
+            'shipping_total' => $d['data']['shipping_total'] ?? null,
+        ]);
+});
+
+/*
+ * **The regression this change had to not cause**, and the reason
+ * `replaceShippingLine()` grew a `$provider` argument.
+ *
+ * Correcting a delivery charge is the most ordinary PATCH this route takes —
+ * *the courier came back at 600, not 450*. The shipping line is destroyed and
+ * rebuilt to do it, and a rebuild that wrote an empty `method_id` would
+ * silently un-assign the courier: the operator would fix a price and break the
+ * dispatch that backend step 2's fifth item performs off this exact field, with
+ * nothing in the response to say so.
+ *
+ * The rule is the one this API applies everywhere else — a payload changes what
+ * it mentions.
+ */
+ac_check('restating the fee leaves the courier alone', ac_req('PATCH', "/orders/{$courierId}", [
+    'shipping_amount' => '600',
+]), 200, function ($d) {
+    return (($d['data']['shipping_provider'] ?? null) === 'manual'
+        && ($d['data']['shipping_total'] ?? null) === '600.00')
+        ?: 'got ' . wp_json_encode([
+            'shipping_provider' => $d['data']['shipping_provider'] ?? null,
+            'shipping_total' => $d['data']['shipping_total'] ?? null,
+        ]);
+});
+
+/*
+ * And the other direction: naming a courier does not touch the money.
+ *
+ * `method_id` is not a term in the shipping sum — `calculate_totals()` adds up
+ * line *totals* — so this write takes the plain `save()` path and the fee it
+ * finds is the fee it leaves.
+ */
+ac_check('naming a courier leaves the fee alone', ac_req('PATCH', "/orders/{$courierId}", [
+    'shipping_provider' => 'manual',
+]), 200, function ($d) {
+    return (($d['data']['shipping_total'] ?? null) === '600.00'
+        && ($d['data']['shipping_amount'] ?? null) === '600.00')
+        ?: 'got ' . wp_json_encode([
+            'shipping_total' => $d['data']['shipping_total'] ?? null,
+            'shipping_amount' => $d['data']['shipping_amount'] ?? null,
+        ]);
+});
+
+/*
+ * Empty says nothing, exactly as `shipping_amount` does.
+ *
+ * `null` and `""` are dropped rather than stored, which is what lets a client
+ * PATCH back a whole order it just read: `OrderPresenter` emits `null` for an
+ * order whose courier nobody has named, and that null must not arrive as an
+ * instruction to forget one. The cost — a courier cannot be un-chosen, only
+ * replaced — is argued in `OrderInput`'s docblock.
+ */
+ac_check('an empty courier is dropped, not stored', ac_req('PATCH', "/orders/{$courierId}", [
+    'shipping_provider' => null,
+    'customer_note' => 'sent with an empty courier',
+]), 200, function ($d) {
+    return (($d['data']['shipping_provider'] ?? null) === 'manual')
+        ?: 'the courier was cleared by an empty statement: '
+            . var_export($d['data']['shipping_provider'] ?? null, true);
+});
+
+ac_check('and so is a blank one', ac_req('PATCH', "/orders/{$courierId}", [
+    'shipping_provider' => '   ',
+]), 400, function ($d) {
+    // Dropped, so the body reads as empty — the same refusal `{"total": "1.00"}`
+    // gets, and deliberately not a per-field error: there is nothing wrong with
+    // the value, it simply says nothing.
+    return str_contains((string) ($d['error']['message'] ?? ''), 'No supported fields')
+        ?: 'got ' . ($d['error']['message'] ?? '?');
+});
+
+/*
+ * The two shape refusals, which are `OrderInput`'s and not the registry's.
+ *
+ * There is deliberately no charset rule — the registry is the authority on
+ * which names exist, and a pattern here could only ever refuse names it also
+ * refuses while standing ready to reject a future adapter's spelling.
+ */
+ac_check('a courier that is not a string is refused', ac_req('PATCH', "/orders/{$courierId}", [
+    'shipping_provider' => ['manual'],
+]), 400, function ($d) {
+    return (($d['error']['details']['fields']['shipping_provider'] ?? '') === 'Must be a string.')
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+ac_check('an implausibly long courier name is refused', ac_req('PATCH', "/orders/{$courierId}", [
+    'shipping_provider' => str_repeat('a', 41),
+]), 400, function ($d) {
+    return (($d['error']['details']['fields']['shipping_provider'] ?? '') === 'Is implausibly long.')
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+/*
+ * A name is normalized the way `ProviderRegistry` normalizes one — trimmed and
+ * lower-cased — so that the string stored in `method_id` is the string the
+ * registry answers to. Anything else passes validation here and then misses in
+ * the registry later, at confirmation, which is the worst moment to find out.
+ */
+ac_check('a courier name is trimmed and lower-cased', ac_req('PATCH', "/orders/{$courierId}", [
+    'shipping_provider' => '  MANUAL ',
+]), 200, function ($d) {
+    return (($d['data']['shipping_provider'] ?? null) === 'manual')
+        ?: 'stored ' . var_export($d['data']['shipping_provider'] ?? null, true);
+});
+
+/*
+ * **No `is_editable` gate, and this is the assertion that says so on purpose.**
+ *
+ * `guardShippingAmountWritable()` states the rule: everything that moves the
+ * order total is gated, everything else is free at any status. Naming a courier
+ * moves nothing, so it sits with the address and the customer note — and it has
+ * to, because backend step 2 confirms an order into `processing`, which is not
+ * editable, and *"Yalidine refused this commune, send it with ZR Express"* is
+ * the retry the next sub-task is built around. A gate here would make the
+ * courier unchangeable from the exact moment it starts to matter.
+ *
+ * The fee on the same order is refused in the same status, which is what makes
+ * this a decision rather than an oversight.
+ */
+ac_check('the courier order reaches processing', ac_req('PATCH', "/orders/{$courierId}", [
+    'status' => 'processing',
+]), 200);
+
+ac_check('the courier can still be changed on a committed order', ac_req('PATCH', "/orders/{$courierId}", [
+    'shipping_provider' => 'manual',
+]), 200, function ($d) {
+    return (($d['data']['shipping_provider'] ?? null) === 'manual')
+        ?: 'got ' . var_export($d['data']['shipping_provider'] ?? null, true);
+});
+
+ac_check('while the fee on that same order is not', ac_req('PATCH', "/orders/{$courierId}", [
+    'shipping_amount' => '700',
+]), 409, function ($d) {
+    return (($d['error']['details']['editable_in'] ?? []) === ['pending', 'on-hold'])
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+/*
+ * The whole-body round trip, with the new key in it.
+ *
+ * `shipping_provider` is writable — unlike `shipping_source`, which is
+ * read-only precisely so nobody can claim a courier answered — so it cannot be
+ * parked in `READ_ONLY` to make the round trip safe. It is made safe the other
+ * way: restating what the order already says is a no-op, and a no-op must never
+ * be refused for a change.
+ */
+ac_check('an order round-trips through PATCH with its courier on it', (function () use ($courierOnlyId) {
+    [, $read] = ac_req('GET', "/orders/{$courierOnlyId}");
+    $body = $read['data'] ?? [];
+    // The one key a committed order may not echo. This order is `pending`, so
+    // it would survive — it is dropped anyway because the finding that
+    // `buildPayload()` must omit it does not stop being true on a pending order.
+    unset($body['line_items']);
+
+    return ac_req('PATCH', "/orders/{$courierOnlyId}", $body);
+})(), 200, function ($d) {
+    return (($d['data']['shipping_provider'] ?? null) === 'manual')
+        ?: 'the round trip lost the courier: ' . wp_json_encode($d['data']['shipping_provider'] ?? null);
+});
+
+foreach ([$courierId, $courierOnlyId] as $id) {
+    if ($id > 0) {
+        wc_get_order($id)?->delete(true);
+    }
+}
+
+echo PHP_EOL, '--- and where it is going ---', PHP_EOL;
+
+/*
+ * Backend step 2: a structured destination on `POST /orders`.
+ *
+ * The gap the courier field could not close alone. `shipping_provider` said who
+ * carries the parcel and nothing said **where to**, so
+ * `Shipping\ShipmentSubscriber` recorded `order_destination_missing` against
+ * every back-office order that was ever confirmed — not an edge case on this
+ * route but the only outcome. The parcel that a confirmed order is supposed to
+ * create automatically was a storefront-only promise.
+ *
+ * The three keys are `wilaya_id`, `commune_id` and `delivery_type` — the same
+ * spelling `POST /orders/{id}/shipments`, `GET /shipping/rates`, `POST /checkout`
+ * and a shipping rule all use, and `Shipping\Destination::toArray()`'s own
+ * order. **They are §51 row ids and the address's `city`/`state` are free
+ * text**; `OrderInput`'s docblock draws the line and gives the tell — `_id`
+ * means a row, and a row is what a courier routes on.
+ *
+ * That the parcel now actually appears is proved end to end in
+ * `tests/Api/shipping.php`, which owns the hook. What is measured here is the
+ * write contract: what is accepted, what is refused, with which key and which
+ * sentence, and that the read shape carries it back.
+ */
+
+[, $wilayaList] = ac_req('GET', '/locations/wilayas');
+$destWilaya = (int) ($wilayaList['data'][0]['id'] ?? 0);
+$otherWilaya = (int) ($wilayaList['data'][1]['id'] ?? 0);
+
+[, $communeList] = ac_req('GET', "/locations/wilayas/{$destWilaya}/communes");
+$destCommune = (int) ($communeList['data'][0]['id'] ?? 0);
+
+// A commune that genuinely belongs somewhere else, for the mismatch below. The
+// interesting refusal cannot be written with an invented id: "no such commune"
+// and "that commune is in another wilaya" are different mistakes with different
+// fixes, and only a real row from a second wilaya asks the second question.
+[, $otherCommunes] = ac_req('GET', "/locations/wilayas/{$otherWilaya}/communes");
+$foreignCommune = (int) ($otherCommunes['data'][0]['id'] ?? 0);
+
+ac_assert('the geography dataset has two wilayas to work with', ($destWilaya > 0 && $otherWilaya > 0)
+    ?: 'got ' . $destWilaya . ' and ' . $otherWilaya);
+ac_assert('and a commune in each', ($destCommune > 0 && $foreignCommune > 0)
+    ?: 'got ' . $destCommune . ' and ' . $foreignCommune);
+
+$destOrder = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+    'shipping_provider' => 'manual',
+    'wilaya_id' => $destWilaya,
+    'commune_id' => $destCommune,
+    'delivery_type' => 'desk',
+]);
+$destId = (int) ($destOrder[1]['data']['id'] ?? 0);
+
+/*
+ * The read shape gains whatever the write shape gains, in the same change —
+ * `OrderPresenter`'s rule, and the one a line's `price` most recently broke by
+ * being settable before it was readable. A panel that can post a destination
+ * has to be able to reopen the order and see it, or its edit form shows empty
+ * pickers on an order that is addressed.
+ */
+ac_check('an order can be created with a destination on it', $destOrder, 201, function ($d) use ($destWilaya, $destCommune) {
+    foreach (['wilaya_id', 'commune_id', 'delivery_type'] as $key) {
+        if (!array_key_exists($key, $d['data'] ?? [])) {
+            return "the write shape has {$key} and the read shape must too";
+        }
+    }
+
+    // Ints on the wire, not the strings money is emitted as: these are row
+    // ids, and a client uses them to re-select an option rather than to
+    // display an amount.
+    return (($d['data']['wilaya_id'] ?? null) === $destWilaya
+        && ($d['data']['commune_id'] ?? null) === $destCommune
+        && ($d['data']['delivery_type'] ?? null) === 'desk')
+        ?: 'got ' . wp_json_encode([
+            'wilaya_id' => $d['data']['wilaya_id'] ?? null,
+            'commune_id' => $d['data']['commune_id'] ?? null,
+            'delivery_type' => $d['data']['delivery_type'] ?? null,
+        ]);
+});
+
+/*
+ * **The interesting refusal**: a commune that is real and is somewhere else.
+ *
+ * This is the mistake an address form actually makes — a commune from the right
+ * dropdown beside a wilaya left over from the previous selection — and
+ * `ShippingService::validatedDestination()` names the consequence: it routes a
+ * parcel to a commune of the same name in another wilaya, of which Algeria has
+ * several. The sentence and the `commune_wilaya_id` beside it are copied from
+ * that method verbatim, so a panel renders one wording whether it was the order
+ * or the parcel that was refused.
+ *
+ * Keyed `wilaya_id` rather than `commune_id`, which is that method's call too:
+ * the commune is the value the operator picked deliberately and the wilaya is
+ * the one they left behind.
+ */
+ac_check('a commune from another wilaya is refused', ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+    'wilaya_id' => $destWilaya,
+    'commune_id' => $foreignCommune,
+]), 400, function ($d) use ($otherWilaya) {
+    if (($d['error']['details']['fields']['wilaya_id'] ?? '') !== 'That commune belongs to a different wilaya.') {
+        return 'got ' . wp_json_encode($d['error']['details'] ?? null);
+    }
+
+    // Published beside the field so a panel can offer to move the selection
+    // rather than merely clearing it.
+    return (($d['error']['details']['commune_wilaya_id'] ?? null) === $otherWilaya)
+        ?: 'commune_wilaya_id is ' . var_export($d['error']['details']['commune_wilaya_id'] ?? null, true);
+});
+
+ac_check('a commune that does not exist is refused differently', ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+    'wilaya_id' => $destWilaya,
+    'commune_id' => 99999999,
+]), 400, function ($d) {
+    return (($d['error']['details']['fields']['commune_id'] ?? '') === 'No commune with id 99999999.')
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+/*
+ * Half a destination is refused, because half of one silently does nothing.
+ * `ShipmentSubscriber::destinationOf()` returns null unless both ids are at
+ * least 1, so an order carrying a wilaya and no commune is addressed exactly as
+ * well as an order carrying neither — it would confirm, create no parcel, and
+ * record `order_destination_missing` naming a thing the operator thought they
+ * had entered.
+ */
+ac_check('a wilaya with no commune is refused', ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+    'wilaya_id' => $destWilaya,
+]), 400, function ($d) {
+    return (($d['error']['details']['fields']['commune_id'] ?? '') === 'Required when the order names a wilaya.')
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+ac_check('and a commune with no wilaya is refused the other way round', ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+    'commune_id' => $destCommune,
+]), 400, function ($d) {
+    return (($d['error']['details']['fields']['wilaya_id'] ?? '') === 'Required when the order names a commune.')
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+/*
+ * **But on an *order* that already names a wilaya, a commune alone is the
+ * point.** "Same wilaya, wrong commune" is the correction
+ * `ShipmentSubscriber`'s retry is built around — a courier refuses a commune,
+ * the operator fixes it, the next confirmation creates the parcel — and a guard
+ * that judged the payload in isolation would refuse the single most useful
+ * write this route makes. The pair is resolved against the order first, which
+ * is this API's rule everywhere else: a payload changes what it mentions.
+ */
+[, $secondCommune] = ac_req('GET', "/locations/wilayas/{$destWilaya}/communes");
+$neighbour = (int) ($secondCommune['data'][1]['id'] ?? 0);
+
+ac_check('a commune alone corrects an order that already names a wilaya', ac_req('PATCH', "/orders/{$destId}", [
+    'commune_id' => $neighbour,
+]), 200, function ($d) use ($destWilaya, $neighbour) {
+    return (($d['data']['commune_id'] ?? null) === $neighbour && ($d['data']['wilaya_id'] ?? null) === $destWilaya)
+        ?: 'got ' . wp_json_encode([
+            'wilaya_id' => $d['data']['wilaya_id'] ?? null,
+            'commune_id' => $d['data']['commune_id'] ?? null,
+        ]);
+});
+
+// And the same single-field write is re-validated against the stored half, so
+// the correction cannot introduce the mismatch the create refused.
+ac_check('a correction into another wilaya is still refused', ac_req('PATCH', "/orders/{$destId}", [
+    'commune_id' => $foreignCommune,
+]), 400, function ($d) {
+    return (($d['error']['details']['fields']['wilaya_id'] ?? '') === 'That commune belongs to a different wilaya.')
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+/*
+ * The two shape refusals, which are `OrderInput`'s and not the geography's.
+ *
+ * One sentence for every way an id can be wrong, against the money fields'
+ * three, and it is `Shipping\ShipmentInput::requiredId()`'s word for word: a
+ * panel offering the same destination picker on the order drawer and the parcel
+ * drawer must not render two wordings for one mistake. `0` is in the list on
+ * purpose — it is the one value that separates an id from a fee, which has a
+ * meaningful zero and keeps it.
+ */
+foreach ([['a zero id', 0], ['a negative id', -1], ['a word', 'sixteen']] as [$label, $value]) {
+    ac_check("{$label} is refused as an id", ac_req('PATCH', "/orders/{$destId}", [
+        'commune_id' => $value,
+    ]), 400, function ($d) {
+        return (($d['error']['details']['fields']['commune_id'] ?? '') === 'Must be a positive id.')
+            ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+    });
+}
+
+ac_check('an unknown delivery type is refused with the shared enum', ac_req('PATCH', "/orders/{$destId}", [
+    'delivery_type' => 'pickup',
+]), 400, function ($d) {
+    return (($d['error']['details']['fields']['delivery_type'] ?? '') === 'Must be one of: home, desk.')
+        ?: 'got ' . wp_json_encode($d['error']['details'] ?? null);
+});
+
+/*
+ * The journey moves on its own, with no pair to satisfy. It is not a place, it
+ * needs no lookup, and `destinationOf()` never reads it unless both ids are
+ * present — so "the customer will collect it from the desk" is a legal thing to
+ * say about an order whose address may still be coming.
+ */
+ac_check('the delivery type can be changed by itself', ac_req('PATCH', "/orders/{$destId}", [
+    'delivery_type' => 'home',
+]), 200, function ($d) {
+    return (($d['data']['delivery_type'] ?? null) === 'home')
+        ?: 'got ' . var_export($d['data']['delivery_type'] ?? null, true);
+});
+
+/*
+ * An order nobody addressed reads three nulls rather than three zeroes, and the
+ * distinction is the round trip's. `OrderInput` refuses `0` outright — there is
+ * no commune 0 — so publishing it would emit a value this API's own write side
+ * rejects, and every whole-body PATCH of an unaddressed order would 400 on keys
+ * the client echoed without touching.
+ */
+$unaddressed = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $mugId, 'quantity' => 1]],
+]);
+$unaddressedId = (int) ($unaddressed[1]['data']['id'] ?? 0);
+
+ac_check('an unaddressed order reads null, not zero', $unaddressed, 201, function ($d) {
+    foreach (['wilaya_id', 'commune_id', 'delivery_type'] as $key) {
+        if (!array_key_exists($key, $d['data'] ?? [])) {
+            return "{$key} must be emitted even when nobody stated one";
+        }
+
+        if ($d['data'][$key] !== null) {
+            return "{$key} is " . var_export($d['data'][$key], true);
+        }
+    }
+
+    return true;
+});
+
+/*
+ * The whole-body round trip with the destination on it, on both an addressed
+ * order and an unaddressed one — the two shapes the presenter emits.
+ *
+ * These keys are writable, so they cannot be parked in `READ_ONLY` to make the
+ * round trip safe the way `shipping_source` and `shipping_provider_error` are.
+ * It is made safe the other way: `null` says nothing and is dropped, and
+ * restating what the order already names is a no-op that can never be refused.
+ */
+foreach ([['an addressed', $destId], ['an unaddressed', $unaddressedId]] as [$label, $id]) {
+    ac_check("{$label} order round-trips through PATCH with its destination", (function () use ($id) {
+        [, $read] = ac_req('GET', "/orders/{$id}");
+        $body = $read['data'] ?? [];
+        // The one key a whole-body PATCH always strips; see the courier round
+        // trip above for why that finding does not stop being true here.
+        unset($body['line_items']);
+
+        return ac_req('PATCH', "/orders/{$id}", $body);
+    })(), 200);
+}
+
+foreach ([$destId, $unaddressedId] as $id) {
+    if ($id > 0) {
+        wc_get_order($id)?->delete(true);
+    }
+}
+
 echo PHP_EOL, "=== the PATCH field contract, measured ===", PHP_EOL;
 
 /*
@@ -2481,6 +3022,10 @@ $dropped = ac_probe_order($probeId);
 ac_check('a body of only read-only fields reads as an empty body', ac_req('PATCH', "/orders/{$dropped}", [
     'id' => 1, 'number' => 'x', 'order_key' => 'x', 'created_via' => 'x', 'currency' => 'USD',
     'version' => '1', 'discount_total' => '5', 'shipping_total' => '5', 'total_tax' => '5',
+    // Backend step 2's label. Dropped rather than rejected for the same reason
+    // as the rest, and it must stay in this list: the presenter emits it, so a
+    // client PATCHing back a body it just read sends it without meaning to.
+    'shipping_source' => 'provider',
     'total' => '1.00', 'subtotal' => '5', 'prices_include_tax' => true, 'payment_url' => 'x',
     'is_editable' => false, 'needs_payment' => false, 'stock_reduced' => true, 'customer' => [],
     'date_created' => 'x', 'date_modified' => 'x', 'date_paid' => 'x', 'date_completed' => 'x',
@@ -2506,6 +3051,32 @@ ac_check('a read-only field alongside a real one is simply ignored', ac_req('PAT
 ac_check('an empty body is the same refusal', ac_req('PATCH', "/orders/{$dropped}", []), 400, function ($d) {
     return ($d['error']['message'] ?? '') === 'No supported fields were provided.'
         ?: 'got ' . ($d['error']['message'] ?? '?');
+});
+
+/*
+ * Nobody may state where a delivery charge came from — backend step 2.
+ *
+ * `shipping_amount` is settable because a person may decide a delivery fee.
+ * `shipping_source` is not settable by anyone, because stating it would be
+ * stating that a courier answered when none was asked, and the field's entire
+ * worth is that an operator can trust it months later. It is emitted by the
+ * presenter, so it also has to survive a whole-body PATCH rather than 400 on a
+ * key the client never touched — the lossy round trip `OrderPresenter`'s
+ * docblock says a line's `price` once broke.
+ */
+ac_check('a stated shipping_source is dropped, not believed', ac_req('PATCH', "/orders/{$dropped}", [
+    'shipping_source' => 'provider',
+    'customer_note' => 'sent with a source alongside',
+]), 200, function ($d) {
+    // array_key_exists rather than `??`, which cannot tell an absent key from
+    // the null this assertion is entirely about — the same care
+    // `shipping_amount`'s null assertion takes a few hundred lines above.
+    if (!array_key_exists('shipping_source', $d['data'] ?? [])) {
+        return 'the presenter must emit shipping_source even when nothing set it';
+    }
+
+    return $d['data']['shipping_source'] === null
+        ?: 'a caller stated a source and it stuck: ' . var_export($d['data']['shipping_source'], true);
 });
 
 /*

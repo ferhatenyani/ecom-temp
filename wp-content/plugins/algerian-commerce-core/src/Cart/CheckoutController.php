@@ -64,6 +64,59 @@ final class CheckoutController extends AbstractController
                     'sanitize_callback' => 'sanitize_text_field',
                     'description' => 'One of GET /payments/methods. Empty picks the shop default.',
                 ],
+                /*
+                 * Which courier the shopper picked — backend step 2.
+                 *
+                 * **Declared exactly like `payment_method` above, on purpose.**
+                 * The two are the same kind of field: an optional slug naming
+                 * one of a small registered set, where empty means "the shop
+                 * decides". Same type, same `required`, same `default`, same
+                 * pattern, same pair of callbacks — so a storefront that has
+                 * learned how one behaves has learned how the other does, and
+                 * the two cannot drift into accepting different strings for the
+                 * same shape of value.
+                 *
+                 * The pattern is doing real work and is not decoration:
+                 * `sanitize_text_field()` strips tags but happily returns
+                 * `Yalidine ` or a kilobyte, and without a `validate_callback`
+                 * WordPress silently ignores `pattern` altogether — the trap
+                 * `AbstractController::paginationArgs()` documents. Provider
+                 * names are lowercase slugs (`manual`, `yalidine`,
+                 * `zrexpress`), so the rejection belongs at the schema where
+                 * it costs nothing rather than in a service that then has to
+                 * describe it.
+                 *
+                 * **`zrexpress`, not `zr_express`** — this line said the latter
+                 * and was wrong. `ZRExpressProvider::NAME` is `'zrexpress'`,
+                 * and that constant is the only spelling that matters here,
+                 * because it is what `ProviderRegistry::has()` and `get()`
+                 * answer to. `zr_express` is a real string in this codebase and
+                 * names a *different* thing — the feature flag key
+                 * `SettingsService::features()` derives from `ENABLE_ZR_EXPRESS`
+                 * — which is exactly how the two came to be confused. The
+                 * pattern accepts both shapes either way, so nothing behaved
+                 * differently; what was wrong was a reader being told the wrong
+                 * name for the courier.
+                 *
+                 * What the schema deliberately does *not* do is enumerate the
+                 * couriers. An `enum` here would have to be built from
+                 * `Plugin::shippingProviders()` at `rest_api_init`, which is
+                 * before a request exists, and it would publish the registered
+                 * set in the route's own OPTIONS schema to an anonymous caller
+                 * — the leak `requireShippingQuote()` refuses by hand for the
+                 * error message. Membership is a question about *this*
+                 * destination anyway, and only the service can answer it.
+                 */
+                'shipping_provider' => [
+                    'type' => 'string',
+                    'required' => false,
+                    'default' => '',
+                    'pattern' => '^[a-z0-9_-]{0,40}$',
+                    'validate_callback' => 'rest_validate_request_arg',
+                    'sanitize_callback' => 'sanitize_text_field',
+                    'description' => 'One of the providers GET /checkout/shipping-rates quoted. '
+                        . 'Empty takes the cheapest.',
+                ],
                 'customer_note' => [
                     'type' => 'string',
                     'required' => false,
@@ -124,6 +177,7 @@ final class CheckoutController extends AbstractController
             'commune_id' => (int) $request->get_param('commune_id'),
             'delivery_type' => (string) $request->get_param('delivery_type'),
             'payment_method' => (string) $request->get_param('payment_method'),
+            'shipping_provider' => (string) $request->get_param('shipping_provider'),
             'customer_note' => (string) $request->get_param('customer_note'),
         ]), 201);
     }
