@@ -231,16 +231,116 @@ ac_check('a name is required', ac_req('POST', '/attributes', ['slug' => 'acattrn
         return str_contains(ac_field_error($d, 'name'), 'label') ?: 'the message does not explain what name means';
     });
 
-ac_check('a duplicate slug is a conflict', ac_req('POST', '/attributes', [
+/*
+ * === WooCommerce's own refusals, and the key they arrive under ===
+ *
+ * Everything from here to the end of this block is the fix round's item 8.
+ * `AttributeRepository::fromWpError()` used to file **every** non-conflict
+ * `WP_Error` under `details.fields.attribute` — one literal string, and no form
+ * control has or could have that key. A screen binding `details.fields` to its
+ * inputs by key therefore rendered nothing at all for the two slug failures a
+ * real shop actually meets, and the duplicate beside them carried no `details`
+ * whatsoever. These assertions are what stops that coming back: they check the
+ * *key*, not only the status, because the status was right the whole time.
+ */
+ac_check('a duplicate slug is a conflict naming the slug', ac_req('POST', '/attributes', [
     'name' => 'Taille encore',
     'slug' => 'acattrsize',
-]), 409);
+]), 409, function ($d) {
+    // The offending value at the top of `details`, never under `fields` —
+    // `fields` is the 400 validation channel and no 409 in this plugin writes
+    // to it. Same shape `AttributeService::createTerm()` uses for the duplicate
+    // it catches itself, so a client meets one refusal and not two.
+    if (isset($d['error']['details']['fields'])) {
+        return 'a state refusal grew a fields key';
+    }
+
+    return ($d['error']['details']['slug'] ?? null) === 'acattrsize'
+        ?: 'details are ' . wp_json_encode($d['error']['details'] ?? null);
+});
 
 ac_check('an over-long slug is refused', ac_req('POST', '/attributes', [
     'name' => 'Long',
     'slug' => str_repeat('a', 40),
 ]), 400, function ($d) {
     return str_contains(ac_field_error($d, 'slug'), '32') ?: 'the message does not explain the byte budget';
+});
+
+/*
+ * The one above is `GlobalAttributeInput`'s own check and always named `slug`.
+ * This one is **WooCommerce's**, reached by stating no slug at all: a 40-letter
+ * label derives a slug past `wc_get_attribute_slug_max_byte_length()` (29 —
+ * WordPress caps a taxonomy name at 32 and `pa_` takes three), so
+ * `wc_create_attribute()` refuses the string it derived rather than one the
+ * caller wrote.
+ *
+ * **It is filed under `name`, and that is the argued part.** The slug box was
+ * empty; reddening it would point at the control the person did not fill and
+ * say nothing about what to change. The name is what produced the string and is
+ * what can fix it — either shorten it or state a slug.
+ */
+ac_check('a derived slug that is too long is filed under name', ac_req('POST', '/attributes', [
+    'name' => str_repeat('Longueur', 5),
+]), 400, function ($d) {
+    if (isset($d['error']['details']['fields']['attribute'])) {
+        return 'still filed under the catch-all key no control has';
+    }
+
+    if (!str_contains(ac_field_error($d, 'name'), 'too long')) {
+        return 'fields are ' . wp_json_encode($d['error']['details']['fields'] ?? null);
+    }
+
+    // WooCommerce's own sentence, not a translation of it: it names the derived
+    // slug, which is the only place the person can see what was built for them.
+    return str_contains(ac_field_error($d, 'name'), 'Slug')
+        ?: 'the message does not quote the derived slug: ' . ac_field_error($d, 'name');
+});
+
+/*
+ * A reserved word, which is the refusal a real shop reaches first: "Type" is a
+ * plausible attribute label and `type` is in `$wp_rewrite`'s rewrite codes, so
+ * `wc_check_if_attribute_name_is_reserved()` refuses it.
+ *
+ * Stated here, so the same code lands under `slug` — the pair with the check
+ * above is what proves the mapping is about *which field the caller used* and
+ * not about the error code alone.
+ */
+ac_check('a reserved slug is filed under slug when the caller stated one', ac_req('POST', '/attributes', [
+    'name' => 'Type',
+    'slug' => 'type',
+]), 400, function ($d) {
+    if (isset($d['error']['details']['fields']['attribute'])) {
+        return 'still filed under the catch-all key no control has';
+    }
+
+    return str_contains(ac_field_error($d, 'slug'), 'reserved')
+        ?: 'fields are ' . wp_json_encode($d['error']['details']['fields'] ?? null);
+});
+
+// And derived from the name, the same refusal moves to the control that caused
+// it. One code, two keys, decided by the payload.
+ac_check('and under name when it was derived', ac_req('POST', '/attributes', [
+    'name' => 'Type',
+]), 400, function ($d) {
+    return str_contains(ac_field_error($d, 'name'), 'reserved')
+        ?: 'fields are ' . wp_json_encode($d['error']['details']['fields'] ?? null);
+});
+
+/*
+ * The negative control, and it is the half that keeps the rest honest. A key
+ * that names a field must not be invented for a refusal that is not about one —
+ * an unregistered taxonomy is the shop's state, not the operator's typing — so
+ * the sentence goes into the message and `details` stays absent. A screen
+ * renders that above the form, which is exactly where it belongs.
+ *
+ * Reached through the term route, because a taxonomy that does not exist is
+ * what `requireRegistered()` guards and 9999901 has no attribute at all.
+ */
+ac_check('a refusal that is not about a field invents no key', ac_req('POST', '/attributes/9999901/terms', [
+    'name' => 'Nowhere',
+]), 404, function ($d) {
+    return !isset($d['error']['details']['fields'])
+        ?: 'a 404 grew a fields key: ' . wp_json_encode($d['error']['details'] ?? null);
 });
 
 ac_check('an unknown order_by is refused', ac_req('POST', '/attributes', [
@@ -362,11 +462,51 @@ ac_check('rename a term', ac_req('PATCH', "/attributes/{$sizeId}/terms/{$termMId
             ?: 'the rename changed the wrong field';
     });
 
-ac_check('a duplicate term slug is a conflict', ac_req('POST', "/attributes/{$sizeId}/terms",
-    ['name' => 'Autre', 'slug' => 'm']), 409);
+/*
+ * These two are caught by `AttributeService::createTerm()` and `updateTerm()`
+ * before WordPress sees them — `termSlugExists()` — and they are asserted for
+ * their `details` shape anyway, because after the fix round's item 8 the shape
+ * is the *contract*: the service's own duplicate and the one
+ * `AttributeRepository::fromWpError()` translates out of `duplicate_term_slug`
+ * now answer identically, and a screen binding one binds both.
+ */
+ac_check('a duplicate term slug is a conflict naming the slug', ac_req('POST', "/attributes/{$sizeId}/terms",
+    ['name' => 'Autre', 'slug' => 'm']), 409, function ($d) {
+        if (isset($d['error']['details']['fields'])) {
+            return 'a state refusal grew a fields key';
+        }
+
+        return ($d['error']['details']['slug'] ?? null) === 'm'
+            ?: 'details are ' . wp_json_encode($d['error']['details'] ?? null);
+    });
 
 ac_check('and so is renaming onto one', ac_req('PATCH', "/attributes/{$sizeId}/terms/{$termLId}",
-    ['slug' => 'm']), 409);
+    ['slug' => 'm']), 409, function ($d) {
+        return ($d['error']['details']['slug'] ?? null) === 'm'
+            ?: 'details are ' . wp_json_encode($d['error']['details'] ?? null);
+    });
+
+/*
+ * A duplicate **name**, which is a different refusal and reaches
+ * `fromWpError()` rather than the service's pre-check: nothing validates a name
+ * for uniqueness here, so `wp_insert_term()` raises `term_exists` and puts the
+ * colliding term's id in the error data.
+ *
+ * The id is read out and published, the idiom
+ * `CmsRepository::createFaqCategory()` already uses for this exact WordPress
+ * error — so a client can offer *"open the term you already have"* instead of
+ * asking the person to go and find it. `M` was renamed to `Moyen` above, and
+ * `Moyen` is what collides.
+ */
+ac_check('a duplicate term name is a conflict carrying the id it clashed with',
+    ac_req('POST', "/attributes/{$sizeId}/terms", ['name' => 'Moyen']), 409, function ($d) use ($termMId) {
+        if (isset($d['error']['details']['fields'])) {
+            return 'a state refusal grew a fields key';
+        }
+
+        return ($d['error']['details']['term_id'] ?? null) === $termMId
+            ?: 'details are ' . wp_json_encode($d['error']['details'] ?? null);
+    });
 
 ac_check('a term slug change is reported', ac_req('PATCH', "/attributes/{$sizeId}/terms/{$termLId}",
     ['slug' => 'large']), 200, function ($d) {
