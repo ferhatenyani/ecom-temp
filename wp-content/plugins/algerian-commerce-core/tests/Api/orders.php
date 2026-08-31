@@ -906,48 +906,69 @@ ac_check('and then put on hold, which takes the stock', ac_req('PATCH', "/orders
 $echoedBody = $echoedFetched['data'];
 $echoedBody['customer_note'] = 'Ring before delivery';
 
-ac_check('a whole-body PATCH is refused for the price it echoed back', ac_req('PATCH', "/orders/{$echoedId}", $echoedBody), 409, function ($d) {
-    if (($d['error']['details']['stock_reduced'] ?? null) !== true) {
-        return 'refused for something other than the stock: ' . wp_json_encode($d['error']['details'] ?? null);
-    }
-
-    return ($d['error']['details']['lines'] ?? null) === [0]
-        ?: 'lines are ' . wp_json_encode($d['error']['details']['lines'] ?? null);
-});
-
-unset($echoedBody['line_items']);
-
-ac_check('stripping line_items lets the note through', ac_req('PATCH', "/orders/{$echoedId}", $echoedBody), 200, function ($d) {
+/*
+ * **This assertion used to expect 409 and expects 200.** The refusal it named —
+ * `details.stock_reduced` true and `details.lines` naming index 0 — is the one
+ * `guardManualPricesWritable()` produced for a price the client never typed. The
+ * body below is the fetched order verbatim with one unrelated field changed,
+ * which is what an admin client actually sends.
+ */
+ac_check('a whole-body PATCH lands, where it used to be refused for an echo', ac_req('PATCH', "/orders/{$echoedId}", $echoedBody), 200, function ($d) {
     if (($d['data']['customer_note'] ?? '') !== 'Ring before delivery') {
         return 'the note did not stick';
     }
 
-    // And the agreed price is still on the order, untouched by the edit that
-    // could not restate it.
+    // The agreed amount is unchanged, because the echo restated it exactly.
+    // That is the case the old 409 could not distinguish from a decision, and
+    // it still cannot — the difference is that it now lands and is recorded
+    // rather than refused. See the audit section for the pair that proves it.
+    return ($d['data']['line_items'][0]['price'] ?? null) === '1200.50'
+        ?: 'the price moved: ' . var_export($d['data']['line_items'][0]['price'] ?? null, true);
+});
+
+unset($echoedBody['line_items']);
+
+/*
+ * Stripping `line_items` still works and is still the documented rule for a
+ * *committed* order, where the lines cannot be rewritten at all. It is kept here
+ * because it is the shape a client that follows the README will send, and
+ * because it asserts the other half: an order carrying a hand price is not
+ * disturbed by an edit that says nothing about its lines.
+ */
+ac_check('and so does the same body without line_items', ac_req('PATCH', "/orders/{$echoedId}", $echoedBody), 200, function ($d) {
     return ($d['data']['line_items'][0]['price'] ?? null) === '1200.50'
         ?: 'the price moved: ' . var_export($d['data']['line_items'][0]['price'] ?? null, true);
 });
 
 /*
- * What still gets through, asserted rather than only argued in a docblock. The
- * gate is on the price, not on the money: the same stock-holding order takes a
- * quantity of four at the catalogue's 1 500, moving its total further than any
- * refusal above prevented. Anyone reading step 6 as "a stock-holding order's
- * total is frozen" is reading it wrong, and this is where that is executable.
+ * The three writes that move a stock-holding order's total, asserted next to
+ * each other because it is their *agreement* that is the decision. A quantity of
+ * four at the catalogue's 1 500 was always granted; a delivery charge up to the
+ * ceiling was always granted; a reprice was a 409. Two of these three checks
+ * have stood here since step 6 as the record of a hole, and the third was the
+ * refusal. They now say the same thing.
  */
-ac_check('a quantity still moves the total on the same order', ac_req('PATCH', "/orders/{$echoedId}", [
+ac_check('a quantity moves the total on this order', ac_req('PATCH', "/orders/{$echoedId}", [
     'line_items' => [['product_id' => $kettleId, 'quantity' => 4]],
 ]), 200, function ($d) {
     return ($d['data']['total'] ?? '') === '6000.00' ?: 'total is ' . ($d['data']['total'] ?? '?');
 });
 
+ac_check('a price moves it too, which is the change', ac_req('PATCH', "/orders/{$echoedId}", [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 4, 'price' => '1']],
+]), 200, function ($d) {
+    // Four units at 1 DZD. This is the exact amount the old guard refused, on
+    // the exact order it refused it on.
+    return ($d['data']['total'] ?? '') === '4.00' ?: 'total is ' . ($d['data']['total'] ?? '?');
+});
+
 /*
- * And so does the delivery fee. `guardShippingAmountWritable()` is untouched by
- * step 6 — deliberately, and it is the asymmetry both docblocks name out loud:
- * on this one order a 1 DZD reprice is refused and the ceiling of a delivery
- * charge is granted, the mirror image of the hole step 4 closed. Asserted rather
- * than left to be discovered, because a hole nobody wrote down is the one that
- * gets rediscovered as a bug.
+ * And the delivery fee, unchanged and unchanged on purpose.
+ * `guardShippingAmountWritable()` is `is_editable` and nothing else, and this
+ * order is `on-hold`, so the ceiling is granted. The asymmetry this check used
+ * to document — refused a 1 DZD reprice, granted 9 999 999 DZD of delivery, on
+ * one order in one request — is gone with the guard above it, and what is left
+ * is one rule applied three times.
  */
 ac_check('and so does a delivery fee, right up to the ceiling', ac_req('PATCH', "/orders/{$echoedId}", [
     'shipping_amount' => '9999999.99',
