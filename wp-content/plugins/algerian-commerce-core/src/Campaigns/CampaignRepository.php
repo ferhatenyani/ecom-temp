@@ -39,16 +39,37 @@ final class CampaignRepository
         }
 
         $row = $campaign->toRow();
+        $formats = $campaign->rowFormats();
 
-        // The row's own birth is not rewritable, for the same reason
-        // `ShipmentRepository::update()` refuses `created_at`.
+        /*
+         * The row's own birth is not rewritable, for the same reason
+         * `ShipmentRepository::update()` refuses `created_at`.
+         *
+         * **The format list is derived rather than restated**, and that is a
+         * correction rather than a flourish. It used to be a second hand-written
+         * array of seventeen placeholders — `toRow()`'s eighteen minus this one —
+         * that nothing checked against the first. `$wpdb->update()` maps formats
+         * to columns *by position*, so adding a column to `toRow()` and forgetting
+         * this line does not raise anything: it silently shifts every placeholder
+         * after the new column by one, and the first symptom is `%d` arriving at a
+         * datetime. `CampaignInputTest` guards `toRow()` against `rowFormats()`
+         * and could never have guarded this copy. Now there is only the one list,
+         * with this one entry lifted out of it at the position it actually
+         * occupies.
+         */
+        $position = array_search('created_at', array_keys($row), true);
+
         unset($row['created_at']);
+
+        if ($position !== false) {
+            unset($formats[$position]);
+        }
 
         return $this->wpdb->update(
             $this->table(),
             $row,
             ['id' => $campaign->id],
-            ['%s', '%s', '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%d', '%d', '%d', '%s', '%s', '%s', '%s'],
+            array_values($formats),
             ['%d']
         ) !== false;
     }

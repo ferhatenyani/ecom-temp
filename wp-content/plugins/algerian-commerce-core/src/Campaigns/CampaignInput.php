@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace AlgerianCommerce\Campaigns;
 
 use AlgerianCommerce\API\ApiException;
+use stdClass;
 
 /**
  * What a client may say about a campaign — roadmap §85.
@@ -35,6 +36,15 @@ use AlgerianCommerce\API\ApiException;
  * v1: a tracking pixel is a per-recipient identifier in a URL, which is a consent
  * question and a PII question at once, and when it is built it is built *with* the
  * consent machinery rather than around it.
+ *
+ * ## And the one field that is deliberately not validated by name
+ *
+ * `body_fields` is the panel composer's own answers, and it is the exception to
+ * the rule this class is otherwise built on. Every other key here is refused or
+ * accepted by *name*; that document's names belong to the admin panel's form and
+ * change whenever a control is added to it, so this class checks its size, its
+ * depth and its shape and reads none of its contents. The argument in full is on
+ * `bodyFields()`, along with what that costs.
  */
 final class CampaignInput
 {
@@ -59,11 +69,70 @@ final class CampaignInput
 
     /** @var list<string> */
     private const KNOWN = [
-        'name', 'subject', 'template_id', 'body_html', 'body_text',
+        'name', 'subject', 'template_id', 'body_html', 'body_text', 'body_fields',
         'audience_type', 'customer_ids', 'segment_id',
     ];
 
     public const MAX_BODY = 200_000;
+
+    /**
+     * How large the composer form's answers may be, in bytes of encoded JSON.
+     *
+     * ## Why it is bounded at all
+     *
+     * Because nothing else bounds it. `body_fields` is a document this class
+     * deliberately does not understand (see `bodyFields()` below), stored in a
+     * `mediumtext` column, so neither a schema nor MySQL will refuse a caller who
+     * keeps adding to it. A panel bug that appends to the blob on every save
+     * rather than replacing it would grow one campaign's row without limit, and
+     * every campaign *list* response would then carry it. The same worry
+     * `OrderService::MAX_AUDITED_PRICES` states out loud: a `longtext` column
+     * means nothing refuses it, so it simply becomes something nobody can read
+     * and nobody can shrink.
+     *
+     * ## Why this number
+     *
+     * 64 KiB, derived from the field it generates rather than picked. `MAX_BODY`
+     * above is 200,000 characters of `body_html`, and `body_fields` is the
+     * *input* to that HTML: a form's answers are always shorter than the markup
+     * built around them, because the markup is the answers plus every `<td
+     * style="…">` wrapped round them. A blob permitted to approach `MAX_BODY`
+     * would be a blob no longer being used as a set of answers. A third of the
+     * narrowest reading of `MAX_BODY` leaves an enormous newsletter — dozens of
+     * blocks, hundreds of words each, in Arabic at two bytes a character —
+     * comfortably inside, and refuses the runaway.
+     *
+     * ## Why bytes of the *encoded* document
+     *
+     * Bytes, because the column is sized in bytes and `mb_strlen` would let a
+     * document of four-byte characters pass a check at a quarter of its real size.
+     * Encoded, and encoded with `Campaign::FIELDS_JSON_FLAGS`, because the check
+     * and the column have to be measuring the same thing — the flags are what stop
+     * this bound from landing six times harder on an Arabic newsletter than on a
+     * French one, and a check that ignored them would be enforcing a limit nobody
+     * chose. Sixty-four KiB of `JSON_UNESCAPED_UNICODE` is roughly 32,000 Arabic
+     * or 65,000 Latin characters of answers.
+     *
+     * ## Why refused rather than truncated
+     *
+     * Refused, because **this is the one field here that cannot be truncated to
+     * fit**. `Campaign` truncates an over-long `name` to its column width, on
+     * purpose, so that a write cannot fail after an audience has been resolved.
+     * Half a JSON document is not a shorter JSON document; it is a parse error,
+     * and it reads back as *no answers at all* — silently destroying exactly what
+     * this field exists to preserve. So the caller is told, by name, with the
+     * limit in the message.
+     */
+    public const MAX_FIELDS_BYTES = 65_536;
+
+    /**
+     * How long one answer's field name may be.
+     *
+     * A field name is an identifier the panel looks values up by — `headline`,
+     * `cta_url`, `blocks` — not content. Sixty-four is generous for that and
+     * short enough that a document cannot be inflated out of its keys.
+     */
+    public const MAX_FIELD_KEY = 64;
 
     /** @param array<string, mixed> $fields */
     private function __construct(public readonly array $fields)
@@ -162,6 +231,10 @@ final class CampaignInput
             $fields[$field] = $body;
         }
 
+        if (array_key_exists('body_fields', $payload)) {
+            $fields['body_fields'] = self::bodyFields($payload['body_fields'], $errors);
+        }
+
         foreach (['template_id', 'segment_id'] as $field) {
             if (!array_key_exists($field, $payload)) {
                 continue;
@@ -256,6 +329,155 @@ final class CampaignInput
         }
 
         unset($payload);
+    }
+
+    /**
+     * The composer form's own answers — validated as a *container*, never as
+     * content.
+     *
+     * ## How much of it is understood here, and why that is so little
+     *
+     * Nothing about what the answers mean. This class refuses an unknown
+     * *campaign* field by name, on the argument at the top of this file — that a
+     * silently dropped field turns a typo into something that vanished. It
+     * deliberately does not extend that argument one level down into this
+     * document, and the reason is that the two situations are not alike:
+     *
+     * A campaign's field list is **this API's**. It changes when this repository
+     * changes, and refusing `subjcet` is a service to the caller. A
+     * `body_fields` key list is **the panel's** — it is whatever the composer
+     * form is currently asking, and it grows every time somebody adds a control
+     * to that form. Validating those names here would mean the backend refusing a
+     * field the panel had just started collecting, which is a deploy-order bug
+     * with no good ordering: ship the backend first and the field is dead weight,
+     * ship the panel first and saving is a 400. `SegmentCriteria` gets to be
+     * strict about its key names precisely because that vocabulary is this
+     * repository's and `AudienceResolver` has to understand every one of them.
+     * Nothing here ever reads a key of this document.
+     *
+     * So the trade is stated plainly: **a blob the backend does not understand is
+     * a blob it cannot corrupt, and also one it cannot stop from growing.** The
+     * first half is bought by refusing to look at the names. The second half is
+     * why everything below is here — a container this strict does not need to
+     * know what is inside it.
+     *
+     * ## What *is* checked
+     *
+     *   an object     the answers are named, so the document is a JSON object.
+     *                 A list, a string or a number is a different thing being
+     *                 sent under this key, and it would make the read shape
+     *                 sometimes-an-object, which no client can plan around.
+     *   64 KiB        `MAX_FIELDS_BYTES`, argued above.
+     *   ten deep      `EmailHtml::MAX_DOCUMENT_DEPTH`. Refused rather than
+     *                 trimmed: the sanitiser drops a branch past this depth
+     *                 because it has nobody to tell, and this layer does.
+     *   key names     strings, at most `MAX_FIELD_KEY`, and not markup. A field
+     *                 *name* containing `<script` is never a form's answer, and
+     *                 refusing it is not corruption the way rewriting it would
+     *                 be — a rewritten key is a value the panel can no longer
+     *                 find.
+     *   encodable     it must survive `json_encode`, checked here so that
+     *                 `Campaign::encodedFields()` never has to decide what to do
+     *                 about a document it cannot store.
+     *
+     * `null` is accepted and means *clear it* — back to the state a campaign that
+     * predates the composer is in. That is what makes "undo to the template"
+     * survive a reload, and it is why this returns `?array` rather than `array`.
+     *
+     * @param array<string, string> $errors
+     * @return array<string, mixed>|null
+     */
+    private static function bodyFields(mixed $value, array &$errors): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (!is_array($value)) {
+            $errors['body_fields'] = 'Must be a JSON object of the composer form\'s answers, or null to clear it — not a string, a list or a JSON-encoded string.';
+
+            return null;
+        }
+
+        // `[]` and `{}` are the same value once PHP has decoded them, so an empty
+        // document is read as the empty object it almost certainly was. A
+        // *non-empty* list is unambiguous, and is refused.
+        if ($value !== [] && array_is_list($value)) {
+            $errors['body_fields'] = 'Must be a JSON object: a form\'s answers are named, so a top-level array has nowhere to put the names.';
+
+            return null;
+        }
+
+        $problem = self::inspectFields($value, 0);
+
+        if ($problem !== null) {
+            $errors['body_fields'] = $problem;
+
+            return null;
+        }
+
+        // Encoded exactly as `Campaign::encodedFields()` will store it, so the
+        // bound is measured against the bytes the column actually receives.
+        $encoded = json_encode($value === [] ? new stdClass() : $value, Campaign::FIELDS_JSON_FLAGS);
+
+        if ($encoded === false) {
+            $errors['body_fields'] = 'Could not be stored as JSON: ' . json_last_error_msg() . '.';
+
+            return null;
+        }
+
+        if (strlen($encoded) > self::MAX_FIELDS_BYTES) {
+            $errors['body_fields'] = 'At most ' . self::MAX_FIELDS_BYTES
+                . ' bytes of JSON. Refused rather than truncated, because half a document is not a shorter document — it is one that reads back as no answers at all.';
+
+            return null;
+        }
+
+        return $value;
+    }
+
+    /**
+     * Walk the document for the two things that are structural rather than
+     * semantic: how deep it goes and what its keys are called.
+     *
+     * Returns the first problem found rather than a list, because unlike a
+     * campaign's own fields — where every bad one is reported at once, so an
+     * admin fixes a form in one pass — these are not fields a person typed. They
+     * come out of a generator, and a generator that produced one 300-character
+     * key produced them all; the first one names the bug.
+     *
+     * @param array<array-key, mixed> $document
+     */
+    private static function inspectFields(array $document, int $depth): ?string
+    {
+        if ($depth > EmailHtml::MAX_DOCUMENT_DEPTH) {
+            return 'Nested deeper than ' . EmailHtml::MAX_DOCUMENT_DEPTH
+                . ' levels. Refused rather than trimmed, so the answers that come back are the answers that were sent.';
+        }
+
+        foreach ($document as $key => $value) {
+            // Integer keys are how a nested list arrives after decoding — a
+            // repeater of blocks — and are not names at all.
+            if (is_string($key)) {
+                if (strlen($key) > self::MAX_FIELD_KEY) {
+                    return 'A field name is at most ' . self::MAX_FIELD_KEY . ' characters.';
+                }
+
+                if (EmailHtml::looksLikeMarkup($key)) {
+                    return 'A field name may not contain markup.';
+                }
+            }
+
+            if (is_array($value)) {
+                $problem = self::inspectFields($value, $depth + 1);
+
+                if ($problem !== null) {
+                    return $problem;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**

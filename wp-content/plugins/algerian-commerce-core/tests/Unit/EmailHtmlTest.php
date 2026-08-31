@@ -147,4 +147,133 @@ final class EmailHtmlTest extends TestCase
     {
         self::assertSame('Tapis d’Alger — الجزائر', EmailHtml::sanitizeText('Tapis d’Alger — الجزائر'));
     }
+
+    // -------------------------------------------- the composer's answers --
+    //
+    // `sanitizeDocument()` is what stops `body_fields` from being a way round the
+    // allowlist. It cannot assert the *sanitising* here — that needs `wp_kses`, and
+    // `tests/Api/campaigns.php` does it in-process — but the two halves that decide
+    // whether it corrupts anything are pure: which leaves it touches, and which it
+    // leaves alone.
+
+    /**
+     * The half that makes it safe to run a sanitiser over a document whose meaning
+     * is deliberately unknown: a value that is not trying to be markup comes back
+     * byte for byte.
+     */
+    #[DataProvider('valuesThatAreNotMarkup')]
+    public function testAnAnswerThatIsNotMarkupIsUntouched(string $value): void
+    {
+        self::assertFalse(EmailHtml::looksLikeMarkup($value), "\"{$value}\" was read as markup");
+        self::assertSame(['k' => $value], EmailHtml::sanitizeDocument(['k' => $value]));
+    }
+
+    /** @return list<array{string}> */
+    public static function valuesThatAreNotMarkup(): array
+    {
+        return [
+            ['Soldes d’été'],
+            ['الجزائر'],
+            ['#c41e3a'],
+            ['https://example.test/promo?a=1&b=2'],
+            ['1500.00'],
+            // The one that would break if this ran `wp_kses` over every string:
+            // an ordinary price in ordinary copy.
+            ['Tout à < 500 DA'],
+            ['5 < 7 and 9 > 3'],
+            [''],
+        ];
+    }
+
+    #[DataProvider('valuesThatAreMarkup')]
+    public function testAnAnswerThatIsMarkupIsRecognised(string $value): void
+    {
+        self::assertTrue(EmailHtml::looksLikeMarkup($value), "\"{$value}\" was not read as markup");
+    }
+
+    /** @return list<array{string}> */
+    public static function valuesThatAreMarkup(): array
+    {
+        return [
+            ['<script>alert(1)</script>'],
+            ['<img src=x onerror=alert(1)>'],
+            ['<p>hello</p>'],
+            ['</div>'],
+            ['<!-- comment -->'],
+            ['<style>body{}</style>'],
+            ['before <iframe src="//evil.test"></iframe> after'],
+        ];
+    }
+
+    /**
+     * Non-string leaves are not the sanitiser's business and must survive with
+     * their types intact — a number that came back as a string would be a bug the
+     * panel's generator would have to work around forever.
+     */
+    public function testNonStringLeavesKeepTheirTypes(): void
+    {
+        $document = ['n' => 42, 'f' => 1.5, 'b' => true, 'z' => null];
+
+        self::assertSame($document, EmailHtml::sanitizeDocument($document));
+    }
+
+    /**
+     * It walks the shape rather than a schema, so a form that grows a repeater is
+     * covered without this file knowing the repeater exists. Lists stay lists.
+     */
+    public function testItWalksNestedStructureAndKeepsListsAsLists(): void
+    {
+        $document = [
+            'headline' => 'Soldes',
+            'blocks' => [
+                ['type' => 'text', 'value' => 'plain'],
+                ['type' => 'text', 'value' => 'also plain'],
+            ],
+        ];
+
+        $out = EmailHtml::sanitizeDocument($document);
+
+        self::assertSame($document, $out);
+        self::assertTrue(array_is_list($out['blocks']), 'a repeater is a list on purpose');
+    }
+
+    /**
+     * The depth cap is a backstop for a document that did not come through
+     * `CampaignInput` — a CLI write, an import, a hand-edited column. Past it the
+     * branch is dropped rather than recursed into.
+     */
+    public function testTheDepthCapDropsTheBranchRatherThanRecursingForever(): void
+    {
+        $document = ['leaf' => 'ok'];
+
+        for ($i = 0; $i <= EmailHtml::MAX_DOCUMENT_DEPTH + 2; $i++) {
+            $document = ['nested' => $document];
+        }
+
+        $out = EmailHtml::sanitizeDocument($document);
+
+        // The top level is depth 0, so levels 0..MAX are walked and the first one
+        // past the cap is replaced with an empty branch.
+        for ($i = 0; $i <= EmailHtml::MAX_DOCUMENT_DEPTH; $i++) {
+            self::assertArrayHasKey('nested', $out, "level {$i} should still have been walked");
+            $out = $out['nested'];
+        }
+
+        self::assertSame([], $out, 'past the cap the branch is dropped');
+    }
+
+    /**
+     * Without WordPress `sanitize()` returns `''`, so a markup-shaped leaf is
+     * emptied rather than passed through. Asserted so the "refuse rather than pass
+     * through" stance is known to hold one level down as well — the failure a
+     * document sanitiser could plausibly get wrong is leaking the original string
+     * back when the sanitiser is unavailable.
+     */
+    public function testAMarkupLeafIsNeverPassedThroughWithoutWordPress(): void
+    {
+        $out = EmailHtml::sanitizeDocument(['headline' => '<script>alert(1)</script>']);
+
+        self::assertSame('', $out['headline']);
+        self::assertStringNotContainsString('script', (string) $out['headline']);
+    }
 }

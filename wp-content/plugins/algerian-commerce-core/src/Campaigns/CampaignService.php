@@ -126,7 +126,11 @@ final class CampaignService
             0,
             get_current_user_id(),
             $now,
-            $now
+            $now,
+            // Named, so the four defaulted parameters between `updated_at` and this
+            // one do not have to be restated as nulls — see `Campaign::$bodyFields`
+            // for why it sits at the end of the signature at all.
+            bodyFields: $this->cleanFields($input->get('body_fields'))
         );
 
         $this->guardReferences($campaign);
@@ -178,6 +182,17 @@ final class CampaignService
 
         if (isset($fields['body_text'])) {
             $fields['body_text'] = EmailHtml::sanitizeText((string) $fields['body_text']);
+        }
+
+        /*
+         * `array_key_exists`, not `isset`: `null` is a value this field is set
+         * *to* — it is how the panel says "no longer form-composed", which is what
+         * lets an undo back to the template survive a reload — and `isset` reads a
+         * deliberate null as an absent key. `Campaign::with()` makes the same
+         * distinction one layer down for the same reason.
+         */
+        if (array_key_exists('body_fields', $fields)) {
+            $fields['body_fields'] = $this->cleanFields($fields['body_fields']);
         }
 
         $updated = $existing->with($fields, self::now());
@@ -896,6 +911,55 @@ final class CampaignService
     private function cleanHtml(string $html): string
     {
         return EmailHtml::sanitize($html);
+    }
+
+    /**
+     * The composer's answers, with every markup-shaped leaf run through the same
+     * allowlist `body_html` gets.
+     *
+     * ## Why it is sanitised here and not in `CampaignInput`
+     *
+     * The same split `body_html` already uses, and for the same two reasons.
+     * `CampaignInput` is pure so its rules can be unit-tested without WordPress,
+     * and `EmailHtml::sanitize()` **returns the empty string when `wp_kses` is
+     * absent** — deliberately, on the argument that a sanitiser which silently
+     * does nothing is worse than one that is missing. Calling it from the pure
+     * class would mean every markup-shaped answer becoming `''` in a unit test.
+     * So: the input object decides whether a document is acceptable, this decides
+     * what its contents are allowed to be, exactly as `cleanHtml()` does one line
+     * above.
+     *
+     * ## What this is defending, since it is not the email
+     *
+     * The email is already safe without this and it is worth being precise about
+     * why: `compose()` reads `body_html` and the template's, `TemplateRenderer`
+     * takes strings, and **no code path anywhere renders `body_fields`** — it is
+     * written, stored and read back, and that is all. Nothing here needs this call
+     * in order for `EmailHtml::ALLOWED` to hold over what is mailed.
+     *
+     * What it defends is the *next* renderer, and the next one is the panel's.
+     * The blob exists to be handed to a generator that interpolates it into HTML,
+     * and that generator lives in another repository, is being written right now,
+     * and will be rewritten again. An answer of `<script>…</script>` pasted into
+     * generated markup fires in an admin's own browser, in a live preview, before
+     * a save has happened and therefore before `cleanHtml()` has ever run on the
+     * result — the exact sequence `EmailHtml`'s docblock opens by warning about.
+     *
+     * Sanitising the stored bytes is the version of that defence which does not
+     * depend on anybody else's code being right: whatever the panel does with this
+     * document, the markup it can find in it is a subset of the markup `body_html`
+     * was already allowed to carry, so **this field grants no new reach**. That is
+     * a claim about a column, and columns keep their promises across refactors.
+     *
+     * It costs nothing legitimate — `EmailHtml::looksLikeMarkup()` leaves a
+     * colour, a URL, a number or an ordinary sentence byte-identical.
+     *
+     * @param array<string, mixed>|null $fields
+     * @return array<string, mixed>|null
+     */
+    private function cleanFields(mixed $fields): ?array
+    {
+        return is_array($fields) ? EmailHtml::sanitizeDocument($fields) : null;
     }
 
     private function requireCampaign(int $id): Campaign

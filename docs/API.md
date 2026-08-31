@@ -1190,6 +1190,48 @@ POST /campaigns
 `audience_type` is `ids` (with `customer_ids`, at most 1,000), `segment` (with `segment_id`) or `all`
 (everyone eligible). A campaign may instead name a `template_id`; its own body wins where both exist.
 
+### `body_fields` — the composer's own answers
+
+A campaign may also carry `body_fields`: a **JSON object of whatever the admin panel's composer form
+asked**, stored beside `body_html` and echoed back on every read. It exists because `body_html` alone
+makes the form single-use — reopen a saved campaign and you get generated markup with no way to change
+the headline except by editing the `<td style="…">` around it.
+
+```json
+PATCH /campaigns/{id}
+{ "body_fields": { "headline": "Soldes d’été", "accent": "#c41e3a",
+                   "blocks": [ { "type": "text", "value": "Tout à < 500 DA" } ] } }
+```
+
+**Its key names are not validated and never will be.** They belong to the panel's form, which grows
+whenever a control is added to it; a backend that refused an unrecognised key would make every new form
+field a deploy-order bug. What *is* enforced is the container: a JSON object (not a list, not a string,
+not a JSON-encoded string), at most **65,536 bytes** of encoded JSON, at most **10** levels deep, field
+names at most 64 characters and never markup. Each is a 400 naming `body_fields`. An oversize document is
+**refused, not truncated** — half a JSON document reads back as no answers at all.
+
+**`null` and `{}` are different answers, and the panel must branch on it.**
+
+| value  | means                                                    | the panel should       |
+|--------|----------------------------------------------------------|------------------------|
+| `null` | no answers recorded — hand-written, from a template, or written before this existed | open the HTML editor |
+| `{}`   | the form was used and every answer is currently blank    | open the form          |
+
+Every campaign created before this field existed reads `null`, as does one whose stored document has
+become unreadable. Sending `"body_fields": null` **clears** it back to that state — which is what lets
+"undo back to the template" survive a reload. Omitting the key leaves it untouched.
+
+**Every string in it is sanitised with the same email allowlist `body_html` gets** — but only the values
+that look like markup, so a colour, a URL, a number or `"Tout à < 500 DA"` comes back byte for byte.
+Nothing in the API ever renders `body_fields`: it is written, stored and read back, and the message is
+composed from `body_html` alone. It is sanitised anyway because its whole purpose is to be handed to a
+generator that *does* interpolate it into HTML, and a `<script>` in an answer would fire in an admin's own
+live preview before any save. So the guarantee is about the stored bytes: **whatever a generator finds in
+`body_fields`, it is a subset of what `body_html` was already allowed to carry.**
+
+One JSON wrinkle, stated so nobody debugs it twice: the document is stored and read associatively, so a
+**nested** empty object comes back as `[]` rather than `{}`. The top level is always an object.
+
 **Refused by name, with a reason**: `status`, `recipients_total`, `recipients_sent`, `recipients_failed`,
 `recipients`, `emails`, `to`, `bcc`, `from`, `tracking_pixel`, `open_tracking`, `claimed_at`,
 `completed_at`, `created_by`, `id`. An audience is a *definition* and never a list of addresses — that
