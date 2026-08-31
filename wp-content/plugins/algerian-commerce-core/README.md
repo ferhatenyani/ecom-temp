@@ -808,16 +808,18 @@ an audit entry recording the catalogue price a manual price replaced. Zero is a 
 negative is not, and neither is a price on a line that does not restate its own product and
 quantity — `line_items` replaces the whole set and cannot reprice one line in place.
 
-**The `is_editable` gate reaches less far than it sounds like, and a second gate finishes the job.**
+**The `is_editable` gate reaches less far than it sounds like, and nothing narrows it.**
 `is_editable` is WooCommerce's own rule — `pending` and `on-hold` — and not "the order has not moved
-stock": `on-hold` reduces stock *and* is editable. So `line_items` alone would leave an order holding
-units off the shelf repriceable, and `OrderService::guardManualPricesWritable()` is what closes that.
-A stated `price` on an order that is already holding stock is a 409; nothing else about the lines is.
+stock": `on-hold` reduces stock *and* is editable, so an order holding units off the shelf is
+repriceable.
 
-The rule to carry away is therefore two clauses, not one: **`is_editable` gates the order's money,
-and stock having moved additionally gates the price of the goods.** The quantities on that same
-stock-holding order are still writable and still move the total — see *Editing an order that already
-holds stock*, which is where both halves are spelled out with what each one leaves open.
+For one branch of this build it was not. Backend step 6 added a second gate,
+`OrderService::guardManualPricesWritable()`, refusing a stated `price` on a stock-holding order; the
+fix round's decision 1 removed it, because it refused a reprice on an order whose quantity and
+delivery fee it let through silently. The rule to carry away is therefore one clause again:
+**`is_editable` gates the order's money**, and on an editable order the quantity, the price and the
+fee all land and are all audited. See *Editing an order that already holds stock* for the argument on
+both sides and for what the audit records instead.
 
 **The storefront is unchanged.** `Cart/LineInput` still refuses `price`, `line_total`,
 `line_subtotal`, `subtotal`, `total`, `discount`, `currency` and the option-price fields by name. A
@@ -1045,32 +1047,46 @@ WooCommerce's own helper for adjusting a single line in place,
 `wc_maybe_adjust_line_item_product_stock()`, is not usable here — it lives in an admin-only file that
 is not loaded during a REST request.
 
-**What is refused on such an order is a stated price, and only that.**
-`OrderService::guardManualPricesWritable()` runs after the editability gate and turns a `price` on a
-stock-holding order into a 409 — `A manual price cannot be set on an order that is already holding
-stock.`, with `status`, `stock_reduced` and `lines`, and no `fields`. The payload is well formed and
-no amount would be accepted, so it is a state error, not a validation one; `lines` carries the
-zero-based indices that stated a price, because the operator's mistake is per line even though the
-reason is the order's.
+**Nothing further is refused on such an order — not the quantity, not a stated price, not the
+delivery fee.** This paragraph used to say the opposite, and the change is worth reading rather than
+skipping. Backend step 6 added `OrderService::guardManualPricesWritable()`, which ran after the
+editability gate and turned a `price` on a stock-holding order into a 409 — `A manual price cannot be
+set on an order that is already holding stock.`, carrying `status`, `stock_reduced` and the
+zero-based `lines` that named an amount, and no `fields`. It was removed by the fix round's decision
+1.
+
+The reason is not that the threat expired. It is that the guard was **alone**: on that same `on-hold`
+order a quantity of four became forty in one request — 54 000 DZD at this shop's catalogue price,
+with no manual price anywhere near it — and a delivery charge up to the ceiling was granted, while a
+1 DZD reprice was a 409. Three ways to move one order's total and two answers between them. The
+alternative was to extend the stock test to the quantity and the fee, which `guardLineItemsWritable()`
+refuses on its own grounds: an `on-hold` order awaiting confirmation is the single moment an
+amendment is most likely, and blocking it costs the operator the case the route exists for. So the
+policy is now **warn, allow, record**, applied to all three, and the whole argument on both sides is
+kept in `OrderService::snapshot()`.
+
+- **Warn** — `stock_reduced` is on the read shape (`OrderPresenter::toArray()`), so a client says
+  what is reserved *before* the operator types, which the 409 never did.
+- **Allow** — the write proceeds through the same reconciliation described above.
+- **Record** — `order.updated` carries `before`/`after` snapshots, each with `stock_reduced` beside
+  `manual_prices`, so *what was repriced, on an order that was holding stock, away from what
+  catalogue price* is one row. `order.created` carries the same flat shape, which matters because
+  `on-hold` and `processing` are both creatable and both reduce stock.
 
 "Holding stock" is `OrderRepository::stockReduced()` — WooCommerce's own `get_stock_reduced()` flag
 off the data store — and never a list of status names. There is no such list that works: an order can
 sit in `on-hold`, a status that *does* reduce stock, holding nothing at all because it arrived there
 from `cancelled`. It is the same read `rewriteLineItems()` makes to decide whether to unwind the
-shelf, so the guard fires on exactly the writes that would otherwise have returned units, repriced
-them and taken them again.
+shelf, and now the same read the audit and the read shape make, so a warning, a record and a
+reconciliation cannot disagree about what the words mean.
 
-**What still gets through, so nobody reads this as more than it is.** The gate is on the price, not
-on the money:
-
-- **The quantity.** Four kettles at the catalogue's 1 500 become forty in one request; the total
-  moves by 54 000 DZD with no manual price anywhere near it.
-- **Dropping a hand-priced line.** Omitting it states no price, so nothing is refused, and the line's
-  money leaves with it.
-- **The delivery fee**, up to the ceiling — the asymmetry argued two sections above.
-- **Anything on an order holding no stock**, `pending` included, and every creatable status on
-  `POST /orders`. Creation is not a correction: the lines are written before the status is set, so
-  there is no order yet to be holding anything.
+**One thing the removal bought back, worth naming because it was the loudest cost.** While the guard
+stood, a whole-body PATCH of a stock-holding order carrying a hand-priced line was a 409 — the echoed
+`price` from `OrderPresenter` *states* a price and nothing can tell an echo from a decision. That is
+gone: GET → edit → PATCH holds on every editable order again, and the client rule shortens back to
+the one `is_editable` already implies. What survives is the blindness itself, now visible in the
+audit rather than in a refusal: an echoed amount writes the same `manual_prices` row as a typed one,
+and the before/after pair being equal is the only tell.
 
 Everything else — addresses, the customer note, the payment method — stays editable at any status,
 because a phone typo on a shipped COD order has to be fixable.

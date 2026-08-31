@@ -665,58 +665,27 @@ ac_check('its lines can be amended', ac_req('PATCH', "/orders/{$holdId}", [
 });
 
 /*
- * Backend step 6, and the sharpest sentence this section can produce: the
- * quantity edit above went through on an order holding units off the shelf, and
- * a *price* on that same order does not. Two gates, not one — the line-item gate
- * is `is_editable` and unchanged, and `OrderService::guardManualPricesWritable()`
- * sits behind it refusing an amount somebody typed once the stock has moved.
+ * **Three 409s used to stand here and the fix round's decision 1 deleted all
+ * three.** They asserted `OrderService::guardManualPricesWritable()`: a stated
+ * `price` on this order was a conflict carrying `status`, `stock_reduced` and
+ * the zero-based `lines` that named an amount, while the quantity edit directly
+ * above went through untouched. That is the inconsistency the decision settled —
+ * on one order, a quantity of forty was granted, a delivery charge at the
+ * ceiling was granted, and a 1 DZD reprice was refused.
  *
- * Nothing in this block moves stock: the 409 is thrown before the repository
- * runs. So the three ledger rows asserted further down are *also* the assertion
- * that none of these refusals leaked through to a write.
+ * The policy is now warn, allow, record, and each third of it is executable
+ * somewhere: the *warn* is the panel's, from `stock_reduced` on the read shape
+ * asserted two checks below; the *allow* is the block after the ledger
+ * arithmetic; the *record* is under `=== every manual price is audited ===`,
+ * where a reprice on this same kind of order has to come back out of
+ * `ac_audit_logs` with `stock_reduced` beside it.
+ *
+ * The order of this section is load-bearing and was before: the ledger rows
+ * below are asserted to the unit, so every write that rewrites lines has to
+ * come after them or the arithmetic is about a different narrative. The three
+ * deleted refusals moved no stock, which is why they could sit here; their
+ * replacements do move it, so they are further down.
  */
-ac_check('but a manual price on the same order is refused', ac_req('PATCH', "/orders/{$holdId}", [
-    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => '1200.50']],
-]), 409, function ($d) {
-    if (($d['error']['code'] ?? '') !== 'conflict') {
-        return 'code is ' . ($d['error']['code'] ?? '?');
-    }
-
-    if (($d['error']['message'] ?? '') !== 'A manual price cannot be set on an order that is already holding stock.') {
-        return 'message is ' . ($d['error']['message'] ?? '?');
-    }
-
-    // The order refused it, not the amount, so there is nothing for a form to
-    // redden — `fields` stays the validation channel it is everywhere else.
-    if (isset($d['error']['details']['fields'])) {
-        return 'a state refusal grew a fields key';
-    }
-
-    return (($d['error']['details']['status'] ?? '') === 'on-hold'
-        && ($d['error']['details']['stock_reduced'] ?? null) === true)
-        ?: 'details are ' . wp_json_encode($d['error']['details'] ?? null);
-});
-
-// The reason is the order's; the mistake is per line. So the refusal names the
-// indices that stated a price and only those, and a form bound per line can
-// still point at the boxes to clear.
-ac_check('and it names which lines stated one', ac_req('PATCH', "/orders/{$holdId}", [
-    'line_items' => [
-        ['product_id' => $kettleId, 'quantity' => 1, 'price' => '10'],
-        ['product_id' => $kettleId, 'quantity' => 1],
-        ['product_id' => $kettleId, 'quantity' => 1, 'price' => '0'],
-    ],
-]), 409, function ($d) {
-    return ($d['error']['details']['lines'] ?? null) === [0, 2]
-        ?: 'lines are ' . wp_json_encode($d['error']['details']['lines'] ?? null);
-});
-
-// Zero is the case the whole reversal was argued around — a real free line, not
-// an absent price — so it has to be refused here like any other stated amount.
-ac_check('a free line is a stated price like any other', ac_req('PATCH', "/orders/{$holdId}", [
-    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => 0]],
-]), 409);
-
 ac_assert(
     'the shelf reflects the new quantity, not the old',
     (int) wc_get_product($kettleId)->get_stock_quantity() === 49 ?: 'kettle is at ' . wc_get_product($kettleId)->get_stock_quantity()
@@ -758,6 +727,107 @@ ac_assert('every row still balances', (function () use ($holdRows) {
     return true;
 })());
 
+echo PHP_EOL, '--- and the price lands, which is the reversal ---', PHP_EOL;
+
+/*
+ * The decision, executable. Everything from here rewrites the lines, so it is
+ * below the ledger block that counts them to the unit — and the row counts
+ * asserted here are the second half of that arithmetic rather than a fresh
+ * start, because a reprice on a stock-holding order has to go through the same
+ * unwind-and-re-take as a quantity edit or the shelf is left stranded.
+ */
+ac_check('a manual price lands on an order that is holding stock', ac_req('PATCH', "/orders/{$holdId}", [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => '1200.50']],
+]), 200, function ($d) {
+    if (($d['data']['line_items'][0]['price'] ?? null) !== '1200.50') {
+        return 'the price is ' . var_export($d['data']['line_items'][0]['price'] ?? null, true);
+    }
+
+    // The total follows the agreed amount, not the catalogue's 1 500. This is
+    // the number the old 409 existed to stop moving.
+    if (($d['data']['total'] ?? '') !== '1200.50') {
+        return 'total is ' . ($d['data']['total'] ?? '?');
+    }
+
+    return ($d['data']['stock_reduced'] ?? null) === true ?: 'the flag was lost in the reprice';
+});
+
+/*
+ * The reconciliation ran. This is the assertion that matters most about the
+ * removal: the guard used to throw *before* `OrderRepository::rewriteLineItems()`,
+ * so nothing had ever driven a repricing write through the unwind-and-re-take
+ * path on a stock-holding order. Two more rows, +1 then -1, and the shelf is
+ * where it started.
+ */
+$repricedRows = ac_movements($holdId);
+
+ac_assert('the reprice moved the shelf twice, like any other line rewrite',
+    count($repricedRows) === 5 ?: 'got ' . count($repricedRows) . ' rows');
+
+ac_assert('and the two new rows are a restore and a reduction', (function () use ($repricedRows) {
+    $reasons = array_column(array_slice($repricedRows, 3), 'reason');
+
+    return $reasons === ['order_restored', 'order_reduced'] ?: 'got ' . implode(', ', $reasons);
+})());
+
+ac_assert(
+    'the shelf is unchanged, because only the money moved',
+    (int) wc_get_product($kettleId)->get_stock_quantity() === 49 ?: 'kettle is at ' . wc_get_product($kettleId)->get_stock_quantity()
+);
+
+/*
+ * Zero is the case the whole argument was had about — a real free line, not an
+ * absent price — and it used to be a 409 here on exactly the same footing as any
+ * other stated amount. It is now a 200 on exactly the same footing, which is
+ * what "warn, allow, record" means when the amount is nothing at all. The record
+ * is the part that has to hold, and it is asserted under `=== every manual price
+ * is audited ===`.
+ */
+ac_check('a free line lands too, and is not a special case', ac_req('PATCH', "/orders/{$holdId}", [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 1, 'price' => 0]],
+]), 200, function ($d) {
+    if (($d['data']['total'] ?? '') !== '0.00') {
+        return 'total is ' . ($d['data']['total'] ?? '?');
+    }
+
+    return ($d['data']['line_items'][0]['price'] ?? null) === '0.00'
+        ?: 'a free line must read back as a price, got ' . var_export($d['data']['line_items'][0]['price'] ?? null, true);
+});
+
+/*
+ * Several lines each stating a price. This replaces a 409 that asserted
+ * `details.lines === [0, 2]` — the indices a form was told to redden — and the
+ * shape of the replacement is the shape of the decision: there is no per-line
+ * refusal to report because there is no refusal, so what is asserted instead is
+ * that every stated amount landed and the untouched line still came from the
+ * catalogue. Three lines of one kettle, so 10 + 1 500 + 0.
+ */
+ac_check('every stated price on a multi-line write lands, and only those', ac_req('PATCH', "/orders/{$holdId}", [
+    'line_items' => [
+        ['product_id' => $kettleId, 'quantity' => 1, 'price' => '10'],
+        ['product_id' => $kettleId, 'quantity' => 1],
+        ['product_id' => $kettleId, 'quantity' => 1, 'price' => '0'],
+    ],
+]), 200, function ($d) {
+    $lines = $d['data']['line_items'] ?? [];
+
+    $prices = array_map(static fn ($line) => $line['price'] ?? null, $lines);
+
+    // The middle line stated nothing, so it reads back null — the same
+    // distinction the read shape draws everywhere, and the reason a form can
+    // still tell an override from a catalogue price.
+    if ($prices !== ['10.00', null, '0.00']) {
+        return 'prices are ' . wp_json_encode($prices);
+    }
+
+    return ($d['data']['total'] ?? '') === '1510.00' ?: 'total is ' . ($d['data']['total'] ?? '?');
+});
+
+ac_assert(
+    'and the shelf followed the three units, not the three prices',
+    (int) wc_get_product($kettleId)->get_stock_quantity() === 47 ?: 'kettle is at ' . wc_get_product($kettleId)->get_stock_quantity()
+);
+
 /*
  * The empty forms state nothing, and that is what keeps a catalogue-priced round
  * trip working on exactly these orders: `OrderPresenter` emits `null` for every
@@ -791,11 +861,25 @@ echo PHP_EOL, "=== a hand-priced order that holds stock ===", PHP_EOL;
 /*
  * The consequence a panel actually meets, and it is the presenter's doing.
  * `OrderPresenter::lineItems()` emits `price` so a hand-priced line survives a
- * GET → edit → PATCH cycle; on an order holding stock that same echo now
- * *states* a price, and nothing in this API can tell an echo from a decision —
+ * GET → edit → PATCH cycle. On an order holding stock that same echo *states* a
+ * price, and nothing in this API can tell an echo from a decision —
  * `line_items` carries no line identity, so there is no before/after pairing to
- * compare against either. Restating the identical amount is refused along with
- * changing it, and has to be.
+ * compare against either.
+ *
+ * **This section used to assert that the round trip was a 409 and now asserts
+ * that it is a 200**, which is the single most visible thing the fix round's
+ * decision 1 changed for a client. While `guardManualPricesWritable()` stood, a
+ * panel that fetched a stock-holding order, corrected the customer note and
+ * PATCHed the body back was refused for a price nobody had touched, and the
+ * documented client rule — omit `line_items` unless you mean to rewrite the
+ * lines — had to reach one status further than `is_editable` does. It no longer
+ * does.
+ *
+ * The blindness itself did not go anywhere and is now the audit's problem
+ * rather than the guard's: an echoed amount and a typed one write the same
+ * `manual_prices` row. What that leaves is asserted under `=== every manual
+ * price is audited ===`, where the before/after pair being *equal* is the only
+ * thing that distinguishes an echo from a decision.
  *
  * Its own order, priced while `pending` and then moved to `on-hold`, because
  * that is the only way to get an order that is both hand-priced and holding
@@ -822,48 +906,69 @@ ac_check('and then put on hold, which takes the stock', ac_req('PATCH', "/orders
 $echoedBody = $echoedFetched['data'];
 $echoedBody['customer_note'] = 'Ring before delivery';
 
-ac_check('a whole-body PATCH is refused for the price it echoed back', ac_req('PATCH', "/orders/{$echoedId}", $echoedBody), 409, function ($d) {
-    if (($d['error']['details']['stock_reduced'] ?? null) !== true) {
-        return 'refused for something other than the stock: ' . wp_json_encode($d['error']['details'] ?? null);
-    }
-
-    return ($d['error']['details']['lines'] ?? null) === [0]
-        ?: 'lines are ' . wp_json_encode($d['error']['details']['lines'] ?? null);
-});
-
-unset($echoedBody['line_items']);
-
-ac_check('stripping line_items lets the note through', ac_req('PATCH', "/orders/{$echoedId}", $echoedBody), 200, function ($d) {
+/*
+ * **This assertion used to expect 409 and expects 200.** The refusal it named —
+ * `details.stock_reduced` true and `details.lines` naming index 0 — is the one
+ * `guardManualPricesWritable()` produced for a price the client never typed. The
+ * body below is the fetched order verbatim with one unrelated field changed,
+ * which is what an admin client actually sends.
+ */
+ac_check('a whole-body PATCH lands, where it used to be refused for an echo', ac_req('PATCH', "/orders/{$echoedId}", $echoedBody), 200, function ($d) {
     if (($d['data']['customer_note'] ?? '') !== 'Ring before delivery') {
         return 'the note did not stick';
     }
 
-    // And the agreed price is still on the order, untouched by the edit that
-    // could not restate it.
+    // The agreed amount is unchanged, because the echo restated it exactly.
+    // That is the case the old 409 could not distinguish from a decision, and
+    // it still cannot — the difference is that it now lands and is recorded
+    // rather than refused. See the audit section for the pair that proves it.
+    return ($d['data']['line_items'][0]['price'] ?? null) === '1200.50'
+        ?: 'the price moved: ' . var_export($d['data']['line_items'][0]['price'] ?? null, true);
+});
+
+unset($echoedBody['line_items']);
+
+/*
+ * Stripping `line_items` still works and is still the documented rule for a
+ * *committed* order, where the lines cannot be rewritten at all. It is kept here
+ * because it is the shape a client that follows the README will send, and
+ * because it asserts the other half: an order carrying a hand price is not
+ * disturbed by an edit that says nothing about its lines.
+ */
+ac_check('and so does the same body without line_items', ac_req('PATCH', "/orders/{$echoedId}", $echoedBody), 200, function ($d) {
     return ($d['data']['line_items'][0]['price'] ?? null) === '1200.50'
         ?: 'the price moved: ' . var_export($d['data']['line_items'][0]['price'] ?? null, true);
 });
 
 /*
- * What still gets through, asserted rather than only argued in a docblock. The
- * gate is on the price, not on the money: the same stock-holding order takes a
- * quantity of four at the catalogue's 1 500, moving its total further than any
- * refusal above prevented. Anyone reading step 6 as "a stock-holding order's
- * total is frozen" is reading it wrong, and this is where that is executable.
+ * The three writes that move a stock-holding order's total, asserted next to
+ * each other because it is their *agreement* that is the decision. A quantity of
+ * four at the catalogue's 1 500 was always granted; a delivery charge up to the
+ * ceiling was always granted; a reprice was a 409. Two of these three checks
+ * have stood here since step 6 as the record of a hole, and the third was the
+ * refusal. They now say the same thing.
  */
-ac_check('a quantity still moves the total on the same order', ac_req('PATCH', "/orders/{$echoedId}", [
+ac_check('a quantity moves the total on this order', ac_req('PATCH', "/orders/{$echoedId}", [
     'line_items' => [['product_id' => $kettleId, 'quantity' => 4]],
 ]), 200, function ($d) {
     return ($d['data']['total'] ?? '') === '6000.00' ?: 'total is ' . ($d['data']['total'] ?? '?');
 });
 
+ac_check('a price moves it too, which is the change', ac_req('PATCH', "/orders/{$echoedId}", [
+    'line_items' => [['product_id' => $kettleId, 'quantity' => 4, 'price' => '1']],
+]), 200, function ($d) {
+    // Four units at 1 DZD. This is the exact amount the old guard refused, on
+    // the exact order it refused it on.
+    return ($d['data']['total'] ?? '') === '4.00' ?: 'total is ' . ($d['data']['total'] ?? '?');
+});
+
 /*
- * And so does the delivery fee. `guardShippingAmountWritable()` is untouched by
- * step 6 — deliberately, and it is the asymmetry both docblocks name out loud:
- * on this one order a 1 DZD reprice is refused and the ceiling of a delivery
- * charge is granted, the mirror image of the hole step 4 closed. Asserted rather
- * than left to be discovered, because a hole nobody wrote down is the one that
- * gets rediscovered as a bug.
+ * And the delivery fee, unchanged and unchanged on purpose.
+ * `guardShippingAmountWritable()` is `is_editable` and nothing else, and this
+ * order is `on-hold`, so the ceiling is granted. The asymmetry this check used
+ * to document — refused a 1 DZD reprice, granted 9 999 999 DZD of delivery, on
+ * one order in one request — is gone with the guard above it, and what is left
+ * is one rule applied three times.
  */
 ac_check('and so does a delivery fee, right up to the ceiling', ac_req('PATCH', "/orders/{$echoedId}", [
     'shipping_amount' => '9999999.99',
@@ -1633,6 +1738,24 @@ ac_assert(
 );
 
 /*
+ * And whether the order was holding stock, which it also did not until the fix
+ * round's decision 1. `false` here rather than an absent key, for
+ * `manual_prices`' reason: this order is `pending`, so the honest record is that
+ * nothing was reserved, and a missing key would be indistinguishable from a row
+ * written before anybody was looking.
+ *
+ * It reaches `order.created` because `create()` records the same `snapshot()`
+ * an update does, and it had to: `OrderStatus::CREATABLE` includes `on-hold`
+ * and `processing`, so an order can be *born* holding units at a price somebody
+ * chose. The `on-hold` half of that is asserted a few blocks down.
+ */
+ac_assert(
+    'and whether it was holding stock, which it also did not',
+    (array_key_exists('stock_reduced', $created) && $created['stock_reduced'] === false)
+        ?: 'stock_reduced is ' . var_export($created['stock_reduced'] ?? 'no key at all', true)
+);
+
+/*
  * Two amounts were chosen by a person on this order and three lines exist. The
  * catalogue-priced mug contributes nothing, which is the assertion that keeps
  * the record useful: an audit where every line carries a price and a comparison
@@ -1782,6 +1905,155 @@ ac_assert(
         ?: 'got before ' . wp_json_encode($updated['before'] ?? null)
             . ' after ' . wp_json_encode($updated['after'] ?? null)
 );
+
+ac_assert(
+    'and both halves say the order was holding nothing',
+    (($updated['before']['stock_reduced'] ?? null) === false
+        && ($updated['after']['stock_reduced'] ?? null) === false)
+        ?: 'got before ' . var_export($updated['before']['stock_reduced'] ?? 'no key', true)
+            . ' after ' . var_export($updated['after']['stock_reduced'] ?? 'no key', true)
+);
+
+echo PHP_EOL, '--- and the same reprice on an order that is holding stock ---', PHP_EOL;
+
+/*
+ * **The assertion the fix round's decision 1 stands on.** Everything above this
+ * line was already true before the decision, because a `pending` order was never
+ * what `guardManualPricesWritable()` refused. This block is the case that used
+ * to be a 409 and is now a 200, and the whole bet is that the record left behind
+ * is enough — so it has to be able to answer, from one row, *what was repriced,
+ * on an order that was holding stock, and away from what catalogue price*.
+ *
+ * Its own order and its own product (`$repriceId`, listed at 800), created
+ * `on-hold` so it takes stock at birth. Cancelled at the end so the shelf is
+ * left as this block found it; the sections above assert kettle and mug
+ * quantities to the unit and must not be disturbed by a fixture down here.
+ */
+$heldCreate = ac_req('POST', '/orders', [
+    'line_items' => [['product_id' => $repriceId, 'quantity' => 2]],
+    'status' => 'on-hold',
+]);
+$heldId = (int) ($heldCreate[1]['data']['id'] ?? 0);
+
+ac_check('create an order that is born holding stock', $heldCreate, 201, function ($d) {
+    return ($d['data']['stock_reduced'] ?? null) === true ?: 'on-hold should take stock';
+});
+
+// The other half of "order.created carries it": born `on-hold`, so the flat
+// snapshot records `true` rather than the `false` asserted at the top of this
+// section. Without this the key would only ever have been observed as false.
+ac_assert(
+    'and order.created records that it was born holding stock',
+    (ac_audit_meta($heldId, 'order.created')['stock_reduced'] ?? null) === true
+        ?: 'got ' . wp_json_encode(ac_audit_meta($heldId, 'order.created'))
+);
+
+ac_check('reprice a line on it, which used to be a 409', ac_req('PATCH', "/orders/{$heldId}", [
+    'line_items' => [['product_id' => $repriceId, 'quantity' => 2, 'price' => '650']],
+]), 200, function ($d) {
+    // 2 x 650. The catalogue would have said 1 600.
+    return ($d['data']['total'] ?? '') === '1300.00' ?: 'total is ' . ($d['data']['total'] ?? '?');
+});
+
+$held = ac_audit_meta($heldId, 'order.updated');
+
+/*
+ * The three facts, in one row, asserted together because it is their conjunction
+ * that replaces the refusal. Any two of them were already available: the money
+ * moved (`total`), and a status name is in the row. What was not available is
+ * the third — a status name does not say whether units are off the shelf, and
+ * `OrderRepository::stockReduced()` exists because there is no set of names that
+ * does. An order can sit in `on-hold` holding nothing at all, having arrived
+ * there from `cancelled`.
+ */
+ac_assert(
+    'the record answers what was repriced, while holding stock, away from what',
+    (function () use ($held, $repriceId) {
+        if (($held['before']['stock_reduced'] ?? null) !== true) {
+            return 'the before half does not say the order was holding stock: '
+                . wp_json_encode($held['before'] ?? null);
+        }
+
+        if (($held['after']['stock_reduced'] ?? null) !== true) {
+            return 'the after half does not: ' . wp_json_encode($held['after'] ?? null);
+        }
+
+        $line = ac_priced($held['after'] ?? [], 0);
+
+        if (($line['charged'] ?? null) !== '650') {
+            return 'charged is ' . var_export($line['charged'] ?? null, true);
+        }
+
+        if ((float) ($line['catalogue'] ?? -1) !== 800.0) {
+            return 'catalogue is ' . var_export($line['catalogue'] ?? null, true);
+        }
+
+        // The ids and the quantity, so the giveaway is arithmetic somebody can
+        // do — (800 - 650) x 2 — rather than a number they have to trust.
+        return (($line['product_id'] ?? 0) === $repriceId && ($line['quantity'] ?? null) === 2)
+            ?: 'the line is not identified: ' . wp_json_encode($line);
+    })()
+);
+
+/*
+ * The before half of *this* pair is empty, and that is the sharpest thing the
+ * record says: the order was holding stock and nobody had chosen an amount on
+ * it, so this request is the whole of the decision. A reader comparing the two
+ * halves sees a discount appear against a reserved line rather than an amount
+ * that was already there.
+ */
+ac_assert(
+    'and its before half records that nothing had been hand-priced yet',
+    (array_key_exists('manual_prices', $held['before'] ?? []) && $held['before']['manual_prices'] === [])
+        ?: 'before manual_prices is ' . wp_json_encode($held['before']['manual_prices'] ?? 'no key at all')
+);
+
+/*
+ * The echo, and the limit of what this record can do — promised by the section
+ * `=== a hand-priced order that holds stock ===` and paid here.
+ *
+ * `OrderPresenter` emits `price`, so a whole-body PATCH restates it, and nothing
+ * downstream can tell that from somebody typing the same number again. While
+ * `guardManualPricesWritable()` stood, this request was a 409 and the question
+ * never arose; now it is a 200 that writes a `manual_prices` row identical to
+ * the one already there. **The pair being equal is the only tell**, and it is a
+ * tell a reader has to know to look for — which is why it is asserted rather
+ * than left as a sentence in a docblock.
+ */
+[, $heldFetched] = ac_req('GET', "/orders/{$heldId}");
+$heldBody = $heldFetched['data'];
+$heldBody['customer_note'] = 'Ring before delivery';
+
+ac_check('a whole-body PATCH now lands where it used to be refused', ac_req('PATCH', "/orders/{$heldId}", $heldBody), 200, function ($d) {
+    if (($d['data']['customer_note'] ?? '') !== 'Ring before delivery') {
+        return 'the note did not stick';
+    }
+
+    return ($d['data']['line_items'][0]['price'] ?? null) === '650.00'
+        ?: 'the price moved: ' . var_export($d['data']['line_items'][0]['price'] ?? null, true);
+});
+
+ac_assert(
+    'and the audit shows an echo as a pair that does not move',
+    (function () use ($heldId) {
+        $echo = ac_audit_meta($heldId, 'order.updated');
+
+        $before = ac_priced($echo['before'] ?? [], 0);
+        $after = ac_priced($echo['after'] ?? [], 0);
+
+        // 650.00 rather than 650: the echo came back through `money()`, so the
+        // *stored string* changed even though the amount did not. The record is
+        // of what was written, so it says so.
+        if (($before['charged'] ?? null) !== '650' || ($after['charged'] ?? null) !== '650.00') {
+            return 'the pair is ' . wp_json_encode([$before, $after]);
+        }
+
+        return ((float) ($before['charged'] ?? -1) === (float) ($after['charged'] ?? -2))
+            ?: 'an echo moved the amount';
+    })()
+);
+
+ac_check('put its units back', ac_req('POST', "/orders/{$heldId}/cancel"), 200);
 
 echo PHP_EOL, '--- the catalogue price is frozen, not looked up ---', PHP_EOL;
 

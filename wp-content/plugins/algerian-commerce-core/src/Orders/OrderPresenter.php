@@ -195,16 +195,23 @@ final class OrderPresenter
      * by hand keeps its price while every line that was not is re-priced from
      * the catalogue — each because of what it said, not by luck.
      *
-     * **On an order that is holding stock it no longer works, and the field is
-     * why.** `OrderService::guardManualPricesWritable()` refuses a stated price
-     * there, and this echo is a statement — nothing downstream can tell it from
-     * an amount somebody just typed. So a whole-body PATCH of a stock-holding
-     * order carrying a hand-priced line is a 409 naming the stock, and the
-     * client has to omit `line_items` from it, exactly as it already must on a
-     * committed order. A catalogue-priced line is unaffected in either case,
-     * because `null` states nothing. That is a cost of emitting the field, and
-     * it is still the right trade: the alternative was losing the agreed amount
-     * silently, which is the data-loss path this field exists to close.
+     * **It works on an order that is holding stock too, and for one branch of
+     * this build it did not.** Backend step 6's
+     * `OrderService::guardManualPricesWritable()` refused a stated price there,
+     * and this echo *is* a statement — nothing downstream can tell it from an
+     * amount somebody just typed — so a whole-body PATCH of a stock-holding
+     * order carrying a hand-priced line was a 409 naming the stock, and a
+     * client had to strip `line_items` from it. The fix round's decision 1
+     * removed that guard (see `OrderService::snapshot()` for why), so the round
+     * trip this field exists for now holds on every editable order, and the
+     * client rule shortens back to the one `is_editable` already implies: omit
+     * `line_items` on a *committed* order, because its lines cannot be
+     * rewritten at all.
+     *
+     * A catalogue-priced line was unaffected throughout, because `null` states
+     * nothing — which is the property that made emitting the field the right
+     * trade even while it cost a 409. The alternative was losing the agreed
+     * amount silently, which is the data-loss path this field exists to close.
      *
      * The alternative worth naming, because it is the obvious one: emit the
      * *effective* unit price, `total / quantity`, on every line. It would also

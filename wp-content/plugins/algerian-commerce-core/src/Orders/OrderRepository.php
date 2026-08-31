@@ -993,11 +993,17 @@ final class OrderRepository
      * before this runs and re-takes it after. Left standing, the old sentence
      * would have read as a licence to delete that reconciliation.
      *
-     * The one thing the service *does* refuse on a stock-holding order is a
-     * stated price — `guardManualPricesWritable()`, backend step 6 — and that
-     * changes nothing here: this method is reached with a `price` of null on
-     * every such line, and prices it from the catalogue exactly as it always
-     * did.
+     * The service refuses nothing else on a stock-holding order either, and
+     * that sentence has moved once. Backend step 6 added
+     * `guardManualPricesWritable()`, which turned a stated price on such an
+     * order into a 409, so this method was reached with a `price` of null on
+     * every line of one; the fix round's decision 1 removed that guard, so a
+     * hand-priced line now arrives here on an order holding units exactly as it
+     * does on a `pending` one. **Nothing in this method had to change for
+     * either move**, which is the point worth recording: it prices from the
+     * catalogue when `price` is null and honours the amount when it is not, and
+     * the reconciliation above is indifferent to which. The rule about who may
+     * state an amount lives in the service, and it has never lived here.
      *
      * @param list<array{product: WC_Product, quantity: int, price: ?string}> $lines
      */
