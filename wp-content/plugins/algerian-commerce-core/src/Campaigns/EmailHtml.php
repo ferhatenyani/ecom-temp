@@ -141,4 +141,120 @@ final class EmailHtml
 
         return (string) preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $text);
     }
+
+    /**
+     * Run the allowlist over every string leaf of a schemaless document that
+     * looks like markup — `Campaign::$bodyFields`, and nothing else so far.
+     *
+     * ## Why a document sanitiser exists for a field that is not HTML
+     *
+     * `body_fields` holds the composer form's *answers*; `body_html` holds what
+     * the panel generated from them. Only the second is ever mailed, and it is
+     * sanitised on every write by `sanitize()` above. So the naive reading is
+     * that this document needs no sanitising at all: the backend never renders
+     * it, and a blob nobody parses is a blob nobody can be attacked through.
+     *
+     * That reading is wrong by one step, and the step is the panel. The blob's
+     * whole purpose is to be handed back to a generator that **interpolates it
+     * into HTML**. An admin holding `ac_manage_marketing` who writes
+     * `{"headline": "<script>…</script>"}` is not attacking this API — they are
+     * planting a value that the next person to open that campaign renders, in
+     * their own browser, with their own session, before anything has been saved
+     * and therefore before `sanitize()` has ever seen it. That is precisely the
+     * failure this class's own docblock opens with: *"a stored XSS here fires in
+     * the admin's own preview before it ever reaches an inbox"*. Storing the
+     * answers unsanitised would re-open it around the side of the column that
+     * was closed.
+     *
+     * **And the guarantee has to be structural, because the generator is not
+     * ours.** The panel could escape every value correctly today and stop doing
+     * so in a refactor next month, and nothing in this repository would notice.
+     * What can be guaranteed here is a property of the *stored bytes*: every
+     * string in `body_fields` has already been through the same allowlist as
+     * `body_html`, so the markup a generator can possibly paste out of this blob
+     * is a subset of the markup `body_html` was already allowed to carry. This
+     * field therefore adds **no** new reachable markup — which is the only claim
+     * worth making, since it survives whatever the panel does next.
+     *
+     * ## Why it walks the structure rather than a schema
+     *
+     * There is no schema to walk. The panel owns the shape and will change it as
+     * the form grows, so anything keyed by field name would be wrong by the next
+     * release and would refuse answers the form had legitimately started
+     * collecting. Walking every leaf is shape-agnostic: it is correct for a form
+     * that has three fields and for one that has thirty nested repeaters.
+     *
+     * ## Why only leaves that look like markup
+     *
+     * `looksLikeMarkup()` is the difference between a sanitiser and a corrupter.
+     * A colour, a URL, an integer, a French or Arabic sentence, and the perfectly
+     * ordinary headline `"Soldes : tout à < 500 DA"` all come back **byte for
+     * byte identical**, because none of them contains `<` followed by a letter.
+     * Only a value that is genuinely trying to be markup is rewritten, and it is
+     * rewritten to what an email may contain. That is what makes it safe to run
+     * a sanitiser over a document whose meaning is deliberately unknown here.
+     *
+     * `CMS\ContentHtml::sanitizeDocument()` (§89) reached this design first, for
+     * the homepage, which has the same no-schema problem. This is not a call into
+     * it and not a shared base class, for two reasons: the allowlists differ —
+     * that one is a storefront's, this one is an email client's, and `<video>` is
+     * the sort of tag that separates them — and `EmailHtml` must stay readable as
+     * the single answer to "what markup may an email carry here", which it stops
+     * being the moment part of that answer lives in the CMS module.
+     *
+     * The depth cap is a backstop, not the bound: `CampaignInput` refuses a
+     * document deeper than it allows with a 400, so a caller is told rather than
+     * quietly trimmed. This guards the other doors — a row written by CLI, an
+     * import, a hand-edited column — where returning `[]` for a branch nobody can
+     * be told about is the right end to fail at.
+     *
+     * @param array<array-key, mixed> $document
+     * @return array<array-key, mixed>
+     */
+    public static function sanitizeDocument(array $document, int $depth = 0): array
+    {
+        if ($depth > self::MAX_DOCUMENT_DEPTH) {
+            return [];
+        }
+
+        $out = [];
+
+        foreach ($document as $key => $value) {
+            if (is_array($value)) {
+                $out[$key] = self::sanitizeDocument($value, $depth + 1);
+
+                continue;
+            }
+
+            $out[$key] = is_string($value) && self::looksLikeMarkup($value)
+                ? self::sanitize($value)
+                : $value;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Whether a value is trying to be markup at all.
+     *
+     * `<` followed by a letter, a slash or a `!` — a tag, a closing tag or a
+     * comment/doctype. A bare `<` used as "less than" is left alone, which is the
+     * entire point: running `wp_kses` over every string in the document would
+     * entity-encode ampersands and mangle prices in copy that was never markup.
+     */
+    public static function looksLikeMarkup(string $value): bool
+    {
+        return preg_match('/<[a-zA-Z\/!]/', $value) === 1;
+    }
+
+    /**
+     * How deep a `body_fields` document may nest before a branch is dropped.
+     *
+     * Ten, matching `CMS\ContentHtml::MAX_DOCUMENT_DEPTH`, and for the same
+     * reason: a form's answers are two or three levels deep — blocks, each with
+     * fields, some with a list of items — and ten is far past any of that while
+     * still stopping a hand-written document from turning one save into unbounded
+     * recursion.
+     */
+    public const MAX_DOCUMENT_DEPTH = 10;
 }

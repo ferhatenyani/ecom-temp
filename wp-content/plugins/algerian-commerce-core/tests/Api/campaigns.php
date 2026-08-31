@@ -97,6 +97,20 @@ function ac_assert(string $label, $verdict): void
     echo PHP_EOL;
 }
 
+/**
+ * A campaign's `body_fields` as an array.
+ *
+ * The presenter emits it as an object on purpose — an empty document has to
+ * reach the panel as `{}` rather than `[]`, which PHP cannot express with an
+ * array — so every assertion about its *contents* has to come back through JSON.
+ * That is also the shape the admin app receives, so asserting against it is
+ * asserting against what the panel actually gets.
+ */
+function ac_fields(array $data): mixed
+{
+    return json_decode((string) wp_json_encode($data['body_fields'] ?? null), true);
+}
+
 function ac_user(string $login, string $role): int
 {
     $user = get_user_by('login', $login);
@@ -1026,6 +1040,253 @@ foreach (['status' => 'sent', 'recipients_total' => 5, 'emails' => ['x@example.t
             ? true : "{$field} was not named"
     );
 }
+
+echo PHP_EOL, "── the composer's answers ──", PHP_EOL;
+
+/*
+ * `body_fields` — migration 014. The form's own answers, stored beside the HTML
+ * they generate so that reopening a saved campaign gives back something
+ * re-editable instead of a wall of `<td style="…">`.
+ *
+ * Four things are worth testing over the real request path rather than in
+ * `CampaignInputTest`, because all four need a database or `wp_kses`:
+ *
+ *   1. it round-trips — written by POST, read by GET, unchanged;
+ *   2. a PATCH carrying only `body_fields` is a valid write, and one carrying
+ *      `null` clears it back to the state a pre-composer campaign is in;
+ *   3. a campaign that predates the column reads `null` and not `{}`, which is
+ *      the distinction the panel branches on;
+ *   4. **markup in an answer cannot reach a sent email.** This is the one the
+ *      field could plausibly get wrong, so it is asserted from both ends.
+ */
+
+$composed = ac_check(
+    'a campaign accepts the composer\'s answers',
+    ac_req('POST', '/campaigns', [
+        'name' => "{$SUFFIX} composed",
+        'subject' => 'Soldes',
+        'audience_type' => 'all',
+        'body_html' => '<p>Soldes</p>',
+        // Keys this API has never heard of, on purpose: the vocabulary belongs to
+        // the panel's form and must not need a backend release to grow.
+        'body_fields' => [
+            'headline' => 'Soldes d’été',
+            'accent' => '#c41e3a',
+            'discount' => 20,
+            'blocks' => [
+                ['type' => 'text', 'value' => 'Tout à < 500 DA'],
+                ['type' => 'button', 'label' => 'Acheter', 'url' => 'https://example.test/shop'],
+            ],
+        ],
+    ]),
+    201,
+    static fn (array $d): bool|string => (ac_fields($d['data'])['headline'] ?? '') === 'Soldes d’été'
+        ? true : 'the answers did not come back on create'
+);
+
+$composedId = (int) ($composed['data']['id'] ?? 0);
+
+ac_check(
+    'the answers survive a read unchanged',
+    ac_req('GET', "/campaigns/{$composedId}"),
+    200,
+    static function (array $d): bool|string {
+        $fields = ac_fields($d['data']);
+
+        if (($fields['blocks'][1]['label'] ?? '') !== 'Acheter') {
+            return 'a nested repeater did not survive';
+        }
+
+        if (!array_is_list($fields['blocks'] ?? null)) {
+            return 'a repeater came back as an object rather than a list';
+        }
+
+        if (($fields['discount'] ?? null) !== 20) {
+            return 'a number came back as ' . var_export($fields['discount'] ?? null, true);
+        }
+
+        // The value that would be destroyed by running the HTML sanitiser over
+        // every string rather than only over the ones shaped like markup.
+        return ($fields['blocks'][0]['value'] ?? '') === 'Tout à < 500 DA'
+            ? true : 'an ordinary "<" in copy was mangled';
+    }
+);
+
+ac_check(
+    'a PATCH carrying only the answers is a valid write',
+    ac_req('PATCH', "/campaigns/{$composedId}", ['body_fields' => ['headline' => 'Rentrée']]),
+    200,
+    static fn (array $d): bool|string => (ac_fields($d['data'])['headline'] ?? '') === 'Rentrée'
+        ? true : 'the answers were not replaced'
+);
+
+ac_check(
+    'an explicit null clears them, which is what an undo needs to survive a reload',
+    ac_req('PATCH', "/campaigns/{$composedId}", ['body_fields' => null]),
+    200,
+    static fn (array $d): bool|string => array_key_exists('body_fields', $d['data'])
+        && $d['data']['body_fields'] === null
+            ? true : 'null did not clear the answers'
+);
+
+/*
+ * `[]` rather than `new stdClass()`, and the reason is a trap rather than a
+ * preference: `ac_req()` above calls `set_param()` for every body key as well as
+ * setting the JSON body, and WordPress's `set_param()` **overwrites the already
+ * parsed JSON parameter in place**. An object handed to it therefore reaches
+ * `get_json_params()` as an object, which no real request can produce —
+ * `WP_REST_Request::parse_json_params()` decodes associatively, so `{}` on the
+ * wire is always `[]` by the time a controller sees it. Sending `[]` here is
+ * sending what the HTTP path actually delivers.
+ */
+ac_check(
+    'and the empty form is not the same answer as no form at all',
+    ac_req('PATCH', "/campaigns/{$composedId}", ['body_fields' => []]),
+    200,
+    static function (array $d): bool|string {
+        $encoded = (string) wp_json_encode($d['data']['body_fields'] ?? null);
+
+        return $encoded === '{}' ? true : 'the empty document came back as ' . $encoded;
+    }
+);
+
+/*
+ * A campaign whose row was written before this column existed. Simulated by
+ * setting the column back to NULL, which is exactly what migration 014 leaves on
+ * every pre-existing row — a `DEFAULT '{}'` here would have told the panel that
+ * every campaign in the shop's history was composed with a form that did not
+ * exist when they were written.
+ */
+$wpdb->query($wpdb->prepare(
+    "UPDATE {$wpdb->prefix}ac_campaigns SET body_fields = NULL WHERE id = %d",
+    $composedId
+));
+
+ac_check(
+    'a campaign that predates the column reads null, not {}',
+    ac_req('GET', "/campaigns/{$composedId}"),
+    200,
+    static fn (array $d): bool|string => array_key_exists('body_fields', $d['data'])
+        && $d['data']['body_fields'] === null
+            ? true : 'a pre-existing campaign did not read back as null'
+);
+
+ac_check(
+    'an unreadable document reads as no answers rather than blank answers',
+    (static function () use ($wpdb, $composedId): array {
+        $wpdb->query($wpdb->prepare(
+            "UPDATE {$wpdb->prefix}ac_campaigns SET body_fields = %s WHERE id = %d",
+            'not json at all',
+            $composedId
+        ));
+
+        return ac_req('GET', "/campaigns/{$composedId}");
+    })(),
+    200,
+    // `array_key_exists`, not `??` — the value being looked for *is* null, so a
+    // coalesce would report the success as a failure.
+    static fn (array $d): bool|string => array_key_exists('body_fields', $d['data'])
+        && $d['data']['body_fields'] === null
+            ? true : 'an unreadable column read back as blank answers, which would let the panel clobber body_html'
+);
+
+// ------------------------------- the answers are not a way past the allowlist --
+
+/*
+ * **The security-shaped half.** `body_fields` is not HTML, so nothing renders it
+ * here — but its whole purpose is to be handed to the panel's generator, which
+ * interpolates it into HTML. If the stored answers could carry `<script>`, then a
+ * generator that pastes a value into markup would fire it in an admin's own
+ * preview, before a save and therefore before `EmailHtml` had ever seen the
+ * result. So the answers are sanitised with the same allowlist `body_html` gets,
+ * and this is asserted at both ends: what comes back, and what a send would mail.
+ */
+
+$hostile = ac_check(
+    'markup in an answer is sanitised on the way in',
+    ac_req('POST', '/campaigns', [
+        'name' => "{$SUFFIX} hostile",
+        'subject' => 'x',
+        'audience_type' => 'all',
+        'body_html' => '<p>ok</p>',
+        'body_fields' => [
+            'headline' => '<script>alert(1)</script>Soldes',
+            'blocks' => [
+                ['value' => '<img src=x onerror="alert(1)">'],
+                ['value' => '<iframe src="//evil.test"></iframe>'],
+                ['value' => '<a href="javascript:alert(1)">click</a>'],
+            ],
+            // Deliberately not markup: it must come back untouched, or the
+            // sanitiser is a corrupter.
+            'accent' => '#c41e3a',
+        ],
+    ]),
+    201,
+    static function (array $d): bool|string {
+        $blob = (string) wp_json_encode($d['data']['body_fields'] ?? null);
+
+        foreach (['script', 'onerror', 'iframe', 'javascript:'] as $needle) {
+            if (stripos($blob, $needle) !== false) {
+                return "\"{$needle}\" survived into the stored answers";
+            }
+        }
+
+        return str_contains($blob, '#c41e3a') ? true : 'a value that was not markup was destroyed';
+    }
+);
+
+$hostileId = (int) ($hostile['data']['id'] ?? 0);
+
+ac_check(
+    'the stored row itself is clean, not just the response',
+    ac_req('GET', "/campaigns/{$hostileId}"),
+    200,
+    static fn (array $d): bool|string => stripos((string) wp_json_encode($d['data']['body_fields'] ?? null), 'script') === false
+        ? true : 'the database kept the markup and only the response hid it'
+);
+
+/*
+ * And the end that actually matters: the message. `body_fields` has no path into
+ * `compose()` at all — the preview renders `body_html` and the template's — so
+ * this asserts the *absence* of a path rather than the sanitiser doing its job.
+ * If somebody later wires the answers into the renderer, this is what fails.
+ */
+ac_check(
+    'the answers never reach the rendered message',
+    ac_req('GET', "/campaigns/{$hostileId}/preview"),
+    200,
+    static function (array $d): bool|string {
+        $rendered = (string) ($d['data']['html'] ?? '') . (string) ($d['data']['text'] ?? '');
+
+        if (stripos($rendered, 'script') !== false || stripos($rendered, 'evil.test') !== false) {
+            return 'an answer reached the rendered message';
+        }
+
+        return str_contains($rendered, 'ok') ? true : 'the preview did not render body_html at all';
+    }
+);
+
+ac_check(
+    'an oversize document is refused rather than truncated',
+    ac_req('POST', '/campaigns', [
+        'name' => "{$SUFFIX} oversize", 'subject' => 'x', 'audience_type' => 'all',
+        'body_fields' => ['headline' => str_repeat('a', 70000)],
+    ]),
+    400,
+    static fn (array $d): bool|string => isset($d['error']['details']['fields']['body_fields'])
+        ? true : 'body_fields was not named'
+);
+
+ac_check(
+    'a body_fields that is not an object is refused',
+    ac_req('POST', '/campaigns', [
+        'name' => "{$SUFFIX} notobject", 'subject' => 'x', 'audience_type' => 'all',
+        'body_fields' => '{"headline":"double-encoded"}',
+    ]),
+    400,
+    static fn (array $d): bool|string => isset($d['error']['details']['fields']['body_fields'])
+        ? true : 'body_fields was not named'
+);
 
 echo PHP_EOL, "── the purge ──", PHP_EOL;
 

@@ -1755,7 +1755,7 @@ dashboard holding a credential. And **not** the failed-login counter, which pass
 ## Email marketing campaigns (§85)
 
 ```bash
-POST   /campaigns              {name, subject, body_html, body_text, audience_type, segment_id}
+POST   /campaigns              {name, subject, body_html, body_text, body_fields, audience_type, segment_id}
 GET    /campaigns/{id}/preview                   # rendered, for a sample recipient
 POST   /campaigns/{id}/test    {to}              # one copy, synchronous, no recipient row
 POST   /campaigns/{id}/send                      # 202 — resolves, freezes, returns a count
@@ -1766,8 +1766,17 @@ GET    /marketing/unsubscribe?token=…            # public, one click, idempote
 wp algerian-commerce send-campaigns [--limit=50] [--campaign=<id>] [--rate=<per-minute>]
 ```
 
-**Three migrations — 011 `ac_campaigns`, 012 `ac_campaign_recipients`, 013 `ac_customer_segments` —
-and `Schema::VERSION` is now 13.** No new capability.
+**Four migrations — 011 `ac_campaigns`, 012 `ac_campaign_recipients`, 013 `ac_customer_segments`,
+014 `body_fields` — and `Schema::VERSION` is now 14.** No new capability.
+
+`body_fields` is the admin panel composer's own answers, kept beside the HTML they generate so that
+reopening a saved campaign gives back something re-editable. A JSON **object**, at most 65,536 bytes
+encoded and 10 levels deep; its *key names* are the panel's vocabulary and are deliberately not validated.
+`null` (no answers recorded — open the HTML editor) is a different answer from `{}` (the form was used and
+is blank — open the form), and every campaign predating migration 014 reads `null`. Nothing renders it —
+the message is still composed from `body_html` alone — but its string leaves are run through
+`EmailHtml`'s allowlist anyway, so a generator interpolating it can never reach markup `body_html` could
+not. See docs/API.md, "`body_fields` — the composer's own answers".
 
 ### A campaign is not a notification, and the difference is the unique key
 
