@@ -1050,7 +1050,12 @@ final class Plugin
             // are is decided in one place — shippingProviders() — and a shop
             // with no credentials still gets ManualProvider, so the storefront
             // never sees an empty registry.
-            $this->shippingProviders()
+            $this->shippingProviders(),
+            // The shopper's session, so orders placed while signed in are owned
+            // by the shopper. Without it the storefront's service credential
+            // (HTTP Basic) becomes the "logged in" user and every order is
+            // recorded against the service account — invisible to the buyer.
+            $this->accountSession()
         );
     }
 

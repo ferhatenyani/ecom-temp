@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AlgerianCommerce\Cart;
 
+use AlgerianCommerce\Account\AccountSession;
 use AlgerianCommerce\API\ApiException;
 use AlgerianCommerce\Core\Logger;
 use AlgerianCommerce\Orders\OrderRepository;
@@ -126,7 +127,19 @@ final class CheckoutService
          * always passes one, so that path is a test seam rather than a
          * configuration a shop can end up in by accident.
          */
-        private readonly ?ProviderRegistry $providers = null
+        private readonly ?ProviderRegistry $providers = null,
+        /*
+         * The shopper's session, so an order placed by a signed-in customer is
+         * owned by that customer rather than by whichever WordPress user
+         * happened to authenticate the transport. The storefront proxy sends an
+         * Application Password over HTTP Basic, which makes `is_user_logged_in()`
+         * true for the service account on every checkout — the wrong owner. The
+         * customer is identified by the `X-Customer-Token` header, which is
+         * what `AccountSession::current()` resolves. Optional so tests and any
+         * older construction still work; a checkout built without it falls back
+         * to guest orders, which is the safe direction.
+         */
+        private readonly ?AccountSession $accountSession = null
     ) {
     }
 
@@ -229,7 +242,7 @@ final class CheckoutService
             );
         }
 
-        $order = $this->createOrder($cart, $input, $shipping);
+        $order = $this->createOrder($cart, $input, $shipping, $this->resolveCustomerId($request));
 
         // The cart is emptied only once the order exists. A failure above this
         // line leaves the shopper's basket intact, which is the direction that
@@ -383,7 +396,7 @@ final class CheckoutService
         $item->save();
     }
 
-    private function createOrder(WC_Cart $cart, array $input, ?array $shipping): WC_Order
+    private function createOrder(WC_Cart $cart, array $input, ?array $shipping, int $customerId = 0): WC_Order
     {
         $order = wc_create_order(['status' => 'pending']);
 
@@ -472,8 +485,14 @@ final class CheckoutService
         $order->update_meta_data(OrderRepository::COMMUNE_META, (int) $input['commune_id']);
         $order->update_meta_data(OrderRepository::DELIVERY_TYPE_META, (string) $input['delivery_type']);
 
-        if (is_user_logged_in()) {
-            $order->set_customer_id(get_current_user_id());
+        /*
+         * The buyer, not the transport's authenticator. Resolved from the
+         * customer session in `place()` — see `resolveCustomerId()` for why
+         * `is_user_logged_in()` is the wrong question here. Zero for guests,
+         * which is what WooCommerce expects on an anonymous order.
+         */
+        if ($customerId > 0) {
+            $order->set_customer_id($customerId);
         }
 
         $order->calculate_totals(false);
@@ -676,6 +695,28 @@ final class CheckoutService
         }
 
         return $method;
+    }
+
+    /**
+     * The buyer's WordPress user id, or 0 for a guest.
+     *
+     * **Never `get_current_user_id()`**, because the storefront proxy
+     * authenticates the transport with an Application Password over HTTP Basic
+     * and that credential belongs to the service account — a checkout that
+     * trusted `is_user_logged_in()` would set the service account as every
+     * order's owner, hiding orders from the customers who placed them and
+     * making `/account/orders/{id}` 403 for the buyer. The customer session is
+     * carried by `X-Customer-Token` and resolved by `AccountSession::current()`,
+     * which is what identifies the buyer here.
+     *
+     * Guest checkouts have no such token and land at 0, which is what
+     * WooCommerce records for an anonymous order.
+     */
+    private function resolveCustomerId(WP_REST_Request $request): int
+    {
+        $user = $this->accountSession?->current($request);
+
+        return $user instanceof \WP_User ? (int) $user->ID : 0;
     }
 
     /** @param array{wilaya_id: int, commune_id: int, delivery_type: string} $criteria */
