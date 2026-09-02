@@ -250,21 +250,32 @@ final class PasswordResetService
      */
     private function send(WP_User $user, string $key): void
     {
-        $link = rtrim($this->storefrontUrl(), '/') . '/account/reset?' . http_build_query([
-            'key' => $key,
+        /*
+         * French, and pointed at /fr/, by design. The storefront only ships
+         * French today; deriving the locale from the customer's account or
+         * from an Accept-Language on the request they may never send is a
+         * guess this backend refuses to make. When the storefront adds a
+         * second locale, this method is the one place that changes.
+         *
+         * The path is /fr/reset-password with `token` and `login` — the
+         * storefront route (app/[locale]/(shop)/reset-password) reads those
+         * exact query parameters.
+         */
+        $link = rtrim($this->storefrontUrl(), '/') . '/fr/reset-password?' . http_build_query([
+            'token' => $key,
             'login' => $user->user_login,
         ]);
 
         $shop = (string) get_option('blogname', '');
-        $subject = sprintf('%s — reset your password', $shop);
+        $subject = sprintf('%s — réinitialisez votre mot de passe', $shop);
 
         $body = implode("\n\n", [
-            sprintf('Hello %s,', $user->first_name !== '' ? $user->first_name : $user->user_login),
-            sprintf('Someone asked to reset the password for your account at %s.', $shop),
-            'Open this link to choose a new one:',
+            sprintf('Bonjour %s,', $user->first_name !== '' ? $user->first_name : $user->user_login),
+            sprintf('Quelqu\'un a demandé la réinitialisation du mot de passe de votre compte sur %s.', $shop),
+            'Cliquez ici pour choisir un nouveau mot de passe :',
             $link,
-            'The link expires in 24 hours and can be used once.',
-            'If this was not you, ignore this message — your password has not changed.',
+            'Ce lien expire dans 24 heures et ne peut être utilisé qu\'une seule fois.',
+            'Si vous n\'avez pas demandé cette réinitialisation, ignorez cet email — votre mot de passe n\'a pas changé.',
         ]);
 
         $sent = wp_mail($user->user_email, $subject, $body);

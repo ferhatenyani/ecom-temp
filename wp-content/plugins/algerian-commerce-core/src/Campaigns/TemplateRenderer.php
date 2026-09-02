@@ -178,16 +178,22 @@ final class TemplateRenderer
         );
     }
 
+    /*
+     * French, because the storefront only ships French today. When a second
+     * locale ships, this is the one place that changes — appended footer is
+     * a system concern, not an author one, so the copy lives here rather
+     * than in the campaign body.
+     */
     private static function htmlFooter(): string
     {
         return "\n<p style=\"font-size:12px;color:#666\">"
-            . '<a href="{{' . self::UNSUBSCRIBE . '}}">Unsubscribe</a>'
+            . '<a href="{{' . self::UNSUBSCRIBE . '}}">Se désabonner de ces communications</a>'
             . "</p>\n";
     }
 
     private static function textFooter(): string
     {
-        return "\n\nUnsubscribe: {{" . self::UNSUBSCRIBE . "}}\n";
+        return "\n\nSe désabonner de ces communications : {{" . self::UNSUBSCRIBE . "}}\n";
     }
 
     /**

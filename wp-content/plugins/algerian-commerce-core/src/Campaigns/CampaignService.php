@@ -819,6 +819,17 @@ final class CampaignService
             return '';
         }
 
+        $storefront = $this->storefrontUrl();
+
+        if ($storefront !== '') {
+            /*
+             * /fr/ is hard-coded because the storefront only ships French
+             * today. The route `/[locale]/(shop)/unsubscribe/[token]` takes
+             * the token as a path segment, not a query string.
+             */
+            return rtrim($storefront, '/') . '/fr/unsubscribe/' . rawurlencode($token);
+        }
+
         return $this->unsubscribeBase() . '?' . http_build_query(['token' => $token]);
     }
 
@@ -827,7 +838,7 @@ final class CampaignService
         $storefront = $this->storefrontUrl();
 
         if ($storefront !== '') {
-            return rtrim($storefront, '/') . '/marketing/unsubscribe';
+            return rtrim($storefront, '/') . '/fr/unsubscribe';
         }
 
         return rest_url(\AlgerianCommerce\REST_NAMESPACE . '/marketing/unsubscribe');
