@@ -644,6 +644,141 @@ if ($chosenId > 0) {
     $chosenOrder->delete(true);
 }
 
+echo PHP_EOL, "── coupons say why ──", PHP_EOL;
+
+/*
+ * The refusal a shopper cannot act on — see `Cart\CouponRejection`.
+ *
+ * A **percent** coupon with *exclude sale items* on, applied to a cart holding
+ * an on-sale product, is rejected by WooCommerce with error 109, whose text is
+ * "not applicable to selected products" — on a coupon that restricts no product
+ * and no category. This section pins the corrected answer, and it pins the
+ * three things independently, because they fail for different reasons: the slug
+ * comes from re-validating, the wording comes from WooCommerce's own 110, and
+ * the absence of `&quot;` is the entity decoding in `CartService::plainText()`.
+ *
+ * Its own cart token throughout. A coupon left on the suite's main cart is a
+ * discount every later total would have to account for.
+ */
+$SALE_SKU = 'ac-cart-onsale';
+$COUPON = 'ac-cart-nosale';
+
+foreach (['publish', 'draft', 'trash'] as $status) {
+    foreach (wc_get_products(['sku' => $SALE_SKU, 'status' => $status, 'limit' => 20, 'return' => 'ids']) as $id) {
+        wp_delete_post((int) $id, true);
+    }
+}
+
+$onSale = new WC_Product_Simple();
+$onSale->set_name('AC cart fixture on sale');
+$onSale->set_sku($SALE_SKU);
+$onSale->set_regular_price('1000.00');
+$onSale->set_sale_price('900.00');
+$onSale->set_manage_stock(true);
+$onSale->set_stock_quantity(10);
+$onSale->set_status('publish');
+$onSaleId = $onSale->save();
+
+ac_assert('a fixture product is on sale', wc_get_product($onSaleId)->is_on_sale() ?: 'the sale price did not stick');
+
+$existingCoupon = wc_get_coupon_id_by_code($COUPON);
+
+if ($existingCoupon) {
+    wp_delete_post((int) $existingCoupon, true);
+}
+
+$coupon = new WC_Coupon();
+$coupon->set_code($COUPON);
+$coupon->set_discount_type('percent');
+$coupon->set_amount(10);
+// The one setting under test. Nothing restricts a product or a category, which
+// is what makes WooCommerce's own message impossible to act on.
+$coupon->set_exclude_sale_items(true);
+$couponId = $coupon->save();
+
+ac_assert('a fixture coupon exists', $couponId > 0 ?: 'could not create one');
+
+$saleCart = ac_check(
+    'a cart of the on-sale product',
+    ac_req('POST', '/cart/items', ['product_id' => $onSaleId, 'quantity' => 2]),
+    201
+);
+$saleToken = (string) ($saleCart['meta']['cart_token'] ?? '');
+
+$refused = ac_check(
+    'the sale-items rule is refused as itself, not as a product restriction',
+    ac_req('POST', '/cart/coupons', ['code' => $COUPON], ['cart_token' => $saleToken]),
+    400,
+    static function (array $d): bool|string {
+        $reason = $d['error']['details']['reason'] ?? null;
+
+        return $reason === 'sale_items_excluded'
+            ? true
+            : 'reason was ' . var_export($reason, true) . ' — WooCommerce raised 109 and nothing corrected it';
+    }
+);
+
+$refusedText = (string) ($refused['error']['details']['fields']['code'] ?? '');
+
+ac_assert(
+    'and the sentence says sale items, not selected products',
+    (stripos($refusedText, 'sale items') !== false && stripos($refusedText, 'selected products') === false)
+        ?: "the shopper was told: {$refusedText}"
+);
+ac_assert(
+    'the sentence is text, not escaped HTML',
+    (!str_contains($refusedText, '&quot;') && !str_contains($refusedText, '&#') && !str_contains($refusedText, '<'))
+        ?: "entities survived: {$refusedText}"
+);
+
+// The control. Without it the assertions above pass against a route that
+// refuses every coupon.
+$plainCart = ac_check(
+    'a cart of the product that is not on sale',
+    ac_req('POST', '/cart/items', ['product_id' => $productId, 'quantity' => 2]),
+    201
+);
+$plainToken = (string) ($plainCart['meta']['cart_token'] ?? '');
+
+ac_check(
+    'the same coupon applies when nothing in the cart is on sale',
+    ac_req('POST', '/cart/coupons', ['code' => $COUPON], ['cart_token' => $plainToken]),
+    201,
+    static fn (array $d): bool|string => ($d['data']['coupons'][0]['code'] ?? '') === 'ac-cart-nosale'
+        && ($d['data']['totals']['discount'] ?? '') === '200.00'
+        ? true
+        : 'got ' . wp_json_encode($d['data']['coupons'] ?? null) . ' / ' . wp_json_encode($d['data']['totals'] ?? null)
+);
+
+ac_check(
+    'applying it twice is a conflict that names the reason',
+    ac_req('POST', '/cart/coupons', ['code' => $COUPON], ['cart_token' => $plainToken]),
+    409,
+    static fn (array $d): bool|string => ($d['error']['details']['reason'] ?? null) === 'already_applied'
+        ?: 'reason was ' . wp_json_encode($d['error']['details'] ?? null)
+);
+
+// Every other refusal keeps its own slug — the correction is for 109 alone.
+ac_check(
+    'a code the shop never issued is not_found, not not_applicable',
+    ac_req('POST', '/cart/coupons', ['code' => 'ac-no-such-code'], ['cart_token' => $plainToken]),
+    400,
+    static fn (array $d): bool|string => ($d['error']['details']['reason'] ?? null) === 'not_found'
+        ?: 'reason was ' . wp_json_encode($d['error']['details'] ?? null)
+);
+
+ac_check(
+    'an empty cart says so rather than blaming the code',
+    ac_req('POST', '/cart/coupons', ['code' => $COUPON]),
+    400,
+    static fn (array $d): bool|string => ($d['error']['details']['reason'] ?? null) === 'cart_empty'
+        ?: 'reason was ' . wp_json_encode($d['error']['details'] ?? null)
+);
+
+foreach ([$saleToken, $plainToken] as $spent) {
+    ac_req('DELETE', '/cart', null, ['cart_token' => $spent]);
+}
+
 echo PHP_EOL, "── clear ──", PHP_EOL;
 
 ac_req('POST', '/cart/items', ['product_id' => $productId, 'quantity' => 1], ['cart_token' => $token]);
@@ -655,7 +790,7 @@ ac_check(
 );
 
 // ------------------------------------------------------------------ cleanup --
-foreach ([$productId, $draftId, $soldOutId] as $id) {
+foreach ([$productId, $draftId, $soldOutId, $onSaleId, $couponId] as $id) {
     if ($id > 0) {
         wp_delete_post((int) $id, true);
     }

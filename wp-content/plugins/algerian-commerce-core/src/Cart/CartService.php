@@ -238,6 +238,14 @@ final class CartService
      * said. Restating those rules here would produce a second set that can
      * disagree with the one that actually applies the discount.
      *
+     * **A refusal carries `details.reason` as well as the sentence.** The
+     * sentence is WooCommerce's, in the language the backend runs in, and a
+     * storefront that shows it to a shopper is showing them English. The slug
+     * beside it is stable, is what a French cart translates, and is what tells
+     * an expired code apart from one the shop has never issued. See
+     * `CouponRejection` — which also exists because one of those sentences is
+     * wrong, and a slug derived from re-validating is how it gets corrected.
+     *
      * @return array<string, mixed>
      */
     public function applyCoupon(WP_REST_Request $request, string $code): array
@@ -248,19 +256,30 @@ final class CartService
 
         if ($cart->is_empty()) {
             throw ApiException::invalidRequest('A coupon needs a cart to apply to.', [
+                'reason' => 'cart_empty',
                 'fields' => ['code' => 'The cart is empty.'],
             ]);
         }
 
         if ($cart->has_discount($code)) {
-            throw ApiException::conflict('That coupon is already applied.', ['code' => $code]);
+            throw ApiException::conflict('That coupon is already applied.', [
+                'reason' => 'already_applied',
+                'code' => $code,
+            ]);
         }
 
         $this->clearNotices();
 
-        if (!$cart->apply_coupon($code)) {
+        $rejection = CouponRejection::of($cart, $code, static fn (): bool => $cart->apply_coupon($code));
+
+        if ($rejection !== null) {
+            $this->clearNotices();
+
+            $message = self::plainText($rejection->message());
+
             throw ApiException::invalidRequest('That coupon could not be applied.', [
-                'fields' => ['code' => $this->noticeReason('It is not valid for this cart.')],
+                'reason' => $rejection->reason(),
+                'fields' => ['code' => $message === '' ? 'It is not valid for this cart.' : $message],
             ]);
         }
 
@@ -418,7 +437,7 @@ final class CartService
         $this->clearNotices();
 
         foreach ($notices as $notice) {
-            $text = trim(wp_strip_all_tags((string) ($notice['notice'] ?? '')));
+            $text = self::plainText((string) ($notice['notice'] ?? ''));
 
             if ($text !== '') {
                 return $text;
@@ -426,6 +445,29 @@ final class CartService
         }
 
         return $fallback;
+    }
+
+    /**
+     * WooCommerce's markup as a sentence a JSON client can print.
+     *
+     * Its cart messages are written for a web page: `wc_price()` returns
+     * `<span class="…"><bdi>1&nbsp;500,00&nbsp;<span…>DZD</span></bdi></span>`,
+     * and every code and product name in them has been through `esc_html()`.
+     * Stripping tags alone — which is what this used to do — leaves the
+     * entities, so a shopper who typed `yani12` was shown
+     * `coupon &quot;yani12&quot; is not applicable…`.
+     *
+     * Decoding **before** stripping rather than after is the order that matters:
+     * a product name containing `&lt;script&gt;` decodes into a tag and is then
+     * removed, where the other order would publish it. Non-breaking spaces from
+     * `wc_price()` collapse with the rest of the whitespace, so a price does not
+     * arrive with characters no client asked for.
+     */
+    private static function plainText(string $html): string
+    {
+        $text = wp_strip_all_tags(html_entity_decode($html, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+
+        return trim((string) preg_replace('/[\s\x{00A0}]+/u', ' ', $text));
     }
 
     /**
