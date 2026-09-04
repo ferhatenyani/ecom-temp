@@ -621,6 +621,40 @@ with a reason**. Prices, totals, tax, stock and coupon rules all come from the c
 Shipping is quoted against the destination, and a free-shipping threshold is compared against the cart's
 own subtotal.
 
+**A refused coupon says why in a slug, not only in a sentence.** `POST /cart/coupons` puts
+`details.reason` beside the message, because the message is WooCommerce's, in the language this backend
+runs in, and a storefront needs something it can branch on and translate:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "invalid_request",
+    "message": "That coupon could not be applied.",
+    "details": {
+      "reason": "sale_items_excluded",
+      "fields": { "code": "Sorry, coupon \"yani12\" is not valid for sale items." }
+    }
+  }
+}
+```
+
+`reason` is one of `cart_empty`, `not_found`, `expired`, `already_applied`, `individual_use_only`,
+`usage_limit_reached`, `minimum_spend_not_met`, `maximum_spend_exceeded`, `sale_items_excluded`,
+`excluded_products`, `excluded_categories`, `email_required`, `code_required`, `coupons_disabled`,
+`not_applicable` (the coupon names products or categories and the cart holds none of them), or
+`not_valid`. Treat anything unrecognised as `not_valid` and fall back to `fields.code`.
+
+**`sale_items_excluded` is a correction, not a relay.** WooCommerce reports a percent coupon blocked by
+*exclude sale items* as error 109, "not applicable to selected products" — on a coupon that may restrict
+no product at all. `Cart\CouponRejection` establishes the real cause by switching one exclusion off on an
+in-memory copy of the coupon and asking `WC_Discounts::is_coupon_valid()` again; it claims a cause only
+when the coupon then passes, and otherwise keeps WooCommerce's own answer. The rules are never restated
+here. Nothing is saved.
+
+Messages from the cart routes are plain text: WooCommerce's markup and its HTML entities (`&quot;`, the
+`&nbsp;` inside a formatted price) are resolved before the response is built.
+
 **Checkout does not take the money.** It creates a `pending` order and hands back:
 
 ```json
