@@ -83,6 +83,19 @@ final class CartPresenter
                 'line_total' => self::money($line['line_total'] ?? 0),
                 'image' => self::image($product),
                 'stock_status' => $product->get_stock_status(),
+                // Whether stock is tracked and, when it is, the current
+                // ceiling. Published on every cart read so a storefront's
+                // stepper can clamp against the same number the backend
+                // enforces in `CartService::assertStockAvailable()` —
+                // avoiding a round-trip refusal for a shopper trying to
+                // raise a legitimate cart line past what the shop holds.
+                // Null when stock is unmanaged (no numeric ceiling exists)
+                // or backorders are allowed (the shop opted in to selling
+                // past zero).
+                'manage_stock' => (bool) $product->managing_stock(),
+                'stock_quantity' => $product->managing_stock() && !$product->backorders_allowed()
+                    ? (int) $product->get_stock_quantity()
+                    : null,
             ] + self::options((string) $key, $optionPrices);
         }
 
