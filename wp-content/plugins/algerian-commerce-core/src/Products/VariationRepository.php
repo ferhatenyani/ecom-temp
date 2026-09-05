@@ -138,6 +138,15 @@ final class VariationRepository
         $items = [];
 
         foreach (self::normalizeCombination($attributes) as $key => $value) {
+            /*
+             * `name` is the taxonomy key (`pa_couleur`), NOT the human label —
+             * ProductPresenter::attributes() emits the same raw key for the
+             * parent product, and the storefront's PdpVariable matches
+             * variation.attributes[].name to productAttribute.name to resolve
+             * a selection to a variation. If this were "Couleur" the picker
+             * would never resolve. `label` carries the human name for any
+             * caller that wants it without breaking the matching contract.
+             */
             $item = [
                 'name' => $key,
                 'option' => $value,
@@ -148,8 +157,8 @@ final class VariationRepository
 
                 if (function_exists('wc_attribute_label')) {
                     $label = (string) wc_attribute_label($key);
-                    if ($label !== '') {
-                        $item['name'] = $label;
+                    if ($label !== '' && $label !== $key) {
+                        $item['label'] = $label;
                     }
                 }
 
