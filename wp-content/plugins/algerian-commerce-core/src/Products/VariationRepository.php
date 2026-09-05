@@ -123,6 +123,50 @@ final class VariationRepository
         return $normalized;
     }
 
+    /**
+     * The wire form for a variation's attributes: a list of
+     * `{id?, name, slug?, option}` items, matching the shape WooCommerce
+     * publishes on its own REST API and the shape the storefront's Zod schema
+     * expects. `normalizeCombination()` still owns the internal map form used
+     * for duplicate detection and audit records — this is only for output.
+     *
+     * @param array<string, string> $attributes
+     * @return list<array<string, mixed>>
+     */
+    public static function presentAttributes(array $attributes): array
+    {
+        $items = [];
+
+        foreach (self::normalizeCombination($attributes) as $key => $value) {
+            $item = [
+                'name' => $key,
+                'option' => $value,
+            ];
+
+            if (function_exists('taxonomy_exists') && taxonomy_exists($key)) {
+                $item['slug'] = $key;
+
+                if (function_exists('wc_attribute_label')) {
+                    $label = (string) wc_attribute_label($key);
+                    if ($label !== '') {
+                        $item['name'] = $label;
+                    }
+                }
+
+                if (function_exists('wc_attribute_taxonomy_id_by_name')) {
+                    $id = (int) wc_attribute_taxonomy_id_by_name($key);
+                    if ($id > 0) {
+                        $item['id'] = $id;
+                    }
+                }
+            }
+
+            $items[] = $item;
+        }
+
+        return $items;
+    }
+
     private function apply(WC_Product_Variation $variation, VariationInput $input): void
     {
         $setters = [

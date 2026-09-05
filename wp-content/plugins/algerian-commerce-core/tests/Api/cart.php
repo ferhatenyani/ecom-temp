@@ -308,6 +308,29 @@ ac_check(
     400
 );
 
+// The bug this section pins: PATCH /cart/items/{key} was accepting any
+// quantity because WooCommerce's set_quantity() does not re-check stock on
+// its own. A shopper could raise a cart line to 500 for a product with 10
+// in stock, checkout would place the order, and the admin would end up with
+// negative inventory.
+ac_check(
+    'PATCH refuses more than the shop holds',
+    ac_req('PATCH', "/cart/items/{$key}", ['quantity' => 500], ['cart_token' => $token]),
+    400,
+    static fn (array $d): bool|string => str_contains(
+        strtolower((string) wp_json_encode($d['error']['details']['fields'] ?? [])),
+        'stock'
+    ) ? true : 'reason did not mention stock: ' . wp_json_encode($d['error']['details'] ?? null)
+);
+
+// And the line is unchanged — the PATCH did not partially apply.
+ac_check(
+    'the line was not silently clamped',
+    ac_req('GET', '/cart', null, ['cart_token' => $token]),
+    200,
+    static fn (array $d): bool|string => ((int) ($d['data']['items'][0]['quantity'] ?? 0)) < 500 ? true : 'quantity was somehow 500'
+);
+
 echo PHP_EOL, "── checkout ──", PHP_EOL;
 
 $quoted = ac_check(
@@ -778,6 +801,69 @@ ac_check(
 foreach ([$saleToken, $plainToken] as $spent) {
     ac_req('DELETE', '/cart', null, ['cart_token' => $spent]);
 }
+
+echo PHP_EOL, "── stock at checkout ──", PHP_EOL;
+
+/*
+ * The bug this section pins: `POST /checkout` had no pre-flight stock check,
+ * so a race that opened between `POST /cart/items` and checkout — the shop
+ * reducing stock, another shopper draining it, an admin adjusting it —
+ * placed an order the shop could not ship and left `OrderStockSubscriber`
+ * with negative inventory.
+ *
+ * The scenario is simulated by placing a cart at a legitimate quantity,
+ * then reducing the product's stock underneath it, then attempting
+ * checkout. It fails and the cart is preserved (an order that was never
+ * created is a retry, an emptied cart is a customer starting again).
+ */
+
+$stockCart = ac_check(
+    'a cart at a legitimate quantity is placed',
+    ac_req('POST', '/cart/items', ['product_id' => $productId, 'quantity' => 3]),
+    201
+);
+$stockToken = (string) ($stockCart['meta']['cart_token'] ?? '');
+
+$fixture = wc_get_product($productId);
+$fixture->set_stock_quantity(1);
+$fixture->save();
+
+ac_check(
+    'checkout refuses a cart line that no longer fits stock',
+    ac_req('POST', '/checkout', [
+        'billing' => [
+            'first_name' => 'A', 'last_name' => 'B', 'address_1' => 'x', 'city' => 'Algiers',
+            'postcode' => '16000', 'phone' => '+213555000000', 'email' => 'a@example.com',
+        ],
+        'shipping' => [],
+        'wilaya_id' => 16, 'commune_id' => 0, 'delivery_type' => 'home',
+        'payment_method' => '', 'customer_note' => '',
+    ], ['cart_token' => $stockToken]),
+    400,
+    static function (array $d): bool|string {
+        $fields = $d['error']['details']['fields'] ?? [];
+        foreach (array_keys($fields) as $field) {
+            if (str_starts_with((string) $field, 'items.')) {
+                return true;
+            }
+        }
+
+        return 'no items.* field: ' . wp_json_encode($fields);
+    }
+);
+
+ac_check(
+    'the refused checkout preserved the cart',
+    ac_req('GET', '/cart', null, ['cart_token' => $stockToken]),
+    200,
+    static fn (array $d): bool|string => ((int) ($d['data']['items_count'] ?? 0)) === 3
+        ? true
+        : 'items_count was ' . var_export($d['data']['items_count'] ?? null, true)
+);
+
+$fixture->set_stock_quantity(10);
+$fixture->save();
+ac_req('DELETE', '/cart', null, ['cart_token' => $stockToken]);
 
 echo PHP_EOL, "── clear ──", PHP_EOL;
 

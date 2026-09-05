@@ -226,7 +226,7 @@ final class ProductPresenter
             'stock_quantity' => $variation->get_stock_quantity(),
             'stock_status' => $variation->get_stock_status(),
             'weight' => $variation->get_weight(),
-            'attributes' => VariationRepository::normalizeCombination($variation->get_attributes()),
+            'attributes' => VariationRepository::presentAttributes($variation->get_attributes()),
             'image_id' => (int) $variation->get_image_id(),
             'image' => self::image((int) $variation->get_image_id()),
             'date_created' => self::date($variation->get_date_created()),

@@ -217,6 +217,18 @@ final class CheckoutService
             ]);
         }
 
+        /*
+         * The last line of defence against oversell — every cart line is
+         * checked against live stock before the order is written. The cart
+         * update path enforces the same rule, and the storefront clamps the
+         * stepper, but this is the door orders come through and a stale
+         * client that skipped the earlier gates would still land here.
+         * `OrderStockSubscriber` reduces stock *after* the order is created,
+         * so a check *before* creation is what prevents inventory going
+         * negative on a race that opened between add-to-cart and checkout.
+         */
+        $this->assertStockAvailable($cart);
+
         $provider = $this->requireProvider($input['payment_method']);
         $destination = $this->destination($input);
         $subtotal = (string) wc_format_decimal((string) $cart->get_subtotal(), wc_get_price_decimals());
@@ -742,5 +754,44 @@ final class CheckoutService
         }
 
         return $cart;
+    }
+
+    /**
+     * Every line's quantity fits its product's live stock.
+     *
+     * Aggregates failures so a shopper with three over-stock lines is told
+     * about all three, not just the first — the storefront then displays each
+     * against its stepper. Delegates the per-product rule to
+     * `CartService::assertStockAvailable()`, which is the same code the cart
+     * update path uses; sharing it means the two doors cannot disagree about
+     * when a quantity is refused.
+     *
+     * @throws ApiException 400 if any line exceeds available stock
+     */
+    private function assertStockAvailable(WC_Cart $cart): void
+    {
+        $errors = [];
+
+        foreach ($cart->get_cart() as $key => $line) {
+            $product = $line['data'] ?? null;
+            $quantity = (int) ($line['quantity'] ?? 0);
+
+            if (!$product instanceof \WC_Product || $quantity <= 0) {
+                continue;
+            }
+
+            try {
+                CartService::assertStockAvailable($product, $quantity);
+            } catch (ApiException $e) {
+                $errors['items.' . $key] = $e->getMessage();
+            }
+        }
+
+        if ($errors !== []) {
+            throw ApiException::invalidRequest(
+                'Some items are no longer available in that quantity.',
+                ['fields' => $errors]
+            );
+        }
     }
 }

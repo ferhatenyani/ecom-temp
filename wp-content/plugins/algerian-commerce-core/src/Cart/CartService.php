@@ -195,6 +195,17 @@ final class CartService
 
         if ($product instanceof WC_Product) {
             $this->assertBundleAvailable($product, $quantity);
+            /*
+             * Stock validation on the cart-update path — the missing gate that
+             * let a shopper raise a line to 10 for a product with 3 in stock,
+             * because `WC()->cart->set_quantity()` accepts anything when
+             * stock management is off and does not refuse a request greater
+             * than `stock_quantity` when it is on unless it would put the
+             * total-across-lines over the cap. The stepper is enforced on
+             * the storefront too, but this route is public and the client
+             * clamp is a UX guarantee rather than an inventory one.
+             */
+            self::assertStockAvailable($product, $quantity);
         }
 
         if (!WC()->cart->set_quantity($key, $quantity, true)) {
@@ -366,6 +377,49 @@ final class CartService
         throw ApiException::invalidRequest('That bundle is not available in that quantity.', [
             'fields' => ['quantity' => $this->bundles->shortfallReason($product, $quantity)],
         ]);
+    }
+
+    /**
+     * Refuse a quantity that would sell more than the shop has.
+     *
+     * Applied in both the add and the update paths. WooCommerce's `add_to_cart`
+     * enforces this when `manage_stock` is on, but `set_quantity()` does not —
+     * a cart line raised to 10 for a product with 3 in stock silently landed at
+     * 10 and rolled through to the order, which then went to -7. Two rules:
+     *
+     *  - stock unmanaged → the `is_in_stock()` boolean already handled by
+     *    `requirePurchasable()` is the only signal; no numeric ceiling exists
+     *    and this method allows any quantity.
+     *  - stock managed + backorders off → the ceiling is `stock_quantity`.
+     *  - stock managed + backorders on → sold past zero is allowed by
+     *    configuration and the shop opted in; no refusal here.
+     *
+     * @throws ApiException
+     */
+    public static function assertStockAvailable(WC_Product $product, int $quantity): void
+    {
+        if (!$product->managing_stock() || $product->backorders_allowed()) {
+            return;
+        }
+
+        $available = (int) $product->get_stock_quantity();
+
+        if ($quantity <= $available) {
+            return;
+        }
+
+        throw ApiException::invalidRequest(
+            'That quantity is not available.',
+            [
+                'fields' => [
+                    'quantity' => sprintf(
+                        'Only %d in stock.',
+                        max(0, $available)
+                    ),
+                ],
+                'available' => max(0, $available),
+            ]
+        );
     }
 
     /**
