@@ -223,9 +223,6 @@ final class CheckoutService
          * update path enforces the same rule, and the storefront clamps the
          * stepper, but this is the door orders come through and a stale
          * client that skipped the earlier gates would still land here.
-         * `OrderStockSubscriber` reduces stock *after* the order is created,
-         * so a check *before* creation is what prevents inventory going
-         * negative on a race that opened between add-to-cart and checkout.
          */
         $this->assertStockAvailable($cart);
 
@@ -254,7 +251,38 @@ final class CheckoutService
             );
         }
 
-        $order = $this->createOrder($cart, $input, $shipping, $this->resolveCustomerId($request));
+        /*
+         * Race-safe order placement — round-6 follow-up.
+         *
+         * The check above and the order-create below are two steps, and a
+         * concurrent checkout that read the same stock number in between
+         * would place a second order for stock that has already been sold.
+         * `OrderStockSubscriber` reduces on status transition (processing /
+         * completed), which for a COD order can be *hours* after create —
+         * the race window without this guard.
+         *
+         * Two things happen inside `withStockLocks()`:
+         *
+         *   1. `assertStockAvailable()` re-runs against a cache-busted read
+         *      of every product's stock — so a value another request just
+         *      deducted is visible here.
+         *   2. `createOrder()` followed by `wc_reduce_stock_levels()` on the
+         *      new order id, so the stock is committed before the lock is
+         *      released. The `_reduced_stock` marker WooCommerce sets means
+         *      its own hooks won't double-reduce on a later status
+         *      transition, and a later cancel still restores because the
+         *      marker is what tells WC there's something to restore.
+         *
+         * Locks are named per product id and acquired in sorted ascending
+         * order to prevent deadlock between two checkouts overlapping on
+         * different products.
+         */
+        $order = $this->withStockLocks($cart, function () use ($cart, $input, $request, $shipping): WC_Order {
+            $this->assertStockAvailable($cart, true);
+            $created = $this->createOrder($cart, $input, $shipping, $this->resolveCustomerId($request));
+            wc_reduce_stock_levels($created->get_id());
+            return $created;
+        });
 
         // The cart is emptied only once the order exists. A failure above this
         // line leaves the shopper's basket intact, which is the direction that
@@ -766,18 +794,36 @@ final class CheckoutService
      * update path uses; sharing it means the two doors cannot disagree about
      * when a quantity is refused.
      *
+     * `$fresh` re-reads the product from the database before checking. Called
+     * with `true` from inside `withStockLocks()`, so the second check runs
+     * against the value a concurrent order may have just deducted; called
+     * with `false` from the pre-flight above, where the cart line's product
+     * is already loaded.
+     *
      * @throws ApiException 400 if any line exceeds available stock
      */
-    private function assertStockAvailable(WC_Cart $cart): void
+    private function assertStockAvailable(WC_Cart $cart, bool $fresh = false): void
     {
         $errors = [];
 
         foreach ($cart->get_cart() as $key => $line) {
-            $product = $line['data'] ?? null;
+            $line_product = $line['data'] ?? null;
             $quantity = (int) ($line['quantity'] ?? 0);
 
-            if (!$product instanceof \WC_Product || $quantity <= 0) {
+            if (!$line_product instanceof \WC_Product || $quantity <= 0) {
                 continue;
+            }
+
+            $product = $line_product;
+            if ($fresh) {
+                // Bust the WC product cache so `get_stock_quantity()` returns
+                // what the DB holds right now, not the value another request
+                // loaded a moment ago.
+                wp_cache_delete($product->get_id(), 'products');
+                $refreshed = wc_get_product($product->get_id());
+                if ($refreshed instanceof \WC_Product) {
+                    $product = $refreshed;
+                }
             }
 
             try {
@@ -792,6 +838,73 @@ final class CheckoutService
                 'Some items are no longer available in that quantity.',
                 ['fields' => $errors]
             );
+        }
+    }
+
+    /**
+     * Serialize the check + create + reduce window on a per-product basis.
+     *
+     * MySQL user-level locks: `GET_LOCK('ac_ck:{productId}', N)` waits up
+     * to N seconds for whichever request already holds the lock to release
+     * it, then grants exclusive access. Two checkouts touching the same
+     * product line up; two touching disjoint products don't wait.
+     *
+     * Sorted ascending because two orders that hold multiple products in
+     * common but acquire their locks in different orders would deadlock —
+     * order A holds P1 wants P2, order B holds P2 wants P1, everyone waits
+     * for the 5-second timeout. Sorting eliminates that entirely.
+     *
+     * `finally` on the release: PHP fatal, uncaught exception, DB error
+     * mid-transaction — all still release the locks, so a crashed request
+     * doesn't hold shop stock hostage. WordPress connections also drop
+     * user-level locks on close, so a killed process cannot leak them
+     * either. Belt and suspenders.
+     *
+     * @template T
+     * @param callable(): T $work
+     * @return T
+     */
+    private function withStockLocks(WC_Cart $cart, callable $work): mixed
+    {
+        global $wpdb;
+
+        $productIds = [];
+        foreach ($cart->get_cart() as $line) {
+            $product = $line['data'] ?? null;
+            if ($product instanceof \WC_Product) {
+                $productIds[$product->get_id()] = true;
+            }
+        }
+
+        $ids = array_map('intval', array_keys($productIds));
+        sort($ids, SORT_NUMERIC);
+
+        $acquired = [];
+        try {
+            foreach ($ids as $id) {
+                $lockName = 'ac_ck:' . $id;
+                $got = $wpdb->get_var($wpdb->prepare(
+                    "SELECT GET_LOCK(%s, %d)",
+                    $lockName,
+                    5
+                ));
+                if ((int) $got !== 1) {
+                    throw ApiException::invalidRequest(
+                        'The shop is busy processing another order for one of these items. Please retry.',
+                        ['fields' => ['cart' => 'Contended stock lock timed out.']]
+                    );
+                }
+                $acquired[] = $lockName;
+            }
+
+            return $work();
+        } finally {
+            // Release in reverse order for symmetry, though user-locks are
+            // named rather than stacked and the order doesn't actually
+            // matter to MySQL.
+            foreach (array_reverse($acquired) as $lockName) {
+                $wpdb->get_var($wpdb->prepare("SELECT RELEASE_LOCK(%s)", $lockName));
+            }
         }
     }
 }
